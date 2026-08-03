@@ -41,6 +41,7 @@ const (
 	aclConcreteRights aclMask = 0x001f01ff
 
 	aclIntegrityForbidden       aclMask = 0x000d0156
+	aclAncestorForbidden        aclMask = 0x000d0040
 	aclConfidentialityForbidden aclMask = 0x000d01ff
 
 	aclExecutableRequired      aclMask = 0x000000a1
@@ -133,6 +134,7 @@ const (
 	windowsPrivateAncestorPolicy
 	windowsConfigHomePolicy
 	windowsCredentialPolicy
+	windowsPathAncestorPolicy
 )
 
 type windowsACLRule struct {
@@ -148,13 +150,13 @@ func windowsPoliciesForPathKind(
 ) (windowsACLPolicy, windowsACLPolicy, bool) {
 	switch kind {
 	case pathKindExecutable, pathKindEntrypoint:
-		return windowsExecutablePolicy, windowsPathDirectoryPolicy, true
+		return windowsExecutablePolicy, windowsPathAncestorPolicy, true
 	case pathKindConfigHome:
 		return windowsConfigHomePolicy, windowsPrivateAncestorPolicy, true
 	case pathKindCredential:
 		return windowsCredentialPolicy, windowsPrivateAncestorPolicy, true
 	case pathKindSafeDirectory:
-		return windowsPathDirectoryPolicy, windowsPathDirectoryPolicy, true
+		return windowsPathDirectoryPolicy, windowsPathAncestorPolicy, true
 	default:
 		return windowsACLPolicyUnknown, windowsACLPolicyUnknown, false
 	}
@@ -345,7 +347,14 @@ func windowsPolicyRule(policy windowsACLPolicy) (windowsACLRule, bool) {
 		return windowsACLRule{
 			object:                aclObjectDirectory,
 			required:              aclPrivateAncestorRequired,
-			forbidden:             aclIntegrityForbidden,
+			forbidden:             aclAncestorForbidden,
+			trustTrustedInstaller: true,
+		}, true
+	case windowsPathAncestorPolicy:
+		return windowsACLRule{
+			object:                aclObjectDirectory,
+			required:              aclPathDirectoryRequired,
+			forbidden:             aclAncestorForbidden,
 			trustTrustedInstaller: true,
 		}, true
 	case windowsConfigHomePolicy:

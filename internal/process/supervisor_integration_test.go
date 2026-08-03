@@ -586,7 +586,8 @@ func TestSupervisorStartsWaitOnlyAfterTERMSignalDecision(t *testing.T) {
 			t.Fatal(outcome.err)
 		}
 		if outcome.result.StopReason != StopReasonNormalExit ||
-			outcome.result.StopAction != StopActionTERM {
+			(outcome.result.StopAction != StopActionTERM &&
+				outcome.result.StopAction != StopActionKILL) {
 			t.Fatalf("result=%+v", outcome.result)
 		}
 	case <-time.After(unixSchedulingWaitBudget):

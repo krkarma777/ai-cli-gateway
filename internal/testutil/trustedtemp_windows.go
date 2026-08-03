@@ -20,10 +20,13 @@ import (
 const trustedTempAttempts = 100
 
 // TrustedTempDir creates a TokenUser-owned fixture with a protected inheritable
-// DACL below the repository's trusted parent.
+// DACL below the current user's temporary directory.
 func TrustedTempDir(t testing.TB) string {
 	t.Helper()
-	parent := filepath.Dir(repositoryRoot(t))
+	parent, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		t.Fatalf("resolve trusted fixture parent: %v", err)
+	}
 	attributes, _, err := trustedWindowsSecurityAttributes(true)
 	if err != nil {
 		t.Fatalf("construct trusted fixture security: %v", err)

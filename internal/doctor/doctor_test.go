@@ -85,19 +85,7 @@ func TestNewProcessProbeControllerRejectsInvalidConstruction(t *testing.T) {
 
 func TestNewProcessProbeControllerRealSupervisorLifecycle(t *testing.T) {
 	testutil.AcquireRepositoryScanLock(t)
-	parent, err := os.MkdirTemp(".", ".doctor-controller-integration-")
-	if err != nil {
-		t.Fatalf("create secure integration parent: %v", err)
-	}
-	parent, err = filepath.Abs(parent)
-	if err != nil {
-		t.Fatalf("absolute integration parent: %v", err)
-	}
-	//nolint:gosec // This is the required private directory mode, not a file mode.
-	if err := os.Chmod(parent, 0o700); err != nil {
-		t.Fatalf("chmod integration parent: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(parent) })
+	parent := testutil.TrustedTempDir(t)
 	t.Setenv("TMPDIR", parent)
 
 	gateway := testutil.BuildGateway(t)

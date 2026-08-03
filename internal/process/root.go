@@ -42,6 +42,7 @@ type runtimeState uint8
 
 const (
 	runtimeActive runtimeState = iota
+	runtimeCleanupPending
 	runtimeQuarantined
 	runtimeRemoved
 )
@@ -453,8 +454,9 @@ func (r *Root) Materialize(runtime Runtime, specs []FileSpec) error {
 	return nil
 }
 
-// Cleanup removes a request runtime within a bounded context. If removal fails,
-// it attempts an in-root atomic rename to the request's closed quarantine name.
+// Cleanup closes a request runtime with an in-root atomic quarantine rename and
+// removes it within a bounded context. A failed rename remains cleanup-pending
+// so a later cleanup or janitor pass can reclaim the original request name.
 func (r *Root) Cleanup(ctx context.Context, runtime Runtime) error {
 	release, err := r.beginOperation()
 	if err != nil {
@@ -478,7 +480,8 @@ func (r *Root) Cleanup(ctx context.Context, runtime Runtime) error {
 	defer cancel()
 
 	switch record.state {
-	case runtimeActive:
+	case runtimeActive, runtimeCleanupPending:
+		record.state = runtimeCleanupPending
 		quarantined, quarantineErr := r.quarantineRecordedRuntime(
 			cleanupCtx,
 			runtime.ID,
@@ -506,8 +509,14 @@ func (r *Root) Cleanup(ctx context.Context, runtime Runtime) error {
 		return &RunError{Kind: ErrorCleanup, Err: err}
 	}
 	record.state = runtimeRemoved
-	_ = closeRuntimeRecord(record)
+	closeErr := closeRuntimeRecord(record)
 	retire = true
+	if closeErr != nil {
+		return &RunError{
+			Kind: ErrorCleanup,
+			Err:  fmt.Errorf("close runtime handles: %w", closeErr),
+		}
+	}
 	return nil
 }
 
@@ -559,20 +568,32 @@ func (r *Root) Janitor(ctx context.Context) error {
 				if err := cleanupCtx.Err(); err != nil {
 					return err
 				}
-				if err := r.removeAnchoredDirectory(
-					cleanupCtx,
-					r.anchor,
-					entry.Name(),
-				); err != nil {
-					return err
+				retireRecord := false
+				var removeErr error
+				if record != nil {
+					retireRecord, removeErr = r.removeJanitorCandidate(
+						cleanupCtx,
+						entry.Name(),
+						record,
+					)
+				} else {
+					removeErr = r.removeAnchoredDirectory(
+						cleanupCtx,
+						r.anchor,
+						entry.Name(),
+					)
 				}
-				if record != nil &&
-					prefix == quarantinePrefix &&
-					record.state == runtimeQuarantined {
+				if removeErr != nil {
+					return removeErr
+				}
+				if retireRecord {
 					record.state = runtimeRemoved
-					_ = closeRuntimeRecord(record)
+					closeErr := closeRuntimeRecord(record)
 					if r.records[id] == record {
 						delete(r.records, id)
+					}
+					if closeErr != nil {
+						return fmt.Errorf("close runtime handles: %w", closeErr)
 					}
 				}
 				return nil
@@ -1526,6 +1547,77 @@ func (r *Root) removeAnchoredDirectory(
 		return err
 	}
 	return removeOpenedDirectory(ctx, parent, name, opened, r.rootDir)
+}
+
+func (r *Root) removeJanitorCandidate(
+	ctx context.Context,
+	name string,
+	record *runtimeRecord,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if record == nil || record.requestInfo == nil {
+		return false, errors.New("recorded runtime identity is unavailable")
+	}
+	entryInfo, err := r.anchor.Lstat(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if entryInfo.Mode()&fs.ModeSymlink != 0 {
+		return false, fmt.Errorf("%s: %w", name, errSymlinkRefused)
+	}
+	if !entryInfo.IsDir() {
+		return false, errUnsafeRuntimeDir
+	}
+	opened, err := openAnchoredDirectory(
+		r.anchor,
+		name,
+		entryInfo,
+		r.rootDir,
+	)
+	if err != nil {
+		return false, err
+	}
+	if !os.SameFile(record.requestInfo, opened.info) {
+		return false, errors.Join(
+			errors.New("janitor candidate does not match the registered runtime identity"),
+			opened.Close(),
+		)
+	}
+	if record.state == runtimeActive {
+		return false, errors.Join(
+			errors.New("janitor candidate is an active runtime"),
+			opened.Close(),
+		)
+	}
+	if record.state != runtimeCleanupPending &&
+		record.state != runtimeQuarantined {
+		return false, errors.Join(
+			errors.New("janitor candidate has an invalid runtime state"),
+			opened.Close(),
+		)
+	}
+	if err := validateOwnedFile(
+		opened.file,
+		opened.info,
+		true,
+		runtimeDirMode,
+	); err != nil {
+		_ = opened.Close()
+		return false, err
+	}
+	err = removeOpenedDirectory(
+		ctx,
+		r.anchor,
+		name,
+		opened,
+		r.rootDir,
+	)
+	return err == nil, err
 }
 
 func removeAnchoredContents(

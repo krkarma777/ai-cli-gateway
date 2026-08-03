@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -282,7 +283,7 @@ func TestOpenRootRejectsUnsafeWindowsAncestorAuthority(t *testing.T) {
 	}
 }
 
-func TestCleanupLockedWindowsFileEntersQuarantine(t *testing.T) {
+func TestCleanupLockedWindowsFileRemainsReclaimable(t *testing.T) {
 	root := openTestRoot(t)
 	rt := prepareTestRuntime(t, root)
 	path := filepath.Join(rt.Dir, "locked")
@@ -303,7 +304,9 @@ func TestCleanupLockedWindowsFileEntersQuarantine(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_ = windows.CloseHandle(handle)
+		if handle != 0 {
+			_ = windows.CloseHandle(handle)
+		}
 	})
 
 	err = root.Cleanup(context.Background(), rt)
@@ -311,17 +314,37 @@ func TestCleanupLockedWindowsFileEntersQuarantine(t *testing.T) {
 	if !errors.As(err, &runErr) || runErr.Kind != ErrorCleanup {
 		t.Fatalf("error=%T %v", err, err)
 	}
+	if runErr.Err == nil ||
+		!strings.Contains(runErr.Err.Error(), "rename request quarantine") {
+		t.Fatalf("cleanup cause = %v, want quarantine rename stage", runErr.Err)
+	}
+	info, statErr := os.Lstat(rt.Dir)
+	if statErr != nil {
+		t.Fatalf("locked request path was not retained: %v", statErr)
+	}
+	if !info.IsDir() {
+		t.Fatalf("locked request path mode = %v, want directory", info.Mode())
+	}
 	quarantine := filepath.Join(
 		rootPathForTest(root),
 		"quarantine-"+testRequestID,
 	)
-	info, err := os.Lstat(quarantine)
-	if err != nil {
+	if _, statErr := os.Lstat(quarantine); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("locked request unexpectedly entered quarantine: %v", statErr)
+	}
+	if err := windows.CloseHandle(handle); err != nil {
 		t.Fatal(err)
 	}
-	if !info.IsDir() {
-		t.Fatalf("quarantine mode=%v", info.Mode())
+	handle = 0
+	if err := root.Janitor(context.Background()); err != nil {
+		t.Fatal(err)
 	}
+	for _, path := range []string{rt.Dir, quarantine} {
+		if _, statErr := os.Lstat(path); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Fatalf("janitor left locked runtime path %q: %v", path, statErr)
+		}
+	}
+	assertRuntimeRetired(t, root, rt)
 }
 
 func setWindowsAncestorDACL(t *testing.T, path string, access uint32) {

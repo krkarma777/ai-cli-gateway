@@ -921,15 +921,22 @@ still owns work. A listener-close, HTTP, Gateway, supervisor, janitor,
 or root invariant failure is retained as a fixed redacted shutdown failure and
 causes a non-zero server exit.
 
-Request-directory deletion gets the configured five-second cleanup budget. If it
-still fails after containment is empty, the gateway attempts an atomic rename to a
-quarantine name. If the platform also rejects the rename, the original verified
-request path remains registered for cleanup. The provider is marked not ready, the
-request returns `process_cleanup_failed`, and the permit is released. A bounded
-janitor scans both request and quarantine names at startup and shutdown. It never
-follows symlinks, never deletes outside the verified runtime root, and never
-blocks a permit indefinitely. Any such directory remaining at shutdown causes a
-non-zero exit.
+Request-directory cleanup gets the configured five-second budget. After
+containment is empty, the gateway first atomically closes the public request name
+by renaming it to the request's quarantine name, then removes that closed tree.
+If the platform rejects the rename, the original verified request path enters a
+non-active cleanup-pending state and remains registered for a later janitor pass.
+The provider is marked not ready, the request returns `process_cleanup_failed`,
+and the permit is released. A bounded janitor scans both cleanup-pending request
+names and quarantine names at startup and shutdown. It never follows symlinks,
+never deletes outside the verified runtime root, and never blocks a permit
+indefinitely. When a runtime record exists, janitor anchors the candidate once
+and deletes it only after `os.SameFile` confirms the retained request identity;
+an active state or identity mismatch fails closed without deleting either tree.
+A matching cleanup-pending or quarantined identity is reclaimed and its handles
+and record are retired regardless of which reserved prefix currently names it.
+An unregistered reserved name is treated as stale. Any such directory remaining
+at shutdown causes a non-zero exit.
 
 ## 9. Stable Error Model
 
@@ -1035,21 +1042,24 @@ claim built-in TLS.
   with exact mode `0400` or `0600` and no special or execute bits. Relevant
   lexical/resolved parent directories must be owned by root or the effective UID
   and must not grant group/other mutation authority.
-- On Windows, executables, Node entrypoints, and PATH directories apply one
-  integrity policy to both the leaf and every lexical/resolved ancestor: reject
-  shell shims and reparse points, require a final regular file or directory of
-  the expected identity, accept only the token user, LocalSystem, Builtin
-  Administrators, or TrustedInstaller as owner, reject every applicable allow ACE
-  that gives an untrusted SID mutation/delete/owner/DACL authority, and require
-  the token effective read/execute or list/traverse access needed for use.
+- On Windows, executable, Node-entrypoint, and PATH-directory leaves use the
+  strict integrity policy: reject shell shims and reparse points, require the
+  expected final identity, accept only the token user, LocalSystem, Builtin
+  Administrators, or TrustedInstaller as owner, and reject every applicable
+  allow ACE that gives an untrusted SID write/add/delete/owner/DACL authority.
+  Their lexical and resolved ancestors use a separate replacement policy with
+  the same owner and reparse checks. It requires effective list/read-attributes/
+  traverse access and rejects untrusted `DELETE`, `FILE_DELETE_CHILD`,
+  `WRITE_DAC`, or `WRITE_OWNER`; permission to create unrelated siblings or
+  change ancestor metadata alone does not make an existing path replaceable.
 - A Windows config-home or service-credential leaf must instead be owned by the
   token user and pass both confidentiality and integrity policy. The config home
   must give the token effective list/traverse/read and child-maintenance access;
   the credential must give the token effective data/attribute read access. Any
   applicable allow ACE that gives an untrusted SID read/list/traverse/execute or
   mutation/delete/owner/DACL authority fails the leaf. Their ancestor directories
-  use only the executable/PATH integrity policy and trusted-owner set, plus the
-  token's required traverse access; ancestor confidentiality is not required.
+  use the replacement policy and trusted-owner set, plus the token's required
+  traverse access; ancestor confidentiality is not required.
   Null DACLs, unsupported descriptors or ACE forms, and unsupported token state
   fail closed for every object class. Generic rights are expanded, inherited
   ACEs that apply to the object are evaluated, and `INHERIT_ONLY_ACE` entries do
@@ -1058,8 +1068,9 @@ claim built-in TLS.
 - Windows-native path code only acquires handles and normalizes security
   descriptors, reparse state, final identity, token principals, and canonical
   path spelling. An untagged pure policy layer performs trusted-owner
-  classification, generic expansion, ACE applicability, integrity and
-  confidentiality masks, effective-token access, and case-key canonicalization,
+  classification, generic expansion, ACE applicability, strict-integrity,
+  ancestor-replacement, and confidentiality masks, effective-token access, and
+  case-key canonicalization,
   so synthetic ACL policy tests run on every development platform.
 - OS keychains and machine-managed configuration remain part of the trusted
   provider/OS boundary and are called out by `doctor`.
@@ -1548,8 +1559,11 @@ processes. Tests assert:
   temp directory, or scheduler permit;
 - a simulated CLI-internal retry loop is still stopped by cancellation and the
   execution deadline;
-- persistent request-directory deletion failure is quarantined within the bounded
-  cleanup deadline and cannot deadlock a provider permit;
+- persistent request-directory deletion failure is either quarantined or retained
+  under its verified cleanup-pending request name within the bounded cleanup
+  deadline and cannot deadlock a provider permit; registered janitor candidates
+  require an anchored `SameFile` identity match, while active or replaced
+  candidates fail closed;
 - invalid structured output is never returned with 2xx.
 
 ### 14.3 HTTP Black-box Tests
@@ -1575,7 +1589,8 @@ CI runs real helper executables on Linux, macOS, and Windows:
   helper is explicitly cleaned up by the test harness;
 - Windows suspended creation, Job assignment, nested Job environment, handle
   closure, and zero active-process assertion;
-- Windows locked request directory cleanup behavior.
+- Windows locked request rename failure, cleanup-pending retention, and later
+  janitor reclamation.
 
 Mock-only process tests do not satisfy the release gate.
 

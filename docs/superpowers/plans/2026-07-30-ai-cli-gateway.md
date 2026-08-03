@@ -1759,7 +1759,9 @@ Test:
 - request directory mode `0700`;
 - materialized file mode `0600`, relative-name-only, no symlink overwrite;
 - cleanup success;
-- locked-file cleanup entering quarantine without leaving the root;
+- locked-file cleanup remaining under a registered cleanup-pending request name
+  when Windows rejects the quarantine rename, then being reclaimed by janitor
+  only after an anchored `SameFile` identity match;
 - janitor removing stale `request-*` and `quarantine-*` names only;
 - `Close` releasing the lock.
 
@@ -1885,11 +1887,16 @@ create an unsafe temporary DACL and prove rejection.
 filename only, opens with `O_CREATE|O_EXCL|O_WRONLY`, forces `0600`, writes, syncs,
 and closes. It never follows a caller path.
 
-`Cleanup` first attempts removal within the passed context. On failure it renames
-to `quarantine-<id>` if possible and returns `RunError{Kind: ErrorCleanup}`.
-`Janitor` uses `os.ReadDir`, acts only on the two trusted prefixes after root lock
-ownership, calls `Lstat`, refuses symlinks, and removes entries within the cleanup
-deadline.
+`Cleanup` first attempts an atomic in-root rename to `quarantine-<id>`, then
+removes that closed tree within the passed context. A rejected rename transitions
+the record from active to cleanup-pending and returns
+`RunError{Kind: ErrorCleanup}`. `Janitor` uses `os.ReadDir`, acts only on the two
+trusted prefixes after root lock ownership, calls `Lstat`, refuses symlinks, and
+removes quarantined or cleanup-pending entries within the cleanup deadline. If a
+record exists, it anchored-opens the candidate once and requires `os.SameFile`
+with the retained request identity before deletion; active or mismatched
+candidates fail closed, while a matching cleanup-pending/quarantined candidate
+is removed and fully retired regardless of its current reserved prefix.
 
 - [ ] **Step 6: Implement the fake CLI fixture**
 
@@ -2229,7 +2236,8 @@ Use `//go:build windows` on the runner/unit test and
 - child and grandchild termination, including a successful root exit while its
   descendant keeps a pipe open;
 - timeout, cancellation, stdout/stderr overflow;
-- locked request directory enters bounded quarantine;
+- locked request directory either enters bounded quarantine or, when Windows
+  rejects the rename, remains cleanup-pending until a later janitor pass;
 - execution while the test runner is itself inside a Job.
 
 Add an injectable `windowsAPI` interface so the unit test proves call order:
@@ -3285,13 +3293,14 @@ Use temporary files and injected probes to cover:
   access;
 - portable synthetic Windows ACL-policy tests for trusted-owner classification,
   generic-right expansion, explicit and applicable inherited ACEs,
-  `INHERIT_ONLY_ACE` exclusion, integrity/confidentiality masks, ordered
+  `INHERIT_ONLY_ACE` exclusion, strict-integrity/ancestor-replacement/
+  confidentiality policy boundaries, ordered
   effective-token access, the rule that a deny cannot excuse an unsafe
   untrusted allow, and drive/UNC case canonicalization;
 - thin native Windows evidence-acquisition tests for security-descriptor,
   reparse, final-identity, token-principal, and final-path normalization, with
-  executable/PATH leaf and ancestor integrity distinct from config/credential
-  leaf confidentiality plus integrity;
+  strict executable/PATH leaf integrity and separate ancestor-replacement policy,
+  distinct from config/credential leaf confidentiality plus integrity;
 - SafePath empty/NUL/list-separator components, unsafe ancestors,
   broken/looped symlinks, identity duplicates, Windows case variants and
   drive/UNC forms, and absence of ambient PATH;
@@ -3580,14 +3589,20 @@ object-specific primitives in the build-tagged files:
   root/effective-UID-owned with no group/other write; symlink components require
   safe containing and fully resolved target chains; broken/looped resolution
   fails.
-- Windows executable/entrypoint/PATH leaf and every lexical/resolved ancestor:
-  apply the integrity policy. Reject `.cmd`/`.bat`, every reparse point, wrong
-  final type or changed identity, null/unsupported descriptors or ACE forms,
-  owners outside token user/LocalSystem/Builtin Administrators/TrustedInstaller,
-  and any applicable untrusted allow for write/append/add-child/delete/
-  `DELETE_CHILD`/`WRITE_DAC`/`WRITE_OWNER`. Require effective token
-  read-data/read-attributes/execute for an executable leaf and
-  list/read-attributes/traverse for a directory.
+- Windows executable/entrypoint/PATH leaves apply the strict integrity policy.
+  Reject `.cmd`/`.bat`, every reparse point, wrong final type or changed identity,
+  null/unsupported descriptors or ACE forms, owners outside token user/
+  LocalSystem/Builtin Administrators/TrustedInstaller, and any applicable
+  untrusted allow for write/append/add-child/delete/`DELETE_CHILD`/`WRITE_DAC`/
+  `WRITE_OWNER`. Require effective token read-data/read-attributes/execute for an
+  executable leaf and list/read-attributes/traverse for a PATH-directory leaf.
+- Windows executable/entrypoint/PATH lexical and resolved ancestors use a
+  separate replacement policy with the same trusted-owner and reparse checks.
+  Require effective list/read-attributes/traverse and reject untrusted `DELETE`,
+  `FILE_DELETE_CHILD`, `WRITE_DAC`, and `WRITE_OWNER`. Add-file,
+  add-subdirectory, write-EA, or write-attributes authority alone may create
+  unrelated siblings or alter ancestor metadata but cannot replace an existing
+  validated child.
 - Windows config-home leaf: require the process-token user as owner and both
   confidentiality and integrity policy. Require effective token
   list/read-attributes/traverse plus create/write/append/add-subdirectory and
@@ -3597,10 +3612,10 @@ object-specific primitives in the build-tagged files:
   both confidentiality and integrity policy. Require effective token read-data
   and read-attributes access; reject every applicable untrusted allow for
   read/list/traverse/execute or any integrity mutation right.
-- Windows config-home and credential ancestor directories use the integrity-only
-  executable/PATH policy, its trusted-owner set, and effective token traverse;
-  do not apply the leaf confidentiality rule to ancestors. LocalSystem and
-  Builtin Administrators remain trusted administrative principals.
+- Windows config-home and credential ancestor directories use the replacement
+  policy, its trusted-owner set, and effective token traverse; do not apply the
+  leaf confidentiality rule to ancestors. LocalSystem and Builtin Administrators
+  remain trusted administrative principals.
 
 Keep all policy decisions in untagged `path_acl_policy.go`. It consumes a closed
 portable snapshot of owner, object class, normalized token principals, ordered
@@ -3611,7 +3626,7 @@ skipping `INHERIT_ONLY_ACE`; computes required effective token access in DACL
 order, including deny-only group semantics; and separately rejects every unsafe
 untrusted allow even when another ACE denies the same right. Its synthetic tests
 run natively on every platform and exercise owner classification, generic
-expansion, applicable inherited/`INHERIT_ONLY` behavior, both policy masks,
+expansion, applicable inherited/`INHERIT_ONLY` behavior, all three policy masks,
 effective access, deny-versus-unsafe-allow, and case keys for drive and UNC
 variants. Build-tagged `path_windows.go` contains only native handle/token/API
 acquisition and normalization into that snapshot; it does not decide trust or

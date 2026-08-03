@@ -951,6 +951,105 @@ func TestCleanupFailureQuarantinesInsideRoot(t *testing.T) {
 	}
 }
 
+func TestCleanupRenameFailureLeavesRequestForJanitorRecovery(t *testing.T) {
+	root := openTestRoot(t)
+	rt := prepareTestRuntime(t, root)
+	conflict := filepath.Join(
+		rootPathForTest(root),
+		quarantinePrefix+rt.ID,
+	)
+	if err := os.Mkdir(conflict, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	err := root.Cleanup(context.Background(), rt)
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Kind != ErrorCleanup {
+		t.Fatalf("error=%T %v", err, err)
+	}
+	if _, err := os.Lstat(rt.Dir); err != nil {
+		t.Fatalf("failed request path was not retained: %v", err)
+	}
+	if err := os.Remove(conflict); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := root.Janitor(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(rt.Dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("janitor did not reclaim failed request: %v", err)
+	}
+	root.recordsMu.Lock()
+	remaining := len(root.records)
+	root.recordsMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("runtime records after janitor = %d, want 0", remaining)
+	}
+}
+
+func TestCleanupRenameFailureCanBeRetried(t *testing.T) {
+	root := openTestRoot(t)
+	rt := prepareTestRuntime(t, root)
+	conflict := filepath.Join(
+		rootPathForTest(root),
+		quarantinePrefix+rt.ID,
+	)
+	if err := os.Mkdir(conflict, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	err := root.Cleanup(context.Background(), rt)
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Kind != ErrorCleanup {
+		t.Fatalf("first cleanup error=%T %v", err, err)
+	}
+	if err := root.validateRuntimePath(rt); !errors.Is(err, errInvalidRuntime) {
+		t.Fatalf("cleanup-pending runtime validation error = %v, want invalid runtime", err)
+	}
+	if err := root.Materialize(rt, []FileSpec{{Name: "late", Data: []byte("refuse")}}); !errors.Is(err, errInvalidRuntime) {
+		t.Fatalf("cleanup-pending materialize error = %v, want invalid runtime", err)
+	}
+	if err := os.Remove(conflict); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := root.Cleanup(context.Background(), rt); err != nil {
+		t.Fatalf("retry cleanup: %v", err)
+	}
+	if _, err := os.Lstat(rt.Dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("request directory remains after retry: %v", err)
+	}
+	if _, err := os.Lstat(conflict); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("quarantine directory remains after retry: %v", err)
+	}
+	assertRuntimeRetired(t, root, rt)
+}
+
+func TestCleanupReportsHandleCloseFailureAfterRetiring(t *testing.T) {
+	root := openTestRoot(t)
+	rt := prepareTestRuntime(t, root)
+	if err := rt.record.requestDir.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := root.Cleanup(context.Background(), rt)
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Kind != ErrorCleanup {
+		t.Fatalf("cleanup error=%T %v, want cleanup error", err, err)
+	}
+	if runErr.Err == nil || !strings.Contains(
+		runErr.Err.Error(),
+		"close runtime handles",
+	) {
+		t.Fatalf("cleanup cause = %v, want handle close stage", runErr.Err)
+	}
+	if _, err := os.Lstat(rt.Dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("request directory remains: %v", err)
+	}
+	assertRuntimeRetired(t, root, rt)
+}
+
 func TestCleanupAndJanitorDoNotDeleteRequestMovedOutsideRoot(t *testing.T) {
 	root := openTestRoot(t)
 	rt := prepareTestRuntime(t, root)
@@ -975,6 +1074,157 @@ func TestCleanupAndJanitorDoNotDeleteRequestMovedOutsideRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertOutsideRuntimeUntouched(t, moved, sentinel)
+}
+
+func TestJanitorRefusesReplacementAtCleanupPendingRequestName(t *testing.T) {
+	root := openTestRoot(t)
+	rt := prepareTestRuntime(t, root)
+
+	moved := filepath.Join(t.TempDir(), "moved-request")
+	if err := os.Rename(rt.Dir, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(rt.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	replacementSentinel := filepath.Join(rt.Dir, "replacement-data")
+	if err := os.WriteFile(
+		replacementSentinel,
+		[]byte("must remain"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	err := root.Cleanup(context.Background(), rt)
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Kind != ErrorCleanup {
+		t.Fatalf("cleanup error=%T %v", err, err)
+	}
+	err = root.Janitor(context.Background())
+	if !errors.As(err, &runErr) || runErr.Kind != ErrorCleanup {
+		t.Fatalf("janitor error=%T %v", err, err)
+	}
+	got, err := os.ReadFile(replacementSentinel) //nolint:gosec // Exact test-owned path.
+	if err != nil {
+		t.Fatalf("replacement directory was deleted: %v", err)
+	}
+	if string(got) != "must remain" {
+		t.Fatalf("replacement sentinel changed: %q", got)
+	}
+	if _, err := os.Lstat(moved); err != nil {
+		t.Fatalf("moved original was affected: %v", err)
+	}
+}
+
+func TestJanitorRefusesActiveRuntimeMovedToQuarantineName(t *testing.T) {
+	t.Parallel()
+
+	root := openTestRoot(t)
+	runtime := prepareTestRuntime(t, root)
+	if err := root.Materialize(runtime, []FileSpec{{Name: "active-data", Data: []byte("must remain")}}); err != nil {
+		t.Fatalf("materialize runtime: %v", err)
+	}
+
+	quarantine := filepath.Join(rootPathForTest(root), quarantinePrefix+runtime.ID)
+	if err := os.Rename(runtime.Dir, quarantine); err != nil {
+		t.Fatalf("move active runtime to quarantine name: %v", err)
+	}
+
+	err := root.Janitor(context.Background())
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Kind != ErrorCleanup {
+		t.Fatalf("Janitor() error = %v, want cleanup error", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(quarantine, "active-data")) // #nosec G304 -- test path is rooted in a trusted temporary directory.
+	if err != nil {
+		t.Fatalf("read active runtime data after janitor: %v", err)
+	}
+	if got := string(data); got != "must remain" {
+		t.Fatalf("active runtime data = %q, want %q", got, "must remain")
+	}
+
+	runtime.record.mu.Lock()
+	defer runtime.record.mu.Unlock()
+	if runtime.record.state != runtimeActive {
+		t.Fatalf("runtime state = %v, want active", runtime.record.state)
+	}
+}
+
+func TestJanitorReclaimsCleanupPendingRuntimeAtQuarantineName(t *testing.T) {
+	root := openTestRoot(t)
+	rt := prepareTestRuntime(t, root)
+	quarantine := filepath.Join(
+		rootPathForTest(root),
+		quarantinePrefix+rt.ID,
+	)
+	if err := os.Mkdir(quarantine, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Cleanup(context.Background(), rt); err == nil {
+		t.Fatal("cleanup unexpectedly succeeded with a quarantine collision")
+	}
+	if err := os.Remove(quarantine); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(rt.Dir, quarantine); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := root.Janitor(context.Background()); err != nil {
+		t.Fatalf("janitor cleanup-pending runtime: %v", err)
+	}
+	if _, err := os.Lstat(quarantine); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("quarantine directory remains: %v", err)
+	}
+	assertRuntimeRetired(t, root, rt)
+}
+
+func TestJanitorReclaimsQuarantinedRuntimeAtRequestName(t *testing.T) {
+	root := openTestRoot(t)
+	rt := prepareTestRuntime(t, root)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := root.Cleanup(ctx, rt); err == nil {
+		t.Fatal("cleanup unexpectedly ignored cancellation")
+	}
+	quarantine := filepath.Join(
+		rootPathForTest(root),
+		quarantinePrefix+rt.ID,
+	)
+	if err := os.Rename(quarantine, rt.Dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := root.Janitor(context.Background()); err != nil {
+		t.Fatalf("janitor quarantined runtime at request name: %v", err)
+	}
+	if _, err := os.Lstat(rt.Dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("request directory remains: %v", err)
+	}
+	assertRuntimeRetired(t, root, rt)
+}
+
+func assertRuntimeRetired(t *testing.T, root *Root, rt Runtime) {
+	t.Helper()
+	rt.record.mu.Lock()
+	state := rt.record.state
+	hasOpenHandles := rt.record.requestRoot != nil || rt.record.requestDir != nil
+	rt.record.mu.Unlock()
+	if state != runtimeRemoved {
+		t.Fatalf("runtime state = %v, want removed", state)
+	}
+	if hasOpenHandles {
+		t.Fatal("retired runtime retained open directory handles")
+	}
+
+	root.recordsMu.Lock()
+	_, retained := root.records[rt.ID]
+	root.recordsMu.Unlock()
+	if retained {
+		t.Fatal("retired runtime remains in the root record map")
+	}
 }
 
 func assertOutsideRuntimeUntouched(t *testing.T, moved, sentinel string) {
@@ -1212,14 +1462,19 @@ func TestJanitorStaleQuarantineCannotRemoveActiveRequestState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := root.Janitor(context.Background()); err != nil {
-		t.Fatal(err)
+	err := root.Janitor(context.Background())
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Kind != ErrorCleanup {
+		t.Fatalf("janitor error=%T %v, want cleanup error", err, err)
 	}
-	if _, err := os.Lstat(stale); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("stale quarantine remains: %v", err)
+	if _, err := os.Lstat(stale); err != nil {
+		t.Fatalf("janitor removed an unverified quarantine collision: %v", err)
 	}
 	if _, err := os.Lstat(rt.Dir); err != nil {
 		t.Fatalf("janitor affected active request: %v", err)
+	}
+	if err := os.Remove(stale); err != nil {
+		t.Fatal(err)
 	}
 	if err := root.Cleanup(context.Background(), rt); err != nil {
 		t.Fatal(err)

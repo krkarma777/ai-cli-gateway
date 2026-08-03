@@ -17,24 +17,26 @@ const (
 
 func TestWindowsACLMasksAreExact(t *testing.T) {
 	want := map[string]aclMask{
-		"integrity forbidden":           0x000d0156,
-		"confidentiality and integrity": 0x000d01ff,
-		"executable required":           0x000000a1,
-		"PATH directory required":       0x000000a1,
-		"private ancestor required":     0x00000020,
-		"config home required":          0x000000e7,
-		"service credential required":   0x00000081,
-		"all supported concrete rights": 0x001f01ff,
+		"integrity forbidden":            0x000d0156,
+		"ancestor replacement forbidden": 0x000d0040,
+		"confidentiality and integrity":  0x000d01ff,
+		"executable required":            0x000000a1,
+		"PATH directory required":        0x000000a1,
+		"private ancestor required":      0x00000020,
+		"config home required":           0x000000e7,
+		"service credential required":    0x00000081,
+		"all supported concrete rights":  0x001f01ff,
 	}
 	got := map[string]aclMask{
-		"integrity forbidden":           aclIntegrityForbidden,
-		"confidentiality and integrity": aclConfidentialityForbidden,
-		"executable required":           aclExecutableRequired,
-		"PATH directory required":       aclPathDirectoryRequired,
-		"private ancestor required":     aclPrivateAncestorRequired,
-		"config home required":          aclConfigHomeRequired,
-		"service credential required":   aclCredentialRequired,
-		"all supported concrete rights": aclConcreteRights,
+		"integrity forbidden":            aclIntegrityForbidden,
+		"ancestor replacement forbidden": aclAncestorForbidden,
+		"confidentiality and integrity":  aclConfidentialityForbidden,
+		"executable required":            aclExecutableRequired,
+		"PATH directory required":        aclPathDirectoryRequired,
+		"private ancestor required":      aclPrivateAncestorRequired,
+		"config home required":           aclConfigHomeRequired,
+		"service credential required":    aclCredentialRequired,
+		"all supported concrete rights":  aclConcreteRights,
 	}
 	for name, wantMask := range want {
 		if got[name] != wantMask {
@@ -50,11 +52,11 @@ func TestWindowsPathKindPolicySelectionIsPortableAndClosed(t *testing.T) {
 		ancestor     windowsACLPolicy
 		wantSelected bool
 	}{
-		{pathKindExecutable, windowsExecutablePolicy, windowsPathDirectoryPolicy, true},
-		{pathKindEntrypoint, windowsExecutablePolicy, windowsPathDirectoryPolicy, true},
+		{pathKindExecutable, windowsExecutablePolicy, windowsPathAncestorPolicy, true},
+		{pathKindEntrypoint, windowsExecutablePolicy, windowsPathAncestorPolicy, true},
 		{pathKindConfigHome, windowsConfigHomePolicy, windowsPrivateAncestorPolicy, true},
 		{pathKindCredential, windowsCredentialPolicy, windowsPrivateAncestorPolicy, true},
-		{pathKindSafeDirectory, windowsPathDirectoryPolicy, windowsPathDirectoryPolicy, true},
+		{pathKindSafeDirectory, windowsPathDirectoryPolicy, windowsPathAncestorPolicy, true},
 		{pathKind(255), windowsACLPolicyUnknown, windowsACLPolicyUnknown, false},
 	} {
 		leaf, ancestor, selected := windowsPoliciesForPathKind(test.kind)
@@ -71,6 +73,101 @@ func TestWindowsPathKindPolicySelectionIsPortableAndClosed(t *testing.T) {
 				test.wantSelected,
 			)
 		}
+	}
+}
+
+func TestEvaluateWindowsACLAllowsConstructiveAncestorGrants(t *testing.T) {
+	constructive := aclWriteData | aclAppendData | aclWriteEA | aclWriteAttributes
+	for _, test := range []struct {
+		name     string
+		policy   windowsACLPolicy
+		snapshot windowsACLSnapshot
+	}{
+		{
+			"path",
+			windowsPathAncestorPolicy,
+			safeWindowsSnapshot(windowsPathAncestorPolicy),
+		},
+		{
+			"private",
+			windowsPrivateAncestorPolicy,
+			safeWindowsSnapshot(windowsPrivateAncestorPolicy),
+		},
+	} {
+		for _, grant := range []aclMask{constructive, aclGenericWrite} {
+			t.Run(fmt.Sprintf("%s_%08x", test.name, grant), func(t *testing.T) {
+				snapshot := test.snapshot
+				snapshot.ACEs = append(
+					[]aclACE{allowACE(testUntrustedSID, grant)},
+					snapshot.ACEs...,
+				)
+				assertSafeWindowsACL(t, snapshot, test.policy)
+			})
+		}
+	}
+}
+
+func TestEvaluateWindowsACLRejectsAncestorReplacementAuthority(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		policy   windowsACLPolicy
+		snapshot windowsACLSnapshot
+	}{
+		{
+			"path",
+			windowsPathAncestorPolicy,
+			safeWindowsSnapshot(windowsPathAncestorPolicy),
+		},
+		{
+			"private",
+			windowsPrivateAncestorPolicy,
+			safeWindowsSnapshot(windowsPrivateAncestorPolicy),
+		},
+	} {
+		for _, dangerous := range []aclMask{
+			aclDeleteChild,
+			aclDelete,
+			aclWriteDAC,
+			aclWriteOwner,
+			aclGenericAll,
+		} {
+			t.Run(fmt.Sprintf("%s_%08x", test.name, dangerous), func(t *testing.T) {
+				snapshot := test.snapshot
+				snapshot.ACEs = append(
+					[]aclACE{allowACE(testUntrustedSID, dangerous)},
+					snapshot.ACEs...,
+				)
+				assertUnsafeWindowsACL(t, snapshot, test.policy)
+			})
+		}
+	}
+}
+
+func TestWindowsPathAncestorPolicyPreservesDirectoryAccessRequirements(t *testing.T) {
+	required, object, ok := windowsPolicyRequired(windowsPathAncestorPolicy)
+	if !ok || required != 0x000000a1 || object != aclObjectDirectory {
+		t.Fatalf(
+			"path ancestor requirement=(%#08x, %d, %t), want (%#08x, %d, true)",
+			required,
+			object,
+			ok,
+			aclMask(0x000000a1),
+			aclObjectDirectory,
+		)
+	}
+}
+
+func TestEvaluateWindowsACLKeepsPathDirectoryLeafStrict(t *testing.T) {
+	constructive := aclWriteData | aclAppendData | aclWriteEA | aclWriteAttributes
+	for _, grant := range []aclMask{constructive, aclGenericWrite} {
+		t.Run(fmt.Sprintf("%08x", grant), func(t *testing.T) {
+			snapshot := safeWindowsSnapshot(windowsPathDirectoryPolicy)
+			snapshot.ACEs = append(
+				[]aclACE{allowACE(testUntrustedSID, grant)},
+				snapshot.ACEs...,
+			)
+			assertUnsafeWindowsACL(t, snapshot, windowsPathDirectoryPolicy)
+		})
 	}
 }
 
@@ -207,6 +304,7 @@ func TestEvaluateWindowsACLAppliesExactOwnerPolicy(t *testing.T) {
 		windowsExecutablePolicy,
 		windowsPathDirectoryPolicy,
 		windowsPrivateAncestorPolicy,
+		windowsPathAncestorPolicy,
 	}
 	for _, policy := range integrityPolicies {
 		for _, owner := range []string{
@@ -495,6 +593,7 @@ func TestEvaluateWindowsACLRequiresEveryPolicyAccessBit(t *testing.T) {
 	}{
 		{name: "executable", policy: windowsExecutablePolicy, required: aclExecutableRequired},
 		{name: "PATH directory", policy: windowsPathDirectoryPolicy, required: aclPathDirectoryRequired},
+		{name: "PATH ancestor", policy: windowsPathAncestorPolicy, required: aclPathDirectoryRequired},
 		{name: "private ancestor", policy: windowsPrivateAncestorPolicy, required: aclPrivateAncestorRequired},
 		{name: "config home", policy: windowsConfigHomePolicy, required: aclConfigHomeRequired},
 		{name: "credential", policy: windowsCredentialPolicy, required: aclCredentialRequired},
