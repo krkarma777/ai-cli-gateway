@@ -2229,8 +2229,8 @@ Use `//go:build windows` on the runner/unit test and
 - simultaneous launches inherit only their own three child stdio handles, never
   another launch's pipe or unrelated planted inheritable handles;
 - a normal zero-exit child produces stdout/stderr EOF without waiting for cleanup,
-  and after a same-concurrency fixed-point warm-up, 100 repeated/concurrent runs
-  do not grow the process handle count;
+  and 100 repeated/concurrent runs per terminal scenario leave every gateway-owned
+  native handle, attribute list, completion owner, and runtime record retired;
 - `.cmd`/`.bat` executable rejection;
 - child starts suspended, is assigned before resume, then exits;
 - Job active process count reaches zero;
@@ -2313,9 +2313,10 @@ Never fall back to `exec.Command` or a shell on Windows. The handle-list test
 launches two providers concurrently with distinct pipes and a planted inheritable
 event, closes each writer independently, and proves neither process inherited
 the other handles. Unit tests inject close calls and assert each acquired handle
-closes exactly once. Integration tests use `GetProcessHandleCount` before and
-after 100 successful, failed-start, timeout, and cancellation cycles and require
-return to the quiescent baseline.
+closes exactly once. Integration tests track the gateway-owned native handles and
+attribute lists across 100 successful, failed-start, timeout, cancellation, and
+output-overflow cycles, then require exact retirement together with zero pending
+completion owners, runtime records, and active supervisor executions.
 
 - [ ] **Step 5: Implement cancellation and zero-active verification**
 

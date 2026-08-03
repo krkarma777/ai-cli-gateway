@@ -1035,7 +1035,36 @@ func TestWindowsSupervisorLockedRuntimeCleanupIsBounded(t *testing.T) {
 	}
 }
 
-func TestWindowsSupervisorHandleCountReturnsToQuiescentBaseline(
+func TestWindowsCancellationStressRejectsCoordinationFailure(t *testing.T) {
+	executeErr := &RunError{Kind: ErrorCanceled, Err: context.Canceled}
+	if got := windowsCancellationStressError(executeErr, nil); got != executeErr {
+		t.Fatalf("successful coordination error=%v want=%v", got, executeErr)
+	}
+
+	coordinationErr := errors.New("cancellation launch was not resumed")
+	got := windowsCancellationStressError(executeErr, coordinationErr)
+	var runErr *RunError
+	if errors.As(got, &runErr) {
+		t.Fatalf("coordination failure masqueraded as RunError: %v", got)
+	}
+	if !errors.Is(got, coordinationErr) ||
+		!strings.Contains(got.Error(), executeErr.Error()) {
+		t.Fatalf("coordination failure lost context: %v", got)
+	}
+}
+
+func windowsCancellationStressError(executeErr, coordinationErr error) error {
+	if coordinationErr == nil {
+		return executeErr
+	}
+	return fmt.Errorf(
+		"coordinate post-resume cancellation: %w (execute error: %v)",
+		coordinationErr,
+		executeErr,
+	)
+}
+
+func TestWindowsSupervisorClosesOwnedNativeResourcesAcrossStressScenarios(
 	t *testing.T,
 ) {
 	executable := testutil.BuildFakeCLI(t)
@@ -1056,6 +1085,18 @@ func TestWindowsSupervisorHandleCountReturnsToQuiescentBaseline(
 	overflowLimits := windowsSupervisorTestLimits()
 	overflowLimits.StdoutBytes = 1024
 	overflowSupervisor := newWindowsSupervisorForTest(t, overflowLimits)
+	// Process-wide handle counts include persistent Go runtime M/thread event
+	// handles. Track only resources returned to the gateway's native API so the
+	// stress assertion measures ownership instead of scheduler high-water.
+	resources := newTrackedNativeWindowsAPI()
+	for _, candidate := range []*Supervisor{
+		supervisor,
+		timeoutSupervisor,
+		cancellationSupervisor,
+		overflowSupervisor,
+	} {
+		installTrackedNativeWindowsAPI(candidate, resources)
+	}
 
 	const iterations = 100
 	const batchSize = 8
@@ -1068,12 +1109,14 @@ func TestWindowsSupervisorHandleCountReturnsToQuiescentBaseline(
 	}
 
 	scenarios := []struct {
-		name     string
-		run      func(int) (Result, error)
-		validate func(*testing.T, Result, error)
+		name       string
+		supervisor *Supervisor
+		run        func(int) (Result, error)
+		validate   func(*testing.T, Result, error)
 	}{
 		{
-			name: "success",
+			name:       "success",
+			supervisor: supervisor,
 			run: func(index int) (Result, error) {
 				requestRuntime, err := supervisor.Prepare(
 					fmt.Sprintf("winok%04d", index),
@@ -1101,7 +1144,8 @@ func TestWindowsSupervisorHandleCountReturnsToQuiescentBaseline(
 			},
 		},
 		{
-			name: "start-failure",
+			name:       "start-failure",
+			supervisor: supervisor,
 			run: func(index int) (Result, error) {
 				requestRuntime, err := supervisor.Prepare(
 					fmt.Sprintf("winfail%03d", index),
@@ -1131,7 +1175,8 @@ func TestWindowsSupervisorHandleCountReturnsToQuiescentBaseline(
 			},
 		},
 		{
-			name: "timeout",
+			name:       "timeout",
+			supervisor: timeoutSupervisor,
 			run: func(index int) (Result, error) {
 				requestRuntime, err := timeoutSupervisor.Prepare(
 					fmt.Sprintf("wintmo%04d", index),
@@ -1159,7 +1204,8 @@ func TestWindowsSupervisorHandleCountReturnsToQuiescentBaseline(
 			},
 		},
 		{
-			name: "exit-after-overflow",
+			name:       "exit-after-overflow",
+			supervisor: overflowSupervisor,
 			run: func(index int) (Result, error) {
 				requestRuntime, err := overflowSupervisor.Prepare(
 					fmt.Sprintf("winovr%04d", index),
@@ -1190,7 +1236,8 @@ func TestWindowsSupervisorHandleCountReturnsToQuiescentBaseline(
 			},
 		},
 		{
-			name: "post-resume-cancel",
+			name:       "post-resume-cancel",
+			supervisor: cancellationSupervisor,
 			run: func(index int) (Result, error) {
 				requestRuntime, err := cancellationSupervisor.Prepare(
 					fmt.Sprintf("wincan%04d", index),
@@ -1235,7 +1282,10 @@ func TestWindowsSupervisorHandleCountReturnsToQuiescentBaseline(
 					},
 				)
 				cancel()
-				return result, errors.Join(executeErr, <-resumeResult)
+				return result, windowsCancellationStressError(
+					executeErr,
+					<-resumeResult,
+				)
 			},
 			validate: func(t *testing.T, result Result, err error) {
 				t.Helper()
@@ -1249,18 +1299,12 @@ func TestWindowsSupervisorHandleCountReturnsToQuiescentBaseline(
 
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
-			baseline := warmWindowsHandleStressBaseline(
-				t,
-				iterations,
-				batchSize,
-				scenario.run,
-				scenario.validate,
-			)
 			runWindowsHandleStressBatches(
 				t,
 				iterations,
 				batchSize,
-				baseline,
+				scenario.supervisor,
+				resources,
 				scenario.run,
 				scenario.validate,
 			)
@@ -1274,59 +1318,291 @@ type windowsStressResult struct {
 	err    error
 }
 
-func warmWindowsHandleStressBaseline(
-	t *testing.T,
-	start int,
-	batchSize int,
-	run func(int) (Result, error),
-	validate func(*testing.T, Result, error),
-) uint32 {
-	t.Helper()
-	const maxWarmupBatches = 4
-	var previous uint32
-	for batch := range maxWarmupBatches {
-		batchStart := start + batch*batchSize
-		runWindowsHandleStressBatch(
-			t,
-			batchStart,
-			batchStart+batchSize,
-			run,
-			validate,
-		)
-		current := stableWindowsProcessHandleCount(t)
-		if batch != 0 && current == previous {
-			return current
-		}
-		previous = current
+type trackedNativeWindowsAPI struct {
+	windowsAPI
+
+	mu                          sync.Mutex
+	handlesAcquired             uint64
+	handleCloseAttempts         uint64
+	handlesClosed               uint64
+	attributeListsCreated       uint64
+	attributeListDeleteAttempts uint64
+	attributeListsDeleted       uint64
+	violations                  []string
+}
+
+type trackedWindowsResourceSnapshot struct {
+	handlesAcquired             uint64
+	handleCloseAttempts         uint64
+	handlesClosed               uint64
+	attributeListsCreated       uint64
+	attributeListDeleteAttempts uint64
+	attributeListsDeleted       uint64
+	violations                  []string
+}
+
+type trackedWindowsHandleList struct {
+	windowsHandleList
+	tracker *trackedNativeWindowsAPI
+
+	mu      sync.Mutex
+	deleted bool
+}
+
+func newTrackedNativeWindowsAPI() *trackedNativeWindowsAPI {
+	return &trackedNativeWindowsAPI{
+		windowsAPI: nativeWindowsAPI{},
 	}
-	t.Fatalf(
-		"process handle count did not reach a fixed point after %d warmup batches",
-		maxWarmupBatches,
+}
+
+func installTrackedNativeWindowsAPI(
+	supervisor *Supervisor,
+	resources *trackedNativeWindowsAPI,
+) {
+	supervisor.runner = func(
+		ctx context.Context,
+		root *Root,
+		requestRuntime Runtime,
+		spec CommandSpec,
+		limits Limits,
+	) (runnerResult, error) {
+		return runWindowsOwned(
+			ctx,
+			root,
+			requestRuntime,
+			spec,
+			limits,
+			supervisor.completions,
+			supervisor.hooks,
+			resources,
+		)
+	}
+}
+
+func (a *trackedNativeWindowsAPI) createPipe() (
+	windows.Handle,
+	windows.Handle,
+	error,
+) {
+	readHandle, writeHandle, err := a.windowsAPI.createPipe()
+	a.trackHandles(readHandle, writeHandle)
+	return readHandle, writeHandle, err
+}
+
+func (a *trackedNativeWindowsAPI) newHandleList(
+	handles []windows.Handle,
+) (windowsHandleList, error) {
+	list, err := a.windowsAPI.newHandleList(handles)
+	if err != nil || list == nil {
+		return list, err
+	}
+	a.trackAttributeList()
+	return &trackedWindowsHandleList{
+		windowsHandleList: list,
+		tracker:           a,
+	}, nil
+}
+
+func (a *trackedNativeWindowsAPI) createProcess(
+	request windowsCreateProcessRequest,
+) (windows.ProcessInformation, error) {
+	information, err := a.windowsAPI.createProcess(request)
+	a.trackHandles(
+		information.Process,
+		information.Thread,
 	)
-	return 0
+	return information, err
+}
+
+func (a *trackedNativeWindowsAPI) createJobObject() (windows.Handle, error) {
+	handle, err := a.windowsAPI.createJobObject()
+	a.trackHandles(handle)
+	return handle, err
+}
+
+func (a *trackedNativeWindowsAPI) openCurrentThread() (
+	windows.Handle,
+	error,
+) {
+	handle, err := a.windowsAPI.openCurrentThread()
+	a.trackHandles(handle)
+	return handle, err
+}
+
+func (a *trackedNativeWindowsAPI) closeHandle(handle windows.Handle) error {
+	a.mu.Lock()
+	a.handleCloseAttempts++
+	a.mu.Unlock()
+
+	closeErr := a.windowsAPI.closeHandle(handle)
+	if closeErr == nil {
+		a.mu.Lock()
+		a.handlesClosed++
+		a.mu.Unlock()
+	}
+	return closeErr
+}
+
+func (a *trackedNativeWindowsAPI) trackHandles(handles ...windows.Handle) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, handle := range handles {
+		if handle == 0 || handle == windows.InvalidHandle {
+			continue
+		}
+		a.handlesAcquired++
+	}
+}
+
+func (a *trackedNativeWindowsAPI) trackAttributeList() {
+	a.mu.Lock()
+	a.attributeListsCreated++
+	a.mu.Unlock()
+}
+
+func (a *trackedNativeWindowsAPI) trackAttributeListDeleteAttempt() {
+	a.mu.Lock()
+	a.attributeListDeleteAttempts++
+	a.mu.Unlock()
+}
+
+func (a *trackedNativeWindowsAPI) trackAttributeListDeleted() {
+	a.mu.Lock()
+	a.attributeListsDeleted++
+	a.mu.Unlock()
+}
+
+func (a *trackedNativeWindowsAPI) recordViolation(message string) {
+	a.mu.Lock()
+	a.violations = append(a.violations, message)
+	a.mu.Unlock()
+}
+
+func (a *trackedNativeWindowsAPI) snapshot() trackedWindowsResourceSnapshot {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return trackedWindowsResourceSnapshot{
+		handlesAcquired:             a.handlesAcquired,
+		handleCloseAttempts:         a.handleCloseAttempts,
+		handlesClosed:               a.handlesClosed,
+		attributeListsCreated:       a.attributeListsCreated,
+		attributeListDeleteAttempts: a.attributeListDeleteAttempts,
+		attributeListsDeleted:       a.attributeListsDeleted,
+		violations:                  append([]string(nil), a.violations...),
+	}
+}
+
+func (a *trackedNativeWindowsAPI) assertBatchQuiescent(
+	t *testing.T,
+	before trackedWindowsResourceSnapshot,
+	start int,
+	end int,
+) {
+	t.Helper()
+	after := a.snapshot()
+	handlesAcquired := after.handlesAcquired - before.handlesAcquired
+	handleCloseAttempts := after.handleCloseAttempts - before.handleCloseAttempts
+	handlesClosed := after.handlesClosed - before.handlesClosed
+	listsCreated := after.attributeListsCreated - before.attributeListsCreated
+	listDeleteAttempts := after.attributeListDeleteAttempts -
+		before.attributeListDeleteAttempts
+	listsDeleted := after.attributeListsDeleted - before.attributeListsDeleted
+	requestCount := uint64(end - start)
+	if before.handlesAcquired != before.handleCloseAttempts ||
+		before.handlesAcquired != before.handlesClosed ||
+		before.attributeListsCreated != before.attributeListDeleteAttempts ||
+		before.attributeListsCreated != before.attributeListsDeleted ||
+		handlesAcquired < 6*requestCount ||
+		handleCloseAttempts != handlesAcquired ||
+		handlesClosed != handlesAcquired || listsCreated != requestCount ||
+		listDeleteAttempts != listsCreated || listsDeleted != listsCreated ||
+		after.handlesAcquired != after.handleCloseAttempts ||
+		after.handlesAcquired != after.handlesClosed ||
+		after.attributeListsCreated != after.attributeListDeleteAttempts ||
+		after.attributeListsCreated != after.attributeListsDeleted ||
+		len(after.violations) != 0 {
+		t.Fatalf(
+			"batch [%d,%d) native resource accounting before=%+v after=%+v",
+			start,
+			end,
+			before,
+			after,
+		)
+	}
+}
+
+func (l *trackedWindowsHandleList) list() *windows.ProcThreadAttributeList {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.deleted {
+		l.tracker.recordViolation("use of deleted attribute list")
+		return nil
+	}
+	return l.windowsHandleList.list()
+}
+
+func (l *trackedWindowsHandleList) delete() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tracker.trackAttributeListDeleteAttempt()
+	if l.deleted {
+		l.tracker.recordViolation("double delete of attribute list")
+		return
+	}
+	l.deleted = true
+	l.windowsHandleList.delete()
+	l.tracker.trackAttributeListDeleted()
+}
+
+func assertWindowsSupervisorQuiescent(
+	t *testing.T,
+	supervisor *Supervisor,
+	start int,
+	end int,
+) {
+	t.Helper()
+	if supervisor == nil || supervisor.root == nil ||
+		supervisor.lifecycle == nil || supervisor.completions == nil {
+		t.Fatalf("batch [%d,%d) supervisor ownership is incomplete", start, end)
+	}
+	deferredOwners := supervisor.completions.count()
+	supervisor.root.recordsMu.Lock()
+	runtimeRecords := len(supervisor.root.records)
+	supervisor.root.recordsMu.Unlock()
+	supervisor.lifecycle.mu.Lock()
+	activeExecutions := supervisor.lifecycle.active
+	shuttingDown := supervisor.lifecycle.shuttingDown
+	supervisor.lifecycle.mu.Unlock()
+	if deferredOwners != 0 || runtimeRecords != 0 ||
+		activeExecutions != 0 || shuttingDown {
+		t.Fatalf(
+			"batch [%d,%d) supervisor quiescence deferred=%d records=%d active=%d shutting_down=%t",
+			start,
+			end,
+			deferredOwners,
+			runtimeRecords,
+			activeExecutions,
+			shuttingDown,
+		)
+	}
 }
 
 func runWindowsHandleStressBatches(
 	t *testing.T,
 	iterations int,
 	batchSize int,
-	baseline uint32,
+	supervisor *Supervisor,
+	resources *trackedNativeWindowsAPI,
 	run func(int) (Result, error),
 	validate func(*testing.T, Result, error),
 ) {
 	t.Helper()
 	for start := 0; start < iterations; start += batchSize {
 		end := min(start+batchSize, iterations)
+		before := resources.snapshot()
 		runWindowsHandleStressBatch(t, start, end, run, validate)
-		if got := stableWindowsProcessHandleCount(t); got != baseline {
-			t.Fatalf(
-				"batch [%d,%d) process handle count=%d want baseline=%d",
-				start,
-				end,
-				got,
-				baseline,
-			)
-		}
+		resources.assertBatchQuiescent(t, before, start, end)
+		assertWindowsSupervisorQuiescent(t, supervisor, start, end)
 	}
 }
 

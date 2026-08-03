@@ -292,12 +292,15 @@ func TestTransportMalformedChunkReadErrorClosesWithoutPostHandlerDrain(t *testin
 		t.Fatal(readErr)
 	}
 	if response.StatusCode != http.StatusBadRequest || !response.Close ||
-		!bytes.Contains(body, []byte(`"code":"invalid_json"`)) ||
-		!strings.Contains(observed.responsePrefix(), "\r\nConnection: close\r\n") {
-		t.Fatalf("status=%d close=%v wire=%q body=%q",
-			response.StatusCode, response.Close, observed.responsePrefix(), body)
+		!bytes.Contains(body, []byte(`"code":"invalid_json"`)) {
+		t.Fatalf("status=%d close=%v body=%q",
+			response.StatusCode, response.Close, body)
 	}
 	awaitSignal(t, observed.closed, "malformed-chunk connection did not close")
+	if !strings.Contains(observed.responsePrefix(), "\r\nConnection: close\r\n") {
+		t.Fatalf("wire response did not contain Connection: close: %q",
+			observed.responsePrefix())
+	}
 	if observed.activeReads.Load() != 0 {
 		t.Fatalf("active server reads=%d", observed.activeReads.Load())
 	}
