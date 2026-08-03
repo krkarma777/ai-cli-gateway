@@ -2229,7 +2229,8 @@ Use `//go:build windows` on the runner/unit test and
 - simultaneous launches inherit only their own three child stdio handles, never
   another launch's pipe or unrelated planted inheritable handles;
 - a normal zero-exit child produces stdout/stderr EOF without waiting for cleanup,
-  and 100 repeated/concurrent runs return the process handle count to baseline;
+  and after a same-concurrency fixed-point warm-up, 100 repeated/concurrent runs
+  do not grow the process handle count;
 - `.cmd`/`.bat` executable rejection;
 - child starts suspended, is assigned before resume, then exits;
 - Job active process count reaches zero;

@@ -631,9 +631,16 @@ func TestWindowsSupervisorConcurrentLaunchesInheritOnlyOwnStdio(
 		index int
 		view  windowsLaunchView
 	}
+	type indexedProbe struct {
+		index int
+		err   error
+	}
 	views := make(chan indexedView, 2)
+	probes := make(chan indexedProbe, 2)
 	release := make(chan struct{})
+	releaseResumes := make(chan struct{})
 	var releaseOnce sync.Once
+	var releaseResumesOnce sync.Once
 	releaseLaunches := func() {
 		releaseOnce.Do(func() {
 			close(release)
@@ -644,6 +651,45 @@ func TestWindowsSupervisorConcurrentLaunchesInheritOnlyOwnStdio(
 	var captured [2]windowsLaunchView
 	var retained [2][3]windows.Handle
 	var retainedPlanted windows.Handle
+	var retainedCloseOnce sync.Once
+	var retainedCloseErr error
+	closeRetained := func() error {
+		retainedCloseOnce.Do(func() {
+			var closeErrors []error
+			for launchIndex := range retained {
+				for streamIndex, handle := range retained[launchIndex] {
+					if handle == 0 {
+						continue
+					}
+					closeErrors = append(
+						closeErrors,
+						windows.CloseHandle(handle),
+					)
+					retained[launchIndex][streamIndex] = 0
+				}
+			}
+			if retainedPlanted != 0 {
+				closeErrors = append(
+					closeErrors,
+					windows.CloseHandle(retainedPlanted),
+				)
+				retainedPlanted = 0
+			}
+			retainedCloseErr = errors.Join(closeErrors...)
+		})
+		return retainedCloseErr
+	}
+	t.Cleanup(func() {
+		if err := closeRetained(); err != nil {
+			t.Errorf("close retained identity handles: %v", err)
+		}
+	})
+	releaseProbedLaunches := func() {
+		releaseResumesOnce.Do(func() {
+			close(releaseResumes)
+		})
+	}
+	t.Cleanup(releaseProbedLaunches)
 	for index := range supervisors {
 		index := index
 		supervisors[index].hooks.beforeCreateProcess = func(
@@ -655,7 +701,11 @@ func TestWindowsSupervisorConcurrentLaunchesInheritOnlyOwnStdio(
 		}
 		supervisors[index].hooks.beforeResume = func(
 			view windowsLaunchView,
-		) error {
+		) (probeErr error) {
+			defer func() {
+				probes <- indexedProbe{index: index, err: probeErr}
+				<-releaseResumes
+			}()
 			peer := 1 - index
 			candidates := [4]windows.Handle{
 				captured[peer].childHandles[0],
@@ -738,6 +788,29 @@ func TestWindowsSupervisorConcurrentLaunchesInheritOnlyOwnStdio(
 	}
 	retainedPlanted = duplicateWindowsHandleForIdentity(t, planted)
 	releaseLaunches()
+	var probeErrors []error
+	for range supervisors {
+		select {
+		case item := <-probes:
+			if item.err != nil {
+				probeErrors = append(probeErrors, fmt.Errorf(
+					"launch %d handle probe: %w",
+					item.index,
+					item.err,
+				))
+			}
+		case <-time.After(windowsSchedulingWaitBudget):
+			t.Fatal("concurrent launch did not finish handle probes")
+		}
+	}
+	closeErr := closeRetained()
+	releaseProbedLaunches()
+	if closeErr != nil {
+		t.Fatalf("close retained identity handles: %v", closeErr)
+	}
+	if err := errors.Join(probeErrors...); err != nil {
+		t.Fatal(err)
+	}
 	for range supervisors {
 		select {
 		case item := <-results:
@@ -777,11 +850,6 @@ func duplicateWindowsHandleForIdentity(
 	); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := windows.CloseHandle(duplicate); err != nil {
-			t.Errorf("close retained identity handle: %v", err)
-		}
-	})
 	return duplicate
 }
 
@@ -989,21 +1057,6 @@ func TestWindowsSupervisorHandleCountReturnsToQuiescentBaseline(
 	overflowLimits.StdoutBytes = 1024
 	overflowSupervisor := newWindowsSupervisorForTest(t, overflowLimits)
 
-	warmRuntime := prepareWindowsSupervisorRuntime(t, supervisor, "winwarmup")
-	if _, err := executeWindowsIntegration(
-		t,
-		supervisor,
-		warmRuntime,
-		CommandSpec{
-			Executable: executable,
-			Args:       []string{"--mode=text"},
-			Dir:        warmRuntime.Dir,
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
-	baseline := stableWindowsProcessHandleCount(t)
-
 	const iterations = 100
 	const batchSize = 8
 	var cancellationStarts sync.Map
@@ -1196,6 +1249,13 @@ func TestWindowsSupervisorHandleCountReturnsToQuiescentBaseline(
 
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
+			baseline := warmWindowsHandleStressBaseline(
+				t,
+				iterations,
+				batchSize,
+				scenario.run,
+				scenario.validate,
+			)
 			runWindowsHandleStressBatches(
 				t,
 				iterations,
@@ -1214,6 +1274,38 @@ type windowsStressResult struct {
 	err    error
 }
 
+func warmWindowsHandleStressBaseline(
+	t *testing.T,
+	start int,
+	batchSize int,
+	run func(int) (Result, error),
+	validate func(*testing.T, Result, error),
+) uint32 {
+	t.Helper()
+	const maxWarmupBatches = 4
+	var previous uint32
+	for batch := range maxWarmupBatches {
+		batchStart := start + batch*batchSize
+		runWindowsHandleStressBatch(
+			t,
+			batchStart,
+			batchStart+batchSize,
+			run,
+			validate,
+		)
+		current := stableWindowsProcessHandleCount(t)
+		if batch != 0 && current == previous {
+			return current
+		}
+		previous = current
+	}
+	t.Fatalf(
+		"process handle count did not reach a fixed point after %d warmup batches",
+		maxWarmupBatches,
+	)
+	return 0
+}
+
 func runWindowsHandleStressBatches(
 	t *testing.T,
 	iterations int,
@@ -1225,33 +1317,7 @@ func runWindowsHandleStressBatches(
 	t.Helper()
 	for start := 0; start < iterations; start += batchSize {
 		end := min(start+batchSize, iterations)
-		outcomes := make(chan windowsStressResult, end-start)
-		for index := start; index < end; index++ {
-			index := index
-			go func() {
-				result, err := run(index)
-				outcomes <- windowsStressResult{
-					index:  index,
-					result: result,
-					err:    err,
-				}
-			}()
-		}
-		for range end - start {
-			outcome := <-outcomes
-			if outcome.err != nil {
-				var runErr *RunError
-				if !errors.As(outcome.err, &runErr) {
-					t.Errorf(
-						"iteration %d unexpected error=%v",
-						outcome.index,
-						outcome.err,
-					)
-					continue
-				}
-			}
-			validate(t, outcome.result, outcome.err)
-		}
+		runWindowsHandleStressBatch(t, start, end, run, validate)
 		if got := stableWindowsProcessHandleCount(t); got != baseline {
 			t.Fatalf(
 				"batch [%d,%d) process handle count=%d want baseline=%d",
@@ -1261,6 +1327,43 @@ func runWindowsHandleStressBatches(
 				baseline,
 			)
 		}
+	}
+}
+
+func runWindowsHandleStressBatch(
+	t *testing.T,
+	start int,
+	end int,
+	run func(int) (Result, error),
+	validate func(*testing.T, Result, error),
+) {
+	t.Helper()
+	outcomes := make(chan windowsStressResult, end-start)
+	for index := start; index < end; index++ {
+		index := index
+		go func() {
+			result, err := run(index)
+			outcomes <- windowsStressResult{
+				index:  index,
+				result: result,
+				err:    err,
+			}
+		}()
+	}
+	for range end - start {
+		outcome := <-outcomes
+		if outcome.err != nil {
+			var runErr *RunError
+			if !errors.As(outcome.err, &runErr) {
+				t.Errorf(
+					"iteration %d unexpected error=%v",
+					outcome.index,
+					outcome.err,
+				)
+				continue
+			}
+		}
+		validate(t, outcome.result, outcome.err)
 	}
 }
 
@@ -1286,6 +1389,41 @@ func executeWindowsStressRequestWithin(
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return supervisor.Execute(ctx, requestRuntime, spec)
+}
+
+func TestWindowsNestedJobWorkerEnvironmentIsMinimal(t *testing.T) {
+	t.Setenv("UNRELATED_TEST_SECRET", "must-not-propagate")
+	entries := windowsNestedJobWorkerEnvironment()
+	allowed := map[string]bool{
+		"SPAWNGATE_WINDOWS_NESTED_JOB": false,
+		"SYSTEMROOT":                   false,
+		"TEMP":                         false,
+		"TMP":                          false,
+	}
+	values := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		separator := strings.IndexByte(entry, '=')
+		if separator <= 0 {
+			t.Fatalf("malformed nested worker environment entry %q", entry)
+		}
+		name := strings.ToUpper(entry[:separator])
+		if _, ok := allowed[name]; !ok {
+			t.Fatalf("unexpected nested worker environment name %q", name)
+		}
+		allowed[name] = true
+		values[name] = entry[separator+1:]
+	}
+	if got := values["SPAWNGATE_WINDOWS_NESTED_JOB"]; got != "worker" {
+		t.Fatalf("nested worker marker = %q, want worker", got)
+	}
+	for _, name := range []string{"TEMP", "TMP"} {
+		if got := values[name]; got != os.TempDir() {
+			t.Fatalf("nested worker %s = %q, want %q", name, got, os.TempDir())
+		}
+	}
+	if _, err := windowsEnvironmentBlock(entries); err != nil {
+		t.Fatalf("encode nested worker environment: %v", err)
+	}
 }
 
 func TestWindowsSupervisorExecutesInsideNestedJob(t *testing.T) {
@@ -1354,9 +1492,7 @@ func runWindowsNestedJobController(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := append([]string{}, os.Environ()...)
-	env = append(env, "SPAWNGATE_WINDOWS_NESTED_JOB=worker")
-	block, err := windowsEnvironmentBlock(deduplicateWindowsTestEnv(env))
+	block, err := windowsEnvironmentBlock(windowsNestedJobWorkerEnvironment())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1408,26 +1544,17 @@ func runWindowsNestedJobController(t *testing.T) {
 	}
 }
 
-func deduplicateWindowsTestEnv(entries []string) []string {
-	seen := make(map[string]struct{}, len(entries))
-	filtered := make([]string, 0, len(entries))
-	for i := len(entries) - 1; i >= 0; i-- {
-		entry := entries[i]
-		separator := strings.IndexByte(entry, '=')
-		if separator <= 0 {
-			continue
-		}
-		key := strings.ToUpper(entry[:separator])
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		filtered = append(filtered, entry)
+func windowsNestedJobWorkerEnvironment() []string {
+	temp := os.TempDir()
+	entries := []string{
+		"SPAWNGATE_WINDOWS_NESTED_JOB=worker",
+		"TEMP=" + temp,
+		"TMP=" + temp,
 	}
-	for left, right := 0, len(filtered)-1; left < right; left, right = left+1, right-1 {
-		filtered[left], filtered[right] = filtered[right], filtered[left]
+	if value, ok := os.LookupEnv("SystemRoot"); ok {
+		entries = append(entries, "SystemRoot="+value)
 	}
-	return filtered
+	return entries
 }
 
 func newWindowsSupervisorForTest(
