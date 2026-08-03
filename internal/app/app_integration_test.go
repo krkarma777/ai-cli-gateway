@@ -379,17 +379,14 @@ func TestCommandSignalsExitCleanlyWithFakeCodexAndNoDescendants(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			gatewayExecutable := testutil.BuildGateway(t)
-			base := t.TempDir()
+			base := testutil.TrustedTempDir(t)
 			// The command fixture parent intentionally requires owner-only access.
 			//nolint:gosec
 			if err := os.Chmod(base, 0o700); err != nil {
 				t.Fatalf("chmod command fixture: %v", err)
 			}
 			fakeCodex := buildCommandProbeFake(t, base)
-			configHome := filepath.Join(base, "codex-home")
-			if err := os.Mkdir(configHome, 0o700); err != nil {
-				t.Fatalf("create command config home: %v", err)
-			}
+			configHome := testutil.TrustedTempDir(t)
 			runtimeRoot := filepath.Join(base, "PLANTED_COMMAND_PATH_SECRET-runtime")
 			var listenConfig net.ListenConfig
 			reserved, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
@@ -518,7 +515,7 @@ func (listener *appIntegrationRecordingListener) Close() error {
 
 func newAppIntegrationHarness(t *testing.T, apiKeyEnv string) *appIntegrationHarness {
 	t.Helper()
-	base := t.TempDir()
+	base := testutil.TrustedTempDir(t)
 	// The integration fixture parent intentionally requires owner-only access.
 	//nolint:gosec
 	if err := os.Chmod(base, 0o700); err != nil {
@@ -530,14 +527,8 @@ func newAppIntegrationHarness(t *testing.T, apiKeyEnv string) *appIntegrationHar
 		t.Fatalf("pre-bind application listener: %v", err)
 	}
 	executable := testutil.BuildFakeCLI(t)
-	configHome := filepath.Join(base, "codex-home")
-	if err := os.Mkdir(configHome, 0o700); err != nil {
-		t.Fatalf("create integration config home: %v", err)
-	}
-	geminiHome := filepath.Join(base, "gemini-home")
-	if err := os.Mkdir(geminiHome, 0o700); err != nil {
-		t.Fatalf("create Gemini integration config home: %v", err)
-	}
+	configHome := testutil.TrustedTempDir(t)
+	geminiHome := testutil.TrustedTempDir(t)
 	runtimeRoot := filepath.Join(base, "runtime")
 	apiKeyLine := ""
 	if apiKeyEnv != "" {
@@ -600,7 +591,7 @@ created = 12
 		strconv.Quote(runtimeRoot),
 		strconv.Quote(executable),
 		strconv.Quote(configHome),
-		strconv.Quote(filepath.Join(base, "missing-claude")),
+		strconv.Quote(base),
 		strconv.Quote(filepath.Join(base, "missing-claude-home")),
 		strconv.Quote(executable),
 		strconv.Quote(geminiHome),
@@ -808,7 +799,7 @@ func assertAppRuntimeNamespacesEmpty(t *testing.T, root string) {
 
 func rewriteAppIntegrationConfig(t *testing.T, path, oldValue, newValue string) {
 	t.Helper()
-	// path is returned by this test's private t.TempDir fixture.
+	// path is returned by this test's private trusted fixture.
 	//nolint:gosec
 	payload, err := os.ReadFile(path)
 	if err != nil {
@@ -823,7 +814,7 @@ func rewriteAppIntegrationConfig(t *testing.T, path, oldValue, newValue string) 
 	if bytes.Equal(updated, payload) {
 		t.Fatal("integration config value was not replaced")
 	}
-	// path is returned by this test's private t.TempDir fixture.
+	// path is returned by this test's private trusted fixture.
 	//nolint:gosec
 	if err := os.WriteFile(path, updated, 0o600); err != nil {
 		t.Fatalf("rewrite integration config: %v", err)

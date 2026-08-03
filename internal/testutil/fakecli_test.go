@@ -236,7 +236,7 @@ func TestBuildFakeCLIProducesTemporaryExecutable(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal(err)
 	}
-	// path is the exact executable just built below this test's TempDir.
+	// path is the exact executable just built in this test's trusted fixture.
 	//nolint:gosec,noctx
 	out, err := exec.Command(path, "--mode=text").CombinedOutput()
 	if err != nil {
@@ -261,7 +261,7 @@ func TestBuiltFakeCLIBlockingModesRemainAliveUntilKilled(t *testing.T) {
 	path := BuildFakeCLI(t)
 	for _, mode := range []string{"hang", "child-hold", "session-escape"} {
 		t.Run(mode, func(t *testing.T) {
-			// path is the exact executable just built below this test's TempDir.
+			// path is the exact executable just built in this test's trusted fixture.
 			//nolint:gosec,noctx
 			cmd := exec.Command(path, "--mode="+mode)
 			if err := cmd.Start(); err != nil {

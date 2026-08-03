@@ -21,3 +21,7 @@ func lockRepositoryScanFile(file *os.File) error {
 func unlockRepositoryScanFile(file *os.File) error {
 	return unix.Flock(int(file.Fd()), unix.LOCK_UN)
 }
+
+func sameRepositoryVolumeAlias(_, _ string) bool {
+	return false
+}

@@ -1875,9 +1875,10 @@ Use `//go:build !windows` on `root_unix.go` and
 Unix ownership requires `Stat_t.Uid == uint32(os.Geteuid())` and
 the exact mode above. Windows obtains owner/DACL data with the
 `x/sys/windows` security APIs, requires the owner SID to equal the process token
-user, and rejects write/delete/owner/ACL rights granted by an allow ACE to any SID
-other than that user, LocalSystem, or Builtin Administrators. Windows tests create
-an unsafe temporary DACL and prove rejection.
+user or Builtin Administrators (the platform default owner for an administrator
+token), and rejects write/delete/owner/ACL rights granted by an allow ACE to any
+SID other than that user, LocalSystem, or Builtin Administrators. Windows tests
+create an unsafe temporary DACL and prove rejection.
 
 `Prepare` accepts only IDs matching `^[A-Za-z0-9_-]{8,80}$`, then uses
 `os.Mkdir` with a `request-` prefix and `0700`. `Materialize` accepts a base

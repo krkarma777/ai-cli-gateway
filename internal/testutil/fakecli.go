@@ -22,13 +22,13 @@ const expectedModuleDeclaration = "module github.com/krkarma777/ai-cli-gateway"
 
 var errRepositoryRootUnavailable = errors.New("repository root unavailable")
 
-// BuildFakeCLI builds the deterministic fake provider CLI below t.TempDir.
+// BuildFakeCLI builds the deterministic fake provider CLI in a trusted fixture.
 func BuildFakeCLI(t testing.TB) string {
 	t.Helper()
 	return buildTemporaryCommand(t, "./internal/testcli/cmd/fake-ai-cli", "fake-ai-cli")
 }
 
-// BuildGateway builds the gateway command below t.TempDir.
+// BuildGateway builds the gateway command in a trusted fixture.
 func BuildGateway(t testing.TB) string {
 	t.Helper()
 	return buildTemporaryCommand(t, "./cmd/ai-cli-gateway", "ai-cli-gateway")
@@ -40,7 +40,7 @@ func buildTemporaryCommand(t testing.TB, packagePath, name string) string {
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	output := filepath.Join(t.TempDir(), name)
+	output := filepath.Join(TrustedTempDir(t), name)
 	var combined boundedBuffer
 	err := runWithBuildDeadline(
 		context.Background(),

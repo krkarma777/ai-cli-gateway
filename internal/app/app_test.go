@@ -22,6 +22,7 @@ import (
 	"github.com/krkarma777/ai-cli-gateway/internal/httpapi"
 	"github.com/krkarma777/ai-cli-gateway/internal/process"
 	"github.com/krkarma777/ai-cli-gateway/internal/provider"
+	"github.com/krkarma777/ai-cli-gateway/internal/testutil"
 )
 
 func TestServeLoadsConfigurationBeforeValidatingDependencies(t *testing.T) {
@@ -1494,7 +1495,7 @@ type readyAppFixture struct {
 
 func newReadyAppFixture(t *testing.T) *readyAppFixture {
 	t.Helper()
-	base := t.TempDir()
+	base := testutil.TrustedTempDir(t)
 	// The fixture parent intentionally requires owner-only directory access.
 	//nolint:gosec
 	if err := os.Chmod(base, 0o700); err != nil {
@@ -1503,13 +1504,8 @@ func newReadyAppFixture(t *testing.T) *readyAppFixture {
 	executable := filepath.Join(base, "fake-gateway")
 	// The owner-only fixture must also be executable for path diagnosis.
 	//nolint:gosec
-	if err := os.WriteFile(executable, []byte("fixture"), 0o700); err != nil {
-		t.Fatalf("write executable fixture: %v", err)
-	}
-	configHome := filepath.Join(base, "codex-home")
-	if err := os.Mkdir(configHome, 0o700); err != nil {
-		t.Fatalf("create config home: %v", err)
-	}
+	testutil.WriteTrustedFile(t, executable, []byte("fixture"), 0o700)
+	configHome := testutil.TrustedTempDir(t)
 	runtimeRoot := filepath.Join(base, "runtime")
 	document := fmt.Sprintf(`[server]
 listen = "127.0.0.1:18080"

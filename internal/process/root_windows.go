@@ -276,8 +276,15 @@ func validateSecurityDescriptor(sd *windows.SECURITY_DESCRIPTOR) error {
 	if err != nil {
 		return fmt.Errorf("read process token user: %w", err)
 	}
-	if owner == nil || !owner.Equals(user.User.Sid) {
-		return errors.New("path is not owned by process token user")
+	administrators, err := windows.CreateWellKnownSid(
+		windows.WinBuiltinAdministratorsSid,
+	)
+	if err != nil {
+		return err
+	}
+	if owner == nil ||
+		(!owner.Equals(user.User.Sid) && !owner.Equals(administrators)) {
+		return errors.New("path is not owned by a trusted runtime principal")
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil {
@@ -290,13 +297,6 @@ func validateSecurityDescriptor(sd *windows.SECURITY_DESCRIPTOR) error {
 	if err != nil {
 		return err
 	}
-	administrators, err := windows.CreateWellKnownSid(
-		windows.WinBuiltinAdministratorsSid,
-	)
-	if err != nil {
-		return err
-	}
-
 	dangerous := windows.ACCESS_MASK(
 		windows.GENERIC_WRITE|
 			windows.GENERIC_ALL|
@@ -339,7 +339,7 @@ func secureAttributes() (*windows.SecurityAttributes, *windows.SECURITY_DESCRIPT
 		return nil, nil, err
 	}
 	sddl := fmt.Sprintf(
-		"D:P(A;OICI;FA;;;%s)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+		"O:%[1]sD:P(A;OICI;FA;;;%[1]s)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
 		user.User.Sid.String(),
 	)
 	sd, err := windows.SecurityDescriptorFromString(sddl)

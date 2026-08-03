@@ -11,6 +11,7 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/krkarma777/ai-cli-gateway/internal/testutil"
 	"golang.org/x/sys/windows"
 )
 
@@ -316,6 +317,36 @@ func TestAcquireWindowsPathSnapshotPreservesNativeReparseEvidence(t *testing.T) 
 			}
 			if err := evaluateWindowsACL(snapshot, test.policy); err == nil {
 				t.Fatal("native reparse evidence was accepted")
+			}
+		})
+	}
+}
+
+func TestTrustedWindowsFixturesPassCompleteDoctorPathPolicy(t *testing.T) {
+	executableDirectory := testutil.TrustedTempDir(t)
+	executable := filepath.Join(executableDirectory, "provider.exe")
+	testutil.WriteTrustedFile(t, executable, []byte("fixture"), 0o700)
+	configHome := testutil.TrustedTempDir(t)
+	credential := filepath.Join(configHome, "service.json")
+	testutil.WriteTrustedFile(t, credential, []byte("fixture"), 0o600)
+
+	for name, validate := range map[string]func() pathDisposition{
+		"executable": func() pathDisposition {
+			_, disposition := validateExecutablePath(executable)
+			return disposition
+		},
+		"config home": func() pathDisposition {
+			_, disposition := validateConfigHomePath(configHome)
+			return disposition
+		},
+		"credential": func() pathDisposition {
+			_, disposition := validateCredentialPath(credential)
+			return disposition
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if disposition := validate(); disposition != pathSafe {
+				t.Fatalf("trusted fixture disposition = %v, want pathSafe", disposition)
 			}
 		})
 	}

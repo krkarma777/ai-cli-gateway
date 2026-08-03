@@ -173,7 +173,7 @@ func TestWindowsAncestorDescriptorRejectsUntrustedMutationGrants(
 	} {
 		t.Run(fmt.Sprintf("%08x", access), func(t *testing.T) {
 			sd, err := windows.SecurityDescriptorFromString(fmt.Sprintf(
-				"O:%[1]sD:P(A;;FA;;;%[1]s)(A;;0x%[2]08x;;;WD)",
+				"O:%[1]sD:P(A;;FA;;;%[1]s)(A;;0x%08[2]x;;;WD)",
 				user.User.Sid.String(),
 				access,
 			))
@@ -201,6 +201,58 @@ func TestWindowsAncestorDescriptorAcceptsUntrustedReadOnlyGrant(t *testing.T) {
 	}
 	if err := validateWindowsAncestorDescriptor(sd); err != nil {
 		t.Fatalf("read-only ancestor grant was rejected: %v", err)
+	}
+}
+
+func TestValidateSecurityDescriptorAcceptsBuiltinAdministratorsOwner(t *testing.T) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sd, err := windows.SecurityDescriptorFromString(fmt.Sprintf(
+		"O:BAD:P(A;;FA;;;%s)(A;;FA;;;SY)(A;;FA;;;BA)",
+		user.User.Sid.String(),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSecurityDescriptor(sd); err != nil {
+		t.Fatalf("Builtin Administrators runtime owner was rejected: %v", err)
+	}
+}
+
+func TestValidateSecurityDescriptorRejectsUntrustedOwner(t *testing.T) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sd, err := windows.SecurityDescriptorFromString(fmt.Sprintf(
+		"O:WDD:P(A;;FA;;;%s)(A;;FA;;;SY)(A;;FA;;;BA)",
+		user.User.Sid.String(),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSecurityDescriptor(sd); err == nil {
+		t.Fatal("untrusted runtime owner was accepted")
+	}
+}
+
+func TestSecureAttributesPinsCreatedRootOwnerToTokenUser(t *testing.T) {
+	_, sd, err := secureAttributes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner == nil || !owner.Equals(user.User.Sid) {
+		t.Fatalf("secure root owner = %v, want process token user", owner)
 	}
 }
 

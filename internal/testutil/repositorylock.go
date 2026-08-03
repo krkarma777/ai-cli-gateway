@@ -67,7 +67,17 @@ func repositoryScanLockPath(root string) (string, error) {
 }
 
 func pathIsWithin(root, candidate string) (bool, error) {
-	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(candidate))
+	cleanRoot := filepath.Clean(root)
+	cleanCandidate := filepath.Clean(candidate)
+	rootVolume := filepath.VolumeName(cleanRoot)
+	candidateVolume := filepath.VolumeName(cleanCandidate)
+	if !strings.EqualFold(rootVolume, candidateVolume) {
+		if sameRepositoryVolumeAlias(rootVolume, candidateVolume) {
+			return false, errors.New("repository and lock volumes use ambiguous aliases")
+		}
+		return false, nil
+	}
+	relative, err := filepath.Rel(cleanRoot, cleanCandidate)
 	if err != nil {
 		return false, fmt.Errorf("compare repository and lock paths: %w", err)
 	}

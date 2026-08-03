@@ -4,6 +4,7 @@ package testutil
 
 import (
 	"os"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -29,4 +30,28 @@ func unlockRepositoryScanFile(file *os.File) error {
 		0,
 		&overlapped,
 	)
+}
+
+func sameRepositoryVolumeAlias(first, second string) bool {
+	return strings.EqualFold(
+		normalizeRepositoryWindowsVolume(first),
+		normalizeRepositoryWindowsVolume(second),
+	)
+}
+
+func normalizeRepositoryWindowsVolume(volume string) string {
+	normalized := strings.ReplaceAll(volume, "/", `\`)
+	lower := strings.ToLower(normalized)
+	const (
+		extendedPrefix    = `\\?\`
+		extendedUNCPrefix = `\\?\unc\`
+	)
+	switch {
+	case strings.HasPrefix(lower, extendedUNCPrefix):
+		return `\\` + normalized[len(extendedUNCPrefix):]
+	case strings.HasPrefix(lower, extendedPrefix):
+		return normalized[len(extendedPrefix):]
+	default:
+		return normalized
+	}
 }

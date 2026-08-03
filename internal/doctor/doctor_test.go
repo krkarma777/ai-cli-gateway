@@ -415,6 +415,9 @@ func TestRunValidatesGatewayBeforeAdapterOrRootCalls(t *testing.T) {
 func TestRunRejectsUnsafeGatewayShapesBeforeAdapterCalls(t *testing.T) {
 	directory := doctorTestPrivateDirectory(t)
 	nonExecutable := filepath.Join(directory, "non-executable")
+	if runtime.GOOS == "windows" {
+		nonExecutable += ".cmd"
+	}
 	if err := os.WriteFile(nonExecutable, []byte("test"), 0o600); err != nil {
 		t.Fatalf("write non-executable fixture: %v", err)
 	}
@@ -1582,9 +1585,12 @@ func TestRunGeminiFreezesOnlyResolvedSafeServiceCredentialPath(t *testing.T) {
 	}
 	cfg.Providers["gemini"] = providerConfig
 	credentialPath := filepath.Join(doctorTestPrivateDirectory(t), "service.json")
-	if err := os.WriteFile(credentialPath, []byte("not-read-by-doctor"), 0o600); err != nil {
-		t.Fatalf("write credential fixture: %v", err)
-	}
+	testutil.WriteTrustedFile(
+		t,
+		credentialPath,
+		[]byte("not-read-by-doctor"),
+		0o600,
+	)
 	validatedCredential, disposition := validateCredentialPath(credentialPath)
 	if disposition != pathSafe {
 		t.Fatalf("credential fixture disposition = %v", disposition)
@@ -1949,9 +1955,7 @@ func doctorTestExecutable(t *testing.T) string {
 	directory := doctorTestPrivateDirectory(t)
 	path := filepath.Join(directory, "trusted-executable")
 	//nolint:gosec // Executable fixture needs an execute bit.
-	if err := os.WriteFile(path, []byte("test"), 0o700); err != nil {
-		t.Fatalf("write executable: %v", err)
-	}
+	testutil.WriteTrustedFile(t, path, []byte("test"), 0o700)
 	if _, err := resolveGatewayExecutable(path); err != nil {
 		t.Fatalf("test executable failed doctor policy: %v", err)
 	}
@@ -1960,7 +1964,7 @@ func doctorTestExecutable(t *testing.T) string {
 
 func doctorTestPrivateDirectory(t *testing.T) string {
 	t.Helper()
-	directory := t.TempDir()
+	directory := testutil.TrustedTempDir(t)
 	//nolint:gosec // This is the required private directory mode, not a file mode.
 	if err := os.Chmod(directory, 0o700); err != nil {
 		t.Fatalf("chmod private directory: %v", err)

@@ -611,6 +611,13 @@ func TestPublicPolicyContributionSecurityAndIgnoreBoundary(t *testing.T) {
 	}
 }
 
+func TestGitAttributesPinsTextCheckoutToLF(t *testing.T) {
+	attributes := string(readRepositoryFile(t, ".gitattributes"))
+	if attributes != "* text=auto eol=lf\n" {
+		t.Fatalf(".gitattributes = %q, want one repository-wide LF rule", attributes)
+	}
+}
+
 func markdownProseParagraphs(document string) []string {
 	paragraphs := make([]string, 0)
 	current := make([]string, 0)

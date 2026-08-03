@@ -1203,8 +1203,9 @@ startup configuration, never request data.
 
 If `runtime.root` is omitted, the gateway resolves a user-specific
 `ai-cli-gateway` directory below the platform temporary directory. The resolved
-root must still be absolute, owned by the gateway OS user, non-symlinked, and
-locked exclusively.
+root must still be absolute, owned by the gateway OS user (or, on Windows, by
+the already-trusted Builtin Administrators principal, commonly the default owner
+for an administrator token), non-symlinked, and locked exclusively.
 
 Alias rules:
 
