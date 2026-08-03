@@ -1,0 +1,93 @@
+# Unix/systemd deployment example. Replace only these generic absolute paths
+# with paths owned and prepared for the dedicated gateway service identity.
+#
+# Provider compatibility guards are compiled in and cannot be overridden by configuration:
+# - Codex >=0.146.0,<0.147.0
+# - Claude Code >=2.1.208,<2.2.0
+# - Gemini CLI >=0.53.0,<0.54.0
+#
+# The optional gateway Bearer key is read from the environment variable named
+# by api_key_env; this file names AI_CLI_GATEWAY_API_KEY but assigns no value.
+
+[server]
+listen = "127.0.0.1:8080"
+api_key_env = "AI_CLI_GATEWAY_API_KEY"
+http_body_bytes = 1048576
+input_bytes = 524288
+instructions_bytes = 262144
+schema_bytes = 32768
+handler_limit = 128
+body_reader_limit = 32
+max_header_bytes = 16384
+read_header_timeout = "5s"
+body_read_timeout = "15s"
+idle_timeout = "60s"
+shutdown_timeout = "15s"
+
+[runtime]
+root = "/run/ai-cli-gateway"
+term_grace = "2s"
+cleanup_timeout = "5s"
+stdout_bytes = 2097152
+stderr_bytes = 262144
+final_bytes = 1048576
+
+# Authentication is prepared beforehand in this dedicated config home. Codex
+# receives no credential environment value from the gateway.
+[providers.codex]
+executable = "/opt/ai-cli-gateway/bin/codex"
+prefix_args = []
+config_home = "/var/lib/ai-cli-gateway/codex-home"
+credential_env = []
+concurrency = 1
+queue_size = 32
+queue_bytes = 16777216
+queue_timeout = "30s"
+execution_timeout = "300s"
+
+# Authentication is prepared beforehand in this dedicated config home. An
+# operator may explicitly select ANTHROPIC_API_KEY instead, but no value belongs
+# in this file and the example relays no Claude credential environment value.
+[providers.claude]
+executable = "/opt/ai-cli-gateway/bin/claude"
+prefix_args = []
+config_home = "/var/lib/ai-cli-gateway/claude-home"
+credential_env = []
+concurrency = 1
+queue_size = 32
+queue_bytes = 16777216
+queue_timeout = "30s"
+execution_timeout = "300s"
+
+# Naming GEMINI_API_KEY selects one locally accepted credential shape only. It
+# does not prove upstream availability, billing tier, quota, entitlement, or key validity.
+# AI CLI Gateway does not restrict or infer the upstream tier; provider execution
+# remains authoritative. Cached interactive OAuth is not supported.
+[providers.gemini]
+executable = "/opt/ai-cli-gateway/bin/gemini"
+prefix_args = []
+config_home = "/var/lib/ai-cli-gateway/gemini-home"
+credential_env = ["GEMINI_API_KEY"]
+concurrency = 1
+queue_size = 32
+queue_bytes = 16777216
+queue_timeout = "30s"
+execution_timeout = "300s"
+
+[[models]]
+id = "codex-local"
+provider = "codex"
+provider_model = "configured-provider-model"
+created = 0
+
+[[models]]
+id = "claude-local"
+provider = "claude"
+provider_model = "configured-provider-model"
+created = 0
+
+[[models]]
+id = "gemini-local"
+provider = "gemini"
+provider_model = "configured-provider-model"
+created = 0

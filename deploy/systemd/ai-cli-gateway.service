@@ -1,0 +1,44 @@
+# Install /etc/ai-cli-gateway/ai-cli-gateway.env as a root-owned 0600 file.
+# systemd reads it before dropping privileges; never place secret values in this
+# unit, ExecStart, or config.toml. Prepare provider profiles under the state
+# directory as the dedicated service identity.
+#
+# The referenced configuration must bind 127.0.0.1:8080 so the HTTP listener is
+# loopback-only. Provider CLIs still need outbound network access.
+#
+# Node-based CLIs may require executable memory. MemoryDenyWriteExecute is
+# deliberately not enabled without provider-specific validation.
+
+[Unit]
+Description=AI CLI Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai-cli-gateway
+Group=ai-cli-gateway
+EnvironmentFile=/etc/ai-cli-gateway/ai-cli-gateway.env
+ExecStart=/opt/ai-cli-gateway/bin/ai-cli-gateway serve --config /etc/ai-cli-gateway/config.toml
+RuntimeDirectory=ai-cli-gateway
+RuntimeDirectoryMode=0700
+StateDirectory=ai-cli-gateway
+StateDirectoryMode=0700
+ReadWritePaths=/run/ai-cli-gateway /var/lib/ai-cli-gateway
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0
+KillMode=control-group
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+
+[Install]
+WantedBy=multi-user.target

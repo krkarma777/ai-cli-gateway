@@ -1,0 +1,139 @@
+name: CI
+
+# checkout, setup-go, and golangci-lint-action use Node 24. Self-hosted
+# installations therefore require actions/runner 2.327.1 or later.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: Check formatting
+        shell: bash
+        run: |
+          unformatted_files="$(gofmt -l .)"
+          test -z "$unformatted_files"
+      - name: Vet
+        run: go vet ./...
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: Verify modules
+        run: go mod verify
+      - name: Unit tests
+        run: go test -count=1 ./...
+      - name: Race tests
+        run: go test -race -count=1 ./...
+      - name: Fake CLI integration tests
+        run: go test -tags=integration -count=1 ./...
+      - name: Trimmed-path tests
+        run: go test -trimpath -count=1 ./...
+      - name: Trimmed-path helper tests
+        run: GOFLAGS=-trimpath go test -count=1 ./internal/testutil ./internal/testcli
+      - name: Compile opt-in live contracts without running them
+        run: go test -tags=live -run '^$' ./internal/provider/...
+      - name: Build
+        env:
+          CGO_ENABLED: 0
+        run: go build -trimpath -o "${RUNNER_TEMP}/ai-cli-gateway" ./cmd/ai-cli-gateway
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: Unit tests
+        run: go test -count=1 ./...
+      - name: Race tests
+        run: go test -race -count=1 ./...
+      - name: Fake CLI integration tests
+        run: go test -tags=integration -count=1 ./...
+      - name: Trimmed-path tests
+        run: go test -trimpath -count=1 ./...
+      - name: Build
+        env:
+          CGO_ENABLED: 0
+        run: go build -trimpath -o "${RUNNER_TEMP}/ai-cli-gateway" ./cmd/ai-cli-gateway
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: Unit tests
+        run: go test -count=1 ./...
+      - name: Native Job Object, ACL, reparse, cancellation, and cleanup tests
+        run: go test -tags=integration -count=1 -v ./...
+      - name: Trimmed-path tests
+        run: go test -trimpath -count=1 ./...
+      - name: Build
+        env:
+          CGO_ENABLED: 0
+        run: go build -trimpath -o "$env:RUNNER_TEMP/ai-cli-gateway.exe" ./cmd/ai-cli-gateway
+
+  cross-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            extension: ""
+          - goos: linux
+            goarch: arm64
+            extension: ""
+          - goos: darwin
+            goarch: amd64
+            extension: ""
+          - goos: darwin
+            goarch: arm64
+            extension: ""
+          - goos: windows
+            goarch: amd64
+            extension: .exe
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: Cross-build
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: >-
+          go build -trimpath
+          -o "${RUNNER_TEMP}/ai-cli-gateway-${GOOS}-${GOARCH}${{ matrix.extension }}"
+          ./cmd/ai-cli-gateway

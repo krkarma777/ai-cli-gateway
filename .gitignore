@@ -1,0 +1,24 @@
+# Local build and test output
+/ai-cli-gateway
+/fake-ai-cli
+*.test
+*.test.exe
+*.exe
+*.prof
+coverage*.out
+
+# Local configuration and environment files
+/config.toml
+.env
+.env.*
+!.env.example
+
+# Provider profiles and known authentication databases
+/.codex/
+/.claude/
+/.gemini/
+auth.json
+.credentials.json
+credentials.json
+oauth_creds.json
+google_accounts.json
