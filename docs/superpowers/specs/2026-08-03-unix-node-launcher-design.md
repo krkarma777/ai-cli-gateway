@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-03
 
-**Status:** Approved for planning
+**Status:** Approved for implementation
 
 ## Summary
 
@@ -23,8 +23,8 @@ installed Node directory.
 The configured Codex executable is:
 
 ```text
-/Users/krkarma777/.npm-global/bin/codex
-  -> ../lib/node_modules/@openai/codex/bin/codex.js
+<configured-codex-path>
+  -> <npm-package-root>/bin/codex.js
 ```
 
 The resolved script starts with:
@@ -228,9 +228,9 @@ this change does not expand the HTTP API contract.
 
 ## Acceptance Criteria
 
-- The user's existing executable setting for
-  `/Users/krkarma777/.npm-global/bin/codex` passes the version probe when the
-  validated `/usr/local/bin/node` is discoverable at startup.
+- An existing absolute executable setting obtained from `command -v codex`
+  passes the version probe when a validated Node executable is discoverable at
+  startup.
 - Child provider execution never receives the ambient `PATH`.
 - Unsafe or unavailable Node resolution prevents probing and server startup.
 - Native Unix providers and Windows providers retain current behavior.
