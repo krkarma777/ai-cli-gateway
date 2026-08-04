@@ -495,29 +495,68 @@ func TestWindowsExecutableUnavailableMarkerHasLaunchProvenance(
 	}
 }
 
-func TestStartWindowsProcessCleansPartialCreateProcessHandles(t *testing.T) {
+func TestStartWindowsProcessIgnoresProcessInformationOnCreateFailure(t *testing.T) {
 	t.Parallel()
 
 	api := newFakeWindowsAPI()
-	api.failAt = "CreateProcess"
-	api.returnPartialProcessOnFailure = true
+	const (
+		untrustedProcess = windows.Handle(20)
+		untrustedThread  = windows.Handle(21)
+	)
+	api.failedCreateProcessInfoOutput = windows.ProcessInformation{
+		Process:   untrustedProcess,
+		Thread:    untrustedThread,
+		ProcessId: 100,
+		ThreadId:  101,
+	}
+	createErr := errors.New("injected CreateProcess failure")
+	api.injectFailure("CreateProcess", createErr)
 	process, err := startWindowsProcess(
 		api,
 		windowsStartRequestForTest(t),
 		time.Second,
 		newCompletionOwner(),
 	)
-	if err == nil || process != nil {
-		t.Fatalf("start result=%v err=%v", process, err)
+	if process != nil {
+		t.Fatalf("unexpected process: %+v", process)
 	}
-	if api.terminateProcessCalls != 1 || api.waitCalls == 0 {
-		t.Fatalf(
-			"TerminateProcess=%d Wait=%d",
-			api.terminateProcessCalls,
-			api.waitCalls,
-		)
+	var runErr *RunError
+	if !errors.As(err, &runErr) {
+		t.Fatalf("error=%T %v, want RunError", err, err)
+	}
+	if runErr.Kind != ErrorStart {
+		t.Errorf("error kind=%v want=%v: %v", runErr.Kind, ErrorStart, err)
+	}
+	if !errors.Is(err, createErr) {
+		t.Errorf("error=%T %v, want cause %v", err, err, createErr)
+	}
+
+	if got, want := api.acquired,
+		[]windows.Handle{10, 11, 12, 13, 14, 15}; !slices.Equal(got, want) {
+		t.Fatalf("owned handles=%v want=%v", got, want)
 	}
 	assertEveryAcquiredHandleClosedOnce(t, api)
+	if api.attributeDeletes != 1 {
+		t.Errorf("attribute deletes=%d want=1", api.attributeDeletes)
+	}
+	if api.terminateProcessCalls != 0 {
+		t.Errorf("TerminateProcess calls=%d want=0", api.terminateProcessCalls)
+	}
+	if api.waitCalls != 0 {
+		t.Errorf("WaitForSingleObject calls=%d want=0", api.waitCalls)
+	}
+	if api.getExitCodeCalls != 0 {
+		t.Errorf("GetExitCodeProcess calls=%d want=0", api.getExitCodeCalls)
+	}
+	for _, handle := range []windows.Handle{untrustedProcess, untrustedThread} {
+		if api.closeCounts[handle] != 0 {
+			t.Errorf(
+				"untrusted handle %d CloseHandle calls=%d want=0",
+				handle,
+				api.closeCounts[handle],
+			)
+		}
+	}
 }
 
 func TestWindowsLaunchCleanupAPIFailuresHaveStableResultAndFinalOwners(
@@ -2217,7 +2256,7 @@ type fakeWindowsAPI struct {
 	pipeCalls                     int
 	clearCalls                    int
 	processCreated                bool
-	returnPartialProcessOnFailure bool
+	failedCreateProcessInfoOutput windows.ProcessInformation
 	creationFlags                 uint32
 	inheritHandles                bool
 	allowlist                     []windows.Handle
@@ -2337,14 +2376,10 @@ func (a *fakeWindowsAPI) createProcess(
 		ThreadId:  101,
 	}
 	if err := a.takeFailure(call); err != nil {
-		return windows.ProcessInformation{}, err
+		return a.failedCreateProcessInfoOutput, err
 	}
 	if a.failAt == call {
-		if a.returnPartialProcessOnFailure {
-			a.acquired = append(a.acquired, process.Process, process.Thread)
-			return process, errors.New("injected " + call)
-		}
-		return windows.ProcessInformation{}, errors.New("injected " + call)
+		return a.failedCreateProcessInfoOutput, errors.New("injected " + call)
 	}
 	a.processCreated = true
 	a.acquired = append(a.acquired, process.Process, process.Thread)
