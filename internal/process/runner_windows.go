@@ -1122,15 +1122,6 @@ func startWindowsProcess(
 		),
 	})
 	createErr = markExecutableUnavailable(createErr)
-	process.process = process.ledger.acquire(
-		information.Process,
-		"provider process",
-	)
-	process.thread = process.ledger.acquire(
-		information.Thread,
-		"provider thread",
-	)
-	process.pid = information.ProcessId
 	childCloseErr := errors.Join(
 		stderrChild.close(),
 		stdoutChild.close(),
@@ -1140,31 +1131,29 @@ func startWindowsProcess(
 	deleteHandleList = false
 
 	if createErr != nil {
-		if process.process == nil {
-			closeErr := process.ledger.closeReverse()
-			kind := ErrorStart
-			if childCloseErr != nil || closeErr != nil {
-				kind = ErrorCleanup
-			}
-			return nil, &RunError{
-				Kind: kind,
-				Err: errors.Join(
-					fmt.Errorf("create suspended provider process: %w", createErr),
-					childCloseErr,
-					closeErr,
-				),
-			}
+		closeErr := process.ledger.closeReverse()
+		kind := ErrorStart
+		if childCloseErr != nil || closeErr != nil {
+			kind = ErrorCleanup
 		}
-		cleanupErr := process.abortStart(cleanup)
 		return nil, &RunError{
-			Kind: ErrorCleanup,
+			Kind: kind,
 			Err: errors.Join(
 				fmt.Errorf("create suspended provider process: %w", createErr),
 				childCloseErr,
-				cleanupErr,
+				closeErr,
 			),
 		}
 	}
+	process.process = process.ledger.acquire(
+		information.Process,
+		"provider process",
+	)
+	process.thread = process.ledger.acquire(
+		information.Thread,
+		"provider thread",
+	)
+	process.pid = information.ProcessId
 	if process.process == nil || process.thread == nil {
 		cleanupErr := process.abortStart(cleanup)
 		return nil, &RunError{
