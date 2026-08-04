@@ -81,7 +81,11 @@ func buildSafePath(
 		filepath.Dir(executable.Resolved),
 	}
 	if entrypoint != nil {
-		candidates = append(candidates, filepath.Dir(entrypoint.Resolved))
+		candidates = append(
+			candidates,
+			filepath.Dir(entrypoint.Clean),
+			filepath.Dir(entrypoint.Resolved),
+		)
 	}
 
 	validated := make(
