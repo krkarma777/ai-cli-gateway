@@ -51,9 +51,11 @@ func TestResolveUnixProviderCommandKeepsNonNodeLaunchersNative(t *testing.T) {
 	} {
 		t.Run(strconv.Quote(payload), func(t *testing.T) {
 			fixture := newUnixNodeLauncherFixture(t, "\n")
+			//nolint:gosec // The executable fixture deliberately requires execute bits.
 			if err := os.WriteFile(fixture.script, []byte(payload), 0o700); err != nil {
 				t.Fatal(err)
 			}
+			//nolint:gosec // The executable fixture deliberately requires execute bits.
 			if err := os.Chmod(fixture.script, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -85,20 +87,20 @@ func TestResolveUnixProviderCommandRejectsUnsafeNodeResolution(t *testing.T) {
 	}{
 		{
 			name: "nonempty configured prefix",
-			resolve: func(t *testing.T, fixture unixNodeLauncherFixture) (string, error) {
+			resolve: func(t *testing.T, _ unixNodeLauncherFixture) (string, error) {
 				t.Fatal("lookup called with configured prefix")
 				return "", nil
 			},
 		},
 		{
 			name: "lookup error",
-			resolve: func(t *testing.T, fixture unixNodeLauncherFixture) (string, error) {
+			resolve: func(_ *testing.T, _ unixNodeLauncherFixture) (string, error) {
 				return "", errors.New("node unavailable")
 			},
 		},
 		{
 			name: "relative lookup result",
-			resolve: func(t *testing.T, fixture unixNodeLauncherFixture) (string, error) {
+			resolve: func(_ *testing.T, _ unixNodeLauncherFixture) (string, error) {
 				return "node", nil
 			},
 		},
@@ -114,6 +116,7 @@ func TestResolveUnixProviderCommandRejectsUnsafeNodeResolution(t *testing.T) {
 		{
 			name: "group/world-writable Node",
 			resolve: func(t *testing.T, fixture unixNodeLauncherFixture) (string, error) {
+				//nolint:gosec // This deliberately creates an unsafe executable fixture.
 				if err := os.Chmod(fixture.node, 0o722); err != nil {
 					t.Fatal(err)
 				}
@@ -123,6 +126,7 @@ func TestResolveUnixProviderCommandRejectsUnsafeNodeResolution(t *testing.T) {
 		{
 			name: "unsafe Node ancestor",
 			resolve: func(t *testing.T, fixture unixNodeLauncherFixture) (string, error) {
+				//nolint:gosec // This deliberately creates an unsafe directory fixture.
 				if err := os.Chmod(filepath.Dir(fixture.node), 0o770); err != nil {
 					t.Fatal(err)
 				}
@@ -242,6 +246,7 @@ func newUnixNodeLauncherFixture(
 	node := filepath.Join(nodeDir, "node")
 	writeUnixTestFile(t, node, 0o700)
 	script := filepath.Join(packageDir, "codex.js")
+	//nolint:gosec // The executable fixture deliberately requires execute bits.
 	if err := os.WriteFile(
 		script,
 		[]byte("#!/usr/bin/env node"+ending+"fixture"),
@@ -249,6 +254,7 @@ func newUnixNodeLauncherFixture(
 	); err != nil {
 		t.Fatal(err)
 	}
+	//nolint:gosec // The executable fixture deliberately requires execute bits.
 	if err := os.Chmod(script, 0o700); err != nil {
 		t.Fatal(err)
 	}

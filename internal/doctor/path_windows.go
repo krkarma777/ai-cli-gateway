@@ -16,6 +16,10 @@ import (
 
 var errWindowsPathEvidence = errors.New("unsafe Windows path evidence")
 
+func validateEntrypointPath(path string) (validatedPath, pathDisposition) {
+	return validatePlatformPath(path, pathKindEntrypoint)
+}
+
 type windowsDescriptorEvidence struct {
 	Supported   bool
 	DACLPresent bool

@@ -55,10 +55,6 @@ func validateExecutablePath(path string) (validatedPath, pathDisposition) {
 	return validatePlatformPath(path, pathKindExecutable)
 }
 
-func validateEntrypointPath(path string) (validatedPath, pathDisposition) {
-	return validatePlatformPath(path, pathKindEntrypoint)
-}
-
 func validateConfigHomePath(path string) (validatedPath, pathDisposition) {
 	return validatePlatformPath(path, pathKindConfigHome)
 }

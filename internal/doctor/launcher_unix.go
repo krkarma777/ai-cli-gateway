@@ -45,6 +45,7 @@ func resolveProviderCommand(
 }
 
 func exactUnixNodeEnvLauncher(path string) bool {
+	//nolint:gosec // The caller supplies a previously validated resolved executable path.
 	file, err := os.Open(path)
 	if err != nil {
 		return false
