@@ -21,7 +21,13 @@ func resolveProviderCommand(
 		return resolvedProviderCommand{}, false
 	}
 	if !exactUnixNodeEnvLauncher(executable.Resolved) {
-		return nativeProviderCommand(executable), true
+		launcher, disposition := validateExecutablePath(executable.Clean)
+		if disposition != pathSafe ||
+			launcher.Resolved != executable.Resolved ||
+			!sameValidatedIdentity(launcher, executable) {
+			return resolvedProviderCommand{}, false
+		}
+		return nativeProviderCommand(launcher), true
 	}
 	candidate, err := lookupExecutable("node")
 	if err != nil {

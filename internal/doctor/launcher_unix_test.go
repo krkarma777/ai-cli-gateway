@@ -80,6 +80,56 @@ func TestResolveUnixProviderCommandKeepsNonNodeLaunchersNative(t *testing.T) {
 	}
 }
 
+func TestResolveUnixProviderCommandRejectsStaleLauncherBeforeClassification(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, fixture unixNodeLauncherFixture)
+	}{
+		{
+			name: "missing",
+			mutate: func(t *testing.T, fixture unixNodeLauncherFixture) {
+				t.Helper()
+				if err := os.Remove(fixture.script); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "nonmatching replacement",
+			mutate: func(t *testing.T, fixture unixNodeLauncherFixture) {
+				t.Helper()
+				replacement := filepath.Join(filepath.Dir(fixture.script), "replacement")
+				//nolint:gosec // The executable fixture deliberately requires execute bits.
+				if err := os.WriteFile(replacement, []byte("native fixture"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(replacement, fixture.script); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newUnixNodeLauncherFixture(t, "\n")
+			test.mutate(t, fixture)
+			lookups := 0
+			command, ok := resolveProviderCommand(
+				fixture.launcher,
+				nil,
+				func(string) (string, error) {
+					lookups++
+					return fixture.node, nil
+				},
+			)
+			if ok || lookups != 0 {
+				t.Fatalf("stale command accepted: %+v; lookups=%d ok=%v", command, lookups, ok)
+			}
+		})
+	}
+}
+
 func TestResolveUnixProviderCommandRejectsUnsafeNodeResolution(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -465,7 +465,8 @@ func TestDoctorCommandResolvesExactUnixEnvNodeLauncher(t *testing.T) {
 	if err := os.Chmod(base, 0o700); err != nil {
 		t.Fatalf("chmod command fixture: %v", err)
 	}
-	fakeCodex := buildCommandProbeFake(t, base)
+	launcher := filepath.Join(base, "codex")
+	fakeCodex := buildNodeCommandProbeFake(t, base, launcher)
 	nodeBin := filepath.Join(base, "node-bin")
 	if err := os.Mkdir(nodeBin, 0o700); err != nil {
 		t.Fatalf("create fake Node directory: %v", err)
@@ -474,7 +475,6 @@ func TestDoctorCommandResolvesExactUnixEnvNodeLauncher(t *testing.T) {
 	if err := os.Symlink(fakeCodex, node); err != nil {
 		t.Fatalf("symlink fake Node: %v", err)
 	}
-	launcher := filepath.Join(base, "codex")
 	if err := os.WriteFile(launcher, []byte("#!/usr/bin/env node\n"), 0o700); err != nil {
 		t.Fatalf("write exact Node launcher: %v", err)
 	}
@@ -1045,6 +1045,27 @@ func waitForAppProcessExitDuringCleanup(t *testing.T, pid int) {
 
 func buildCommandProbeFake(t *testing.T, directory string) string {
 	t.Helper()
+	return buildCommandProbeFakeWithArgSetup(
+		t,
+		directory,
+		`args := strings.Join(os.Args[1:], " ")`,
+	)
+}
+
+func buildNodeCommandProbeFake(t *testing.T, directory, launcher string) string {
+	t.Helper()
+	return buildCommandProbeFakeWithArgSetup(
+		t,
+		directory,
+		fmt.Sprintf(`if len(os.Args) < 2 || os.Args[1] != %q {
+		os.Exit(92)
+	}
+	args := strings.Join(os.Args[2:], " ")`, launcher),
+	)
+}
+
+func buildCommandProbeFakeWithArgSetup(t *testing.T, directory, argSetup string) string {
+	t.Helper()
 	source := `package main
 import (
 	"fmt"
@@ -1055,7 +1076,7 @@ func main() {
 	if os.Getenv("PLANTED_AMBIENT_SECRET") != "" {
 		os.Exit(91)
 	}
-	args := strings.Join(os.Args[1:], " ")
+` + argSetup + `
 	switch {
 	case strings.HasSuffix(args, "--version"):
 		fmt.Println("codex 0.146.0")
