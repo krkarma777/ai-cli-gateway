@@ -1113,16 +1113,16 @@ func TestProbeClassifiesExecutionExitAndEncodingFailuresDeterministically(
 			wantStatus:       provider.HealthNotReady,
 			wantAuth:         "authenticated",
 			wantProblems:     []string{provider.ProblemCapabilityMissing},
-			wantCapabilities: true,
+			wantCapabilities: false,
 		},
 		{
-			name: "doctor nonzero",
+			name: "doctor exit one with valid report",
 			mutate: func(steps []scriptedProbeStep) {
 				steps[4].result.ExitCode = 1
 			},
-			wantStatus:       provider.HealthNotReady,
+			wantStatus:       provider.HealthReady,
 			wantAuth:         "authenticated",
-			wantProblems:     []string{provider.ProblemCapabilityMissing},
+			wantProblems:     nil,
 			wantCapabilities: true,
 		},
 		{
@@ -1133,7 +1133,7 @@ func TestProbeClassifiesExecutionExitAndEncodingFailuresDeterministically(
 			wantStatus:       provider.HealthNotReady,
 			wantAuth:         "authenticated",
 			wantProblems:     []string{provider.ProblemCapabilityMissing},
-			wantCapabilities: true,
+			wantCapabilities: false,
 		},
 	}
 
@@ -1200,6 +1200,102 @@ func TestProbeRetainsCanonicalVersionAndRejectsUnsupportedRange(
 	}
 }
 
+func TestProbeAcceptsExitOneDoctorReportWhenGatewayChecksPass(t *testing.T) {
+	tests := []struct {
+		name   string
+		checks string
+	}{
+		{
+			name:   "unrelated installation failure",
+			checks: fixedDoctorChecks("ok", "ok", "fail"),
+		},
+		{
+			name:   "installation check omitted",
+			checks: requiredDoctorChecks("ok", "ok"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			steps := healthyProbeSteps()
+			steps[4].result.ExitCode = 1
+			steps[4].result.Stdout = []byte(doctorOutput(
+				"1",
+				`"fail"`,
+				test.checks,
+				`,"generatedAt":"planted-time"`,
+			))
+
+			health := probeWithSteps(t, steps)
+			assertHealthyCodex(t, health)
+			assertHealthDoesNotContain(t, health, "planted", "/private")
+		})
+	}
+}
+
+func TestProbeDoctorFailurePreservesEstablishedVersionAndAuth(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func([]scriptedProbeStep)
+	}{
+		{
+			name: "command exit two",
+			mutate: func(steps []scriptedProbeStep) {
+				steps[4].result.ExitCode = 2
+			},
+		},
+		{
+			name: "invalid JSON",
+			mutate: func(steps []scriptedProbeStep) {
+				steps[4].result.Stdout = []byte(`{"schemaVersion":1`)
+			},
+		},
+		{
+			name: "required auth check fails",
+			mutate: func(steps []scriptedProbeStep) {
+				steps[4].result.ExitCode = 1
+				steps[4].result.Stdout = []byte(doctorOutput(
+					"1",
+					`"fail"`,
+					fixedDoctorChecks("fail", "ok", "fail"),
+					"",
+				))
+			},
+		},
+		{
+			name: "required config check fails",
+			mutate: func(steps []scriptedProbeStep) {
+				steps[4].result.ExitCode = 1
+				steps[4].result.Stdout = []byte(doctorOutput(
+					"1",
+					`"fail"`,
+					fixedDoctorChecks("ok", "fail", "fail"),
+					"",
+				))
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			steps := healthyProbeSteps()
+			test.mutate(steps)
+
+			health := probeWithSteps(t, steps)
+			assertProbeOutcome(
+				t,
+				health,
+				provider.HealthNotReady,
+				"authenticated",
+				[]string{provider.ProblemCapabilityMissing},
+				false,
+			)
+			if health.Version != "0.146.0" {
+				t.Fatalf("Version=%q, want 0.146.0", health.Version)
+			}
+			assertHealthDoesNotContain(t, health, "planted", "/private")
+		})
+	}
+}
+
 func TestProbeDoctorUsesBoundedDuplicateSafeFixedCheckAllowlist(
 	t *testing.T,
 ) {
@@ -1240,6 +1336,21 @@ func TestProbeDoctorUsesBoundedDuplicateSafeFixedCheckAllowlist(
 					validChecks,
 					`"status":"ok"`,
 					`"status":"ok","status":"ok"`,
+					1,
+				),
+				"",
+			),
+		},
+		{
+			name: "duplicate ignored installation field",
+			output: doctorOutput(
+				"1",
+				`"ok"`,
+				strings.Replace(
+					validChecks,
+					`"path":"/private/planted-installation"`,
+					`"path":"/private/planted-installation",`+
+						`"path":"/private/planted-duplicate"`,
 					1,
 				),
 				"",
@@ -1330,24 +1441,23 @@ func TestProbeDoctorUsesBoundedDuplicateSafeFixedCheckAllowlist(
 			output: doctorOutput("1", `"ok"`, `[]`, ""),
 		},
 		{
-			name: "missing fixed check",
+			name: "missing required config check",
 			output: doctorOutput(
 				"1",
 				`"ok"`,
-				`{"auth.credentials":{"id":"auth.credentials","status":"ok"},`+
-					`"config.load":{"id":"config.load","status":"ok"}}`,
+				`{"auth.credentials":{"id":"auth.credentials","status":"ok"}}`,
 				"",
 			),
 		},
 		{
-			name: "fixed check wrong type",
+			name: "required config check wrong type",
 			output: doctorOutput(
 				"1",
 				`"ok"`,
 				strings.Replace(
 					validChecks,
-					`{"id":"installation","status":"ok",`+
-						`"path":"/private/planted-installation"}`,
+					`{"id":"config.load","status":"ok",`+
+						`"remediation":"planted config path"}`,
 					`"not-an-object"`,
 					1,
 				),
@@ -1369,14 +1479,14 @@ func TestProbeDoctorUsesBoundedDuplicateSafeFixedCheckAllowlist(
 			),
 		},
 		{
-			name: "fixed check status unknown",
+			name: "required config check status unknown",
 			output: doctorOutput(
 				"1",
 				`"ok"`,
 				strings.Replace(
 					validChecks,
-					`"id":"installation","status":"ok"`,
-					`"id":"installation","status":"healthy"`,
+					`"id":"config.load","status":"ok"`,
+					`"id":"config.load","status":"healthy"`,
 					1,
 				),
 				"",
@@ -1404,7 +1514,7 @@ func TestProbeDoctorUsesBoundedDuplicateSafeFixedCheckAllowlist(
 				provider.HealthNotReady,
 				"authenticated",
 				[]string{provider.ProblemCapabilityMissing},
-				true,
+				false,
 			)
 			assertHealthDoesNotContain(
 				t,
@@ -1438,7 +1548,7 @@ func TestProbeLoginExitIsAuthoritativeAcrossContradictoryDoctorState(
 			provider.HealthNotReady,
 			"authenticated",
 			[]string{provider.ProblemCapabilityMissing},
-			true,
+			false,
 		)
 		assertHealthDoesNotContain(t, health, "identity@example.test")
 	})
@@ -1914,6 +2024,13 @@ func fixedDoctorChecks(
 		`,"path":"/private/planted-installation"},` +
 		`"unknown.check":"planted unknown scalar"}` +
 		``
+}
+
+func requiredDoctorChecks(authStatus string, configStatus string) string {
+	return `{"auth.credentials":{"id":"auth.credentials","status":` +
+		fmt.Sprintf("%q", authStatus) +
+		`},"config.load":{"id":"config.load","status":` +
+		fmt.Sprintf("%q", configStatus) + `}}`
 }
 
 func probeTestName(value string) string {

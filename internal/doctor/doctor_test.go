@@ -16,6 +16,7 @@ import (
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
 	"github.com/krkarma777/ai-cli-gateway/internal/process"
 	"github.com/krkarma777/ai-cli-gateway/internal/provider"
+	"github.com/krkarma777/ai-cli-gateway/internal/provider/codex"
 	"github.com/krkarma777/ai-cli-gateway/internal/testutil"
 )
 
@@ -1272,6 +1273,100 @@ func TestCanonicalizeHealthNormalizesRecognizedSetsAndFailsClosed(t *testing.T) 
 	}
 }
 
+func TestCanonicalizeHealthPreservesRealCodexDoctorOnlyFailure(t *testing.T) {
+	runner := &doctorCodexProbeRunner{
+		t:          t,
+		runtimeDir: t.TempDir(),
+		results: []process.Result{
+			{Stdout: []byte("codex-cli 0.146.0\n")},
+			{Stdout: []byte(`PROMPT
+-
+--disable
+-c
+--strict-config
+--sandbox
+--model
+--output-schema
+--color
+--ephemeral
+--ignore-user-config
+--ignore-rules
+--skip-git-repo-check
+`)},
+			{Stdout: []byte(`shell_tool stable false
+unified_exec stable false
+code_mode_host stable false
+apps stable false
+plugins stable false
+remote_plugin stable false
+hooks stable false
+multi_agent stable false
+browser_use stable false
+browser_use_external stable false
+computer_use stable false
+in_app_browser stable false
+image_generation stable false
+skill_search stable false
+skill_mcp_dependency_install stable false
+workspace_dependencies stable false
+`)},
+			{Stdout: []byte("authenticated\n")},
+			{
+				Stdout: []byte(`{"schemaVersion":1,"overallStatus":"ok",` +
+					`"checks":{"auth.credentials":{"id":"auth.credentials","status":"ok"},` +
+					`"config.load":{"id":"config.load","status":"ok"},` +
+					`"installation":{"id":"installation","status":"ok"}}}`),
+				ExitCode: 2,
+			},
+		},
+	}
+	adapter := codex.New()
+	raw := adapter.Probe(
+		context.Background(),
+		provider.ProviderConfig{
+			Executable: "/trusted/bin/codex",
+			ConfigHome: t.TempDir(),
+			SafePath:   "/trusted/bin",
+			LookupEnv: func(name string) (string, bool) {
+				if name == "SystemRoot" {
+					return `C:\Windows`, true
+				}
+				return "", false
+			},
+		},
+		runner,
+	)
+	if runner.calls != 5 {
+		t.Fatalf("Codex probe calls=%d, want 5", runner.calls)
+	}
+
+	row, canonical := canonicalizeHealth(
+		core.ProviderCodex,
+		adapter.SupportedVersion(),
+		raw,
+	)
+	wantProblems := []string{provider.ProblemCapabilityMissing}
+	if row.Name != core.ProviderCodex ||
+		row.Status != provider.HealthNotReady ||
+		row.Version != "0.146.0" ||
+		row.Auth != "authenticated" ||
+		len(row.Capabilities) != 0 ||
+		!slices.Equal(row.Problems, wantProblems) ||
+		canonical.Provider != core.ProviderCodex ||
+		canonical.Status != provider.HealthNotReady ||
+		canonical.Version != "0.146.0" ||
+		canonical.Auth != "authenticated" ||
+		len(canonical.Capabilities) != 0 ||
+		!slices.Equal(canonical.Problems, wantProblems) {
+		t.Fatalf(
+			"canonicalized Codex doctor failure = %+v / %+v; raw=%+v",
+			row,
+			canonical,
+			raw,
+		)
+	}
+}
+
 func TestCanonicalizeHealthAcceptsEveryClosedProviderRelationship(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1700,6 +1795,35 @@ type doctorTestController struct {
 	selfTestErr   error
 	shutdownErr   error
 	shutdown      func(context.Context) error
+}
+
+type doctorCodexProbeRunner struct {
+	t          *testing.T
+	runtimeDir string
+	results    []process.Result
+	calls      int
+}
+
+func (r *doctorCodexProbeRunner) RunProbe(
+	ctx context.Context,
+	build func(process.Runtime) (process.CommandSpec, error),
+) (process.Result, error) {
+	r.t.Helper()
+	if ctx == nil {
+		r.t.Fatal("Codex adapter passed nil probe context")
+	}
+	if r.calls >= len(r.results) {
+		r.t.Fatalf("unexpected Codex probe call %d", r.calls)
+	}
+	if _, err := build(process.Runtime{
+		ID:  "doctor-codex-probe",
+		Dir: r.runtimeDir,
+	}); err != nil {
+		r.t.Fatalf("Codex probe build error = %v", err)
+	}
+	result := r.results[r.calls]
+	r.calls++
+	return result, nil
 }
 
 func (c *doctorTestController) RunProbe(
