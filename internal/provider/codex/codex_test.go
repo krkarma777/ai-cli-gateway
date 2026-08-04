@@ -1106,7 +1106,7 @@ func TestProbeClassifiesExecutionExitAndEncodingFailuresDeterministically(
 			wantCapabilities: true,
 		},
 		{
-			name: "doctor execution error",
+			name: "doctor runner error rejects valid stdout",
 			mutate: func(steps []scriptedProbeStep) {
 				steps[4].err = errors.New("planted doctor path /private/secret")
 			},
@@ -1202,8 +1202,9 @@ func TestProbeRetainsCanonicalVersionAndRejectsUnsupportedRange(
 
 func TestProbeAcceptsExitOneDoctorReportWhenGatewayChecksPass(t *testing.T) {
 	tests := []struct {
-		name   string
-		checks string
+		name            string
+		checks          string
+		extraRootFields string
 	}{
 		{
 			name:   "unrelated installation failure",
@@ -1212,6 +1213,27 @@ func TestProbeAcceptsExitOneDoctorReportWhenGatewayChecksPass(t *testing.T) {
 		{
 			name:   "installation check omitted",
 			checks: requiredDoctorChecks("ok", "ok"),
+		},
+		{
+			name: "malformed installation check ignored",
+			checks: `{"auth.credentials":{"id":"auth.credentials","status":"ok"},` +
+				`"config.load":{"id":"config.load","status":"ok"},` +
+				`"installation":{"id":false,"status":["warn"],` +
+				`"nested":{"safe":true}}}`,
+		},
+		{
+			name:   "installation warning ignored",
+			checks: fixedDoctorChecks("ok", "ok", "warn"),
+		},
+		{
+			name: "unknown checks and fields ignored",
+			checks: `{"auth.credentials":{"id":"auth.credentials","status":"ok",` +
+				`"future":{"safe":true}},` +
+				`"config.load":{"id":"config.load","status":"ok",` +
+				`"futureField":["safe"]},` +
+				`"future.check":{"id":"future.check","status":"warn",` +
+				`"details":{"safe":true}}}`,
+			extraRootFields: `,"futureRoot":{"safe":[true]}`,
 		},
 	}
 	for _, test := range tests {
@@ -1222,7 +1244,7 @@ func TestProbeAcceptsExitOneDoctorReportWhenGatewayChecksPass(t *testing.T) {
 				"1",
 				`"fail"`,
 				test.checks,
-				`,"generatedAt":"planted-time"`,
+				`,"generatedAt":"planted-time"`+test.extraRootFields,
 			))
 
 			health := probeWithSteps(t, steps)
@@ -1238,9 +1260,21 @@ func TestProbeDoctorFailurePreservesEstablishedVersionAndAuth(t *testing.T) {
 		mutate func([]scriptedProbeStep)
 	}{
 		{
+			name: "command exit negative one",
+			mutate: func(steps []scriptedProbeStep) {
+				steps[4].result.ExitCode = -1
+			},
+		},
+		{
 			name: "command exit two",
 			mutate: func(steps []scriptedProbeStep) {
 				steps[4].result.ExitCode = 2
+			},
+		},
+		{
+			name: "command exit three",
+			mutate: func(steps []scriptedProbeStep) {
+				steps[4].result.ExitCode = 3
 			},
 		},
 		{
