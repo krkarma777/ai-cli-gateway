@@ -613,8 +613,12 @@ For the initial Codex range, the required hardening set is:
 - Credential environment: unsupported for Codex in the MVP. Readiness requires
   the official `login status` proof against the dedicated `CODEX_HOME`; the
   gateway does not offer one-off API-key override semantics.
-- Health: `codex --version`, `codex login status`, and filtered
-  `codex doctor --json`. Raw doctor output is not logged.
+- Health: `codex --version`, exec help, `codex features list`,
+  `codex login status`, and filtered `codex doctor --json`. Raw probe output is
+  not logged. Capabilities are published only when the help, feature, and doctor
+  proofs all pass; a doctor-only failure preserves the established version and
+  coarse login result, publishes empty capabilities, and adds
+  `capability_missing` plus any independently warranted auth problem.
 
 Codex does not expose a universal, version-stable "remove every internal tool"
 switch. It runs in a clean empty working directory, with read-only/never-approve
@@ -626,8 +630,16 @@ observed contracts pinned to tested Codex `0.146.x`, not universal stable CLI
 contracts. Official documentation guarantees `features list` and a redacted
 machine-readable doctor report but does not publish every feature name or the
 complete doctor JSON schema. Readiness therefore version-gates and fail-closes
-on missing observed controls, while retaining only a small fixed doctor-check
-allowlist.
+on missing observed controls. A doctor result is eligible only with no runner
+error, exit code exactly 0 or 1, and one fully parsed bounded, duplicate-free
+JSON value. That value must have numeric `schemaVersion` exactly 1, a closed
+`overallStatus` of `ok`, `warn`, or `fail`, and exact `auth.credentials` and
+`config.load` check objects whose IDs match their map keys and whose statuses
+are `ok`. Installation and unknown checks are ignored for readiness only after
+the complete JSON value passes safe parsing. The installation check is not
+authoritative because the probe's isolated request `HOME` may differ from the
+npm prefix used to install Codex. This contract proves local adapter readiness,
+not package provenance or installation integrity.
 
 ### 7.3 Claude Code
 
@@ -1319,6 +1331,12 @@ phases in order:
    recompute readiness, shut down the controller, and inspect its latched cleanup
    state before transferring the root.
 
+For Codex, phase 7 also runs `doctor --json`. Doctor accepts its report only
+when the runner returns no error, the exit code is exactly 0 or 1, and the whole
+bounded duplicate-free JSON document passes the closed report shape described
+in Section 7.2. Ignored installation or future check fields are still parsed and
+subject to duplicate/depth/number limits before they are discarded.
+
 A missing, unsafe, or non-regular gateway executable is an invalid injected
 dependency, not a diagnostic row: `Run` returns the one fixed dependency error
 with zero root, process-controller, adapter, or provider-command calls. The
@@ -1362,6 +1380,14 @@ runtime locking and janitor cleanup, temporary-runtime containment, model aliase
 scheduler limits, provider paths, versions, capabilities, coarse authentication,
 and configured credential sources. A core containment failure causes zero
 provider commands; an unsafe provider path causes zero commands for that provider.
+
+Codex adapter health has one capability-readiness invariant: exec help, the
+required feature list, and the eligible doctor report must all pass before the
+complete capability set is present. If only the doctor proof fails, its health
+retains the supported version and authoritative `login status` classification,
+uses empty capabilities, and carries `capability_missing` plus any independent
+auth problem. Canonicalization accepts that internally consistent not-ready row;
+it must not collapse it to the generic malformed-health fallback.
 
 Codex and Claude use their documented status commands. Gemini authentication is
 reported as `configured`, `missing`, or `unknown`; it is never reported valid
@@ -1537,6 +1563,12 @@ the test passes.
   version checks;
 - provider probes stop after one version command when that version is unreadable
   or unsupported;
+- Codex doctor exit 0/1 handling, full bounded duplicate-safe JSON parsing,
+  closed aggregate and required auth/config checks, ignored installation checks,
+  and capability publication only after help/feature/doctor proofs all pass;
+- a Codex doctor-only failure preserves established version/auth while exposing
+  empty capabilities and `capability_missing`, including across Doctor's
+  canonical health boundary;
 - delimiter-like and adversarial instruction/input bytes preserve exact
   length-framed sections without being promoted to argv;
 - environment allowlisting and cross-provider credential isolation;
@@ -1620,6 +1652,8 @@ The opt-in live suite also uses a disposable canary directory to test stdin
 framing, structured output, cancellation, and the documented tool-suppression
 controls without targeting real user files. It asks the provider to attempt shell,
 file, web, hook, MCP, plugin, and extension actions and records only pass/fail.
+Codex probe success remains local readiness evidence and is not evidence of npm
+package provenance or installation integrity.
 README's provider matrix distinguishes:
 
 - `implemented`: adapter command/parser and fake integration tests pass;

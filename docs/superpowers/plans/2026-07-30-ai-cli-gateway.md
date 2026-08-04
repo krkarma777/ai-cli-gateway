@@ -2748,18 +2748,29 @@ Each probe uses small fixed process limits and no request prompt. Parse:
   `codex features list`;
 - exit success from `codex login status` as authenticated, without copying its
   text;
-- exactly one duplicate-safe JSON object from `codex doctor --json`, retaining
-  only the closed shape of `overallStatus`, `schemaVersion`, and the status of
-  fixed checks `auth.credentials`, `config.load`, and `installation`; discard
-  diagnostic messages and identities. Validate but do not gate readiness on
-  aggregate `overallStatus`, because it includes unrelated support-report
-  checks. Gate readiness only on the three fixed checks.
+- an eligible `codex doctor --json` result only when the runner returns no error
+  and the process exits exactly 0 or 1; every other exit and every runner error
+  fails closed;
+- exactly one fully parsed, bounded, duplicate-free JSON value from that eligible
+  result, requiring numeric `schemaVersion` exactly 1, `overallStatus` exactly
+  one of `ok`, `warn`, or `fail`, and exact `auth.credentials` and
+  `config.load` objects whose `id` matches the map key and whose `status` is
+  `ok`. Parse the entire document before retaining only those required checks;
+  installation and unknown checks are ignored for readiness but remain subject
+  to duplicate, depth, number, UTF-8, and trailing-value rejection. The npm
+  prefix installation result is non-authoritative under the probe's isolated
+  request `HOME`.
 
 Return only provider name, status, numeric version, `auth` as
 `authenticated`/`missing`/`unknown`, capabilities
 `stdin_prompt`, `ephemeral`, `read_only`, `never_approve`, `schema_file`, and
-`feature_hardening`, plus Task 14's fixed problem codes. A probe failure cannot
-insert raw stdout, stderr, paths, or account identity into `Health`.
+`feature_hardening`, plus Task 14's fixed problem codes. Publish that complete
+capability set only when help, features, and doctor all pass. A doctor-only
+failure retains the established version and login-derived auth, publishes empty
+capabilities, and adds `capability_missing` plus any independently warranted auth
+problem. A probe failure cannot insert raw stdout, stderr, paths, or account
+identity into `Health`. These checks do not prove package provenance or
+installation integrity.
 
 - [ ] **Step 6: Exercise the real adapter against the fake CLI**
 
@@ -3342,6 +3353,12 @@ Use temporary files and injected probes to cover:
   only when every present credential path is safe; a combined higher-precedence
   missing value plus unsafe present Gemini service file reports
   `credential_missing`/auth `missing` but remains unresolved;
+- Codex doctor results accept only runner success plus exit 0/1, parse the whole
+  bounded duplicate-free JSON value before ignoring installation/unknown checks,
+  require schema 1, a closed aggregate, and exact passing auth/config checks,
+  and reject all other exit codes, runner errors, duplicate ignored fields, or
+  malformed documents; doctor-only failures retain version/auth but expose empty
+  capabilities with `capability_missing` through canonicalization;
 - mixed provider rows after a cleanup latch: preserve earlier/current canonical
   rows as report-only evidence, assign every later provider the exact core-skipped
   unknown row, and prove zero later provider adapters or process commands;
@@ -3783,6 +3800,18 @@ and these provider-specific values:
 | Codex | `authenticated`, `missing`, `unknown` | `stdin_prompt`, `ephemeral`, `read_only`, `never_approve`, `schema_file`, `feature_hardening` |
 | Claude | `authenticated`, `missing`, `unknown` | `stdin_prompt`, `json_envelope`, `no_session_persistence`, `empty_settings`, `empty_tools`, `safe_mode` |
 | Gemini | `configured`, `missing`, `unknown` | `stdin_prompt`, `json_envelope`, `disposable_home`, `system_settings_isolated`, `empty_core_tools`, `extensions_disabled` |
+
+For Codex, the adapter constructs its complete capability set from one invariant:
+exec help, required features, and the eligible doctor report all pass. An
+eligible doctor report has a nil runner error, exit exactly 0 or 1, one fully
+parsed bounded duplicate-free JSON value, `schemaVersion` 1, aggregate
+`ok`/`warn`/`fail`, and exact passing `auth.credentials` and `config.load`
+checks. Installation and other checks are discarded only after whole-document
+safe parsing. A doctor-only failure therefore remains a valid not-ready health:
+preserve the supported version and login-derived auth, publish empty
+capabilities, and include `capability_missing` plus any independent auth
+problem. This is local readiness evidence, not npm package provenance or
+installation-integrity evidence.
 
 Problem allowlists are exact: Codex accepts executable missing/unsafe, version
 unreadable/unsupported, capability missing, config-home unsafe, and auth

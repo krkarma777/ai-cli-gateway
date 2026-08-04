@@ -217,6 +217,31 @@ new path directories meet the same applicable policies.
 - User reruns the real Codex Doctor with the unchanged provider executable path;
   no inference request is required to prove launcher resolution.
 
+## Follow-up: Codex Doctor readiness isolation
+
+Launcher resolution and Codex readiness are separate proofs. After the pinned
+Node interpreter successfully starts the launcher, the Codex adapter accepts a
+`doctor --json` report only when the probe runner returns no error, the command
+exits exactly 0 or 1, and the entire output is one bounded, duplicate-free safe
+JSON value. The parsed root must have numeric `schemaVersion` exactly 1,
+`overallStatus` in the closed `ok`/`warn`/`fail` set, and exact
+`auth.credentials` and `config.load` objects whose IDs match their keys and
+whose statuses are `ok`.
+
+The npm-prefix `installation` check and all other checks are ignored for gateway
+readiness only after the complete JSON value has passed duplicate, depth,
+number, UTF-8, and trailing-value validation. This is intentional: provider
+probes use an isolated request `HOME`, so an installation check tied to that
+home is not authoritative for a CLI installed under another npm prefix.
+
+Codex exposes its complete capability set only when exec help, the required
+feature list, and the eligible doctor report all pass. A doctor-only failure
+preserves the established supported version and login-derived auth, exposes no
+capabilities, and adds `capability_missing` plus any independently warranted auth
+problem. Neither a validated launcher identity nor successful readiness proves
+npm package provenance, package installation integrity, or official-package
+origin.
+
 ## Documentation
 
 README troubleshooting will explain:

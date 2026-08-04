@@ -277,6 +277,23 @@ Codex uses its prepared dedicated config home and accepts no credential environm
 
 Every Gemini request gets a disposable `GEMINI_CLI_HOME`; cached personal OAuth reuse is unsupported. Naming one of these shapes proves only local configuration acceptance. It does not establish upstream availability, billing tier, quota, entitlement, or live credential validity.
 
+Codex readiness uses five isolated, non-inference probes. Its `doctor --json`
+report is eligible only when the runner succeeds, the command exits exactly 0
+or 1, and the complete output is one bounded, duplicate-free JSON value with
+`schemaVersion:1`, an `overallStatus` in `ok`/`warn`/`fail`, and exact
+`auth.credentials` and `config.load` checks whose IDs match their keys and whose
+statuses are `ok`. The installation and all other checks are ignored only after
+the entire JSON value has passed safe parsing. In particular, an npm-prefix
+installation check run with the gateway's isolated request `HOME` is not an
+authoritative gateway-readiness signal.
+
+Codex publishes its complete capability set only when the exec help, hardening
+feature list, and eligible doctor report all pass. A doctor-only failure retains
+the already established version and coarse login status, but publishes no
+capabilities and adds `capability_missing` (plus any independent auth problem).
+These readiness checks do not prove npm package provenance, installation
+integrity, or that the configured launcher came from an official package.
+
 When an exact Unix Node launcher is used, provider children run with the pinned absolute Node interpreter and launcher identities. The child environment is minimal: arbitrary proxy, custom-CA, keyring, shell, and other ambient variables are not inherited. A deployment that needs another value requires a future explicitly validated allowlist.
 
 ### Unix Node launchers
