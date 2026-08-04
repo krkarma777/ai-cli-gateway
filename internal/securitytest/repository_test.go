@@ -1453,6 +1453,24 @@ func TestScannerRejectsPrivateKeyHeaders(t *testing.T) {
 	}
 }
 
+func TestAllowedPlaceholderAcceptsOnlyGitHubTokenContext(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{value: "${{ github.token }}", want: true},
+		{value: "${{ github.actor }}", want: false},
+		{value: "${{ secrets.GITHUB_TOKEN }}", want: false},
+		{value: "${{ github.token }}suffix", want: false},
+		{value: "${{github.token}}", want: false},
+	}
+	for _, test := range tests {
+		if got := isAllowedPlaceholder(test.value); got != test.want {
+			t.Errorf("isAllowedPlaceholder(%q) = %t, want %t", test.value, got, test.want)
+		}
+	}
+}
+
 func TestSecretAssignmentPlaceholderAllowlist(t *testing.T) {
 	allowed := []string{
 		"AI_CLI_GATEWAY_" + "API_KEY\n",
@@ -2135,6 +2153,9 @@ func isAllowedPlaceholder(value string) bool {
 	trimmed := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(value), ","))
 	if len(trimmed) >= 2 && (trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"' || trimmed[0] == '\'' && trimmed[len(trimmed)-1] == '\'') {
 		trimmed = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+	}
+	if trimmed == "${{ github.token }}" {
+		return true
 	}
 	if trimmed == "" {
 		return true
