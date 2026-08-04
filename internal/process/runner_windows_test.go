@@ -498,64 +498,98 @@ func TestWindowsExecutableUnavailableMarkerHasLaunchProvenance(
 func TestStartWindowsProcessIgnoresProcessInformationOnCreateFailure(t *testing.T) {
 	t.Parallel()
 
-	api := newFakeWindowsAPI()
 	const (
 		untrustedProcess = windows.Handle(20)
 		untrustedThread  = windows.Handle(21)
 	)
-	api.failedCreateProcessInfoOutput = windows.ProcessInformation{
-		Process:   untrustedProcess,
-		Thread:    untrustedThread,
-		ProcessId: 100,
-		ThreadId:  101,
+	tests := []struct {
+		name               string
+		closeFailureHandle windows.Handle
+		wantKind           ErrorKind
+	}{
+		{name: "cleanup success", wantKind: ErrorStart},
+		{
+			name:               "child handle close failure",
+			closeFailureHandle: 15,
+			wantKind:           ErrorCleanup,
+		},
+		{
+			name:               "parent handle close failure",
+			closeFailureHandle: 11,
+			wantKind:           ErrorCleanup,
+		},
 	}
-	createErr := errors.New("injected CreateProcess failure")
-	api.injectFailure("CreateProcess", createErr)
-	process, err := startWindowsProcess(
-		api,
-		windowsStartRequestForTest(t),
-		time.Second,
-		newCompletionOwner(),
-	)
-	if process != nil {
-		t.Fatalf("unexpected process: %+v", process)
-	}
-	var runErr *RunError
-	if !errors.As(err, &runErr) {
-		t.Fatalf("error=%T %v, want RunError", err, err)
-	}
-	if runErr.Kind != ErrorStart {
-		t.Errorf("error kind=%v want=%v: %v", runErr.Kind, ErrorStart, err)
-	}
-	if !errors.Is(err, createErr) {
-		t.Errorf("error=%T %v, want cause %v", err, err, createErr)
-	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			api := newFakeWindowsAPI()
+			api.failedCreateProcessInfoOutput = windows.ProcessInformation{
+				Process:   untrustedProcess,
+				Thread:    untrustedThread,
+				ProcessId: 100,
+				ThreadId:  101,
+			}
+			createErr := errors.New("injected CreateProcess failure")
+			api.injectFailure("CreateProcess", createErr)
+			var cleanupErr error
+			if test.closeFailureHandle != 0 {
+				cleanupErr = errors.New("injected owned handle close failure")
+				api.injectFailure(
+					fmt.Sprintf("CloseHandle(%d)", test.closeFailureHandle),
+					cleanupErr,
+				)
+			}
 
-	if got, want := api.acquired,
-		[]windows.Handle{10, 11, 12, 13, 14, 15}; !slices.Equal(got, want) {
-		t.Fatalf("owned handles=%v want=%v", got, want)
-	}
-	assertEveryAcquiredHandleClosedOnce(t, api)
-	if api.attributeDeletes != 1 {
-		t.Errorf("attribute deletes=%d want=1", api.attributeDeletes)
-	}
-	if api.terminateProcessCalls != 0 {
-		t.Errorf("TerminateProcess calls=%d want=0", api.terminateProcessCalls)
-	}
-	if api.waitCalls != 0 {
-		t.Errorf("WaitForSingleObject calls=%d want=0", api.waitCalls)
-	}
-	if api.getExitCodeCalls != 0 {
-		t.Errorf("GetExitCodeProcess calls=%d want=0", api.getExitCodeCalls)
-	}
-	for _, handle := range []windows.Handle{untrustedProcess, untrustedThread} {
-		if api.closeCounts[handle] != 0 {
-			t.Errorf(
-				"untrusted handle %d CloseHandle calls=%d want=0",
-				handle,
-				api.closeCounts[handle],
+			process, err := startWindowsProcess(
+				api,
+				windowsStartRequestForTest(t),
+				time.Second,
+				newCompletionOwner(),
 			)
-		}
+			if process != nil {
+				t.Fatalf("unexpected process: %+v", process)
+			}
+			var runErr *RunError
+			if !errors.As(err, &runErr) {
+				t.Fatalf("error=%T %v, want RunError", err, err)
+			}
+			if runErr.Kind != test.wantKind {
+				t.Errorf("error kind=%v want=%v: %v", runErr.Kind, test.wantKind, err)
+			}
+			if !errors.Is(err, createErr) {
+				t.Errorf("error=%T %v, want cause %v", err, err, createErr)
+			}
+			if cleanupErr != nil && !errors.Is(err, cleanupErr) {
+				t.Errorf("error=%T %v, want cleanup cause %v", err, err, cleanupErr)
+			}
+
+			if got, want := api.acquired,
+				[]windows.Handle{10, 11, 12, 13, 14, 15}; !slices.Equal(got, want) {
+				t.Fatalf("owned handles=%v want=%v", got, want)
+			}
+			assertEveryAcquiredHandleClosedOnce(t, api)
+			if api.attributeDeletes != 1 {
+				t.Errorf("attribute deletes=%d want=1", api.attributeDeletes)
+			}
+			if api.terminateProcessCalls != 0 {
+				t.Errorf("TerminateProcess calls=%d want=0", api.terminateProcessCalls)
+			}
+			if api.waitCalls != 0 {
+				t.Errorf("WaitForSingleObject calls=%d want=0", api.waitCalls)
+			}
+			if api.getExitCodeCalls != 0 {
+				t.Errorf("GetExitCodeProcess calls=%d want=0", api.getExitCodeCalls)
+			}
+			for _, handle := range []windows.Handle{untrustedProcess, untrustedThread} {
+				if api.closeCounts[handle] != 0 {
+					t.Errorf(
+						"untrusted handle %d CloseHandle calls=%d want=0",
+						handle,
+						api.closeCounts[handle],
+					)
+				}
+			}
+		})
 	}
 }
 
