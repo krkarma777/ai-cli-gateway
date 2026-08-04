@@ -35,7 +35,7 @@
 - Modify <code>internal/doctor/doctor_test.go</code>: dependency, rejection, and resolved-provider assertions.
 - Modify <code>internal/app/app.go</code> and <code>internal/app/app_test.go</code>: production lookup seam and dependency contract.
 - Modify <code>internal/app/app_integration_test.go</code>: real gateway Doctor process with a fake Node runtime.
-- Modify <code>README.md</code> and <code>internal/securitytest/repository_test.go</code>: tested operator contract.
+- Modify <code>README.md</code> and the approved design: operator contract verified by the real integration and repository hygiene tests.
 
 ---
 
@@ -522,39 +522,12 @@ git commit -m "test: cover Unix Node launcher diagnosis"
 
 **Files:**
 - Modify: <code>README.md</code>
-- Modify: <code>internal/securitytest/repository_test.go</code>
 - Modify: <code>docs/superpowers/specs/2026-08-03-unix-node-launcher-design.md</code>
 
 **Interfaces:**
 - Produces a public operational contract without API or configuration changes.
 
-- [ ] **Step 1: Write the failing README assertion**
-
-Add a separate requireContainsAll group requiring:
-
-~~~go
-requireContainsAll(t, "README Unix Node launcher boundary", readme,
-    "#!/usr/bin/env node",
-    "startup PATH",
-    "validated",
-    "pinned",
-    "ambient PATH",
-    "executable_unsafe",
-    "config_home",
-    "non-symlink",
-    "0700",
-)
-~~~
-
-- [ ] **Step 2: Verify RED**
-
-~~~bash
-go test ./internal/securitytest -run TestREADMECommandsOperationsSecurityAndGeminiBoundary -count=1
-~~~
-
-Expected: missing Unix launcher strings.
-
-- [ ] **Step 3: Add the README subsection**
+- [ ] **Step 1: Add the README subsection**
 
 Insert before Windows paths:
 
@@ -574,19 +547,20 @@ the gateway effective user with exact mode 0700.
 
 Update the provider-process paragraph to include a pinned interpreter and launcher. Keep Windows text unchanged. Keep only generic paths in the new design; do not expand the developer-path allowlist.
 
-- [ ] **Step 4: Run GREEN and hygiene**
+- [ ] **Step 2: Verify the real integration contract and hygiene**
 
 ~~~bash
-go test ./internal/securitytest -run 'TestREADMECommandsOperationsSecurityAndGeminiBoundary|TestRepositoryHygiene|TestScannerRejectsDeveloperHomePathsExceptApprovedResearchDocs' -count=1
+go test -tags=integration ./internal/app -run TestDoctorCommandResolvesExactUnixEnvNodeLauncher -count=1
+go test ./internal/securitytest -run 'TestRepositoryHygiene|TestScannerRejectsDeveloperHomePathsExceptApprovedResearchDocs' -count=1
 git diff --check
 ~~~
 
-Expected: all pass with no developer-path, secret, artifact, or whitespace finding.
+Expected: the behavior test passes and hygiene reports no developer-path, secret, artifact, or whitespace finding. Do not add a source-text assertion for human-facing README prose.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ~~~bash
-git add README.md internal/securitytest/repository_test.go docs/superpowers/specs/2026-08-03-unix-node-launcher-design.md
+git add README.md docs/superpowers/specs/2026-08-03-unix-node-launcher-design.md
 git commit -m "docs: explain Unix Node launcher safety"
 ~~~
 
