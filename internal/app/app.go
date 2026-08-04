@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"reflect"
 	"slices"
 	"sort"
@@ -52,6 +53,7 @@ type Dependencies struct {
 	Adapters map[core.ProviderName]provider.Adapter
 
 	LookupEnv          provider.LookupEnv
+	LookupExecutable   func(string) (string, error)
 	NewRuntimeID       func() (string, error)
 	GatewayExecutable  func() (string, error)
 	OpenRoot           func(string) (*process.Root, error)
@@ -83,6 +85,7 @@ func ProductionDependencies(logWriter io.Writer) Dependencies {
 			core.ProviderGemini: gemini.New(),
 		},
 		LookupEnv:         os.LookupEnv,
+		LookupExecutable:  exec.LookPath,
 		NewRuntimeID:      newProductionRuntimeID,
 		GatewayExecutable: os.Executable,
 		OpenRoot:          process.OpenRoot,
@@ -136,6 +139,7 @@ func Serve(ctx context.Context, configPath string, deps Dependencies) error {
 	diagnosis, runErr := doctor.Run(ctx, cfg, doctor.Dependencies{
 		Adapters:           selected,
 		LookupEnv:          deps.LookupEnv,
+		LookupExecutable:   deps.LookupExecutable,
 		NewRuntimeID:       deps.NewRuntimeID,
 		OpenRoot:           deps.OpenRoot,
 		Janitor:            deps.Janitor,
@@ -647,6 +651,7 @@ func joinShutdown(primary error, failed bool) error {
 
 func validDoctorDependencies(deps Dependencies) bool {
 	return deps.LookupEnv != nil &&
+		deps.LookupExecutable != nil &&
 		deps.NewRuntimeID != nil &&
 		deps.GatewayExecutable != nil &&
 		deps.OpenRoot != nil &&
@@ -728,6 +733,7 @@ func Doctor(
 	diagnosis, runErr := doctor.Run(ctx, cfg, doctor.Dependencies{
 		Adapters:           adapters,
 		LookupEnv:          deps.LookupEnv,
+		LookupExecutable:   deps.LookupExecutable,
 		NewRuntimeID:       deps.NewRuntimeID,
 		OpenRoot:           deps.OpenRoot,
 		Janitor:            deps.Janitor,

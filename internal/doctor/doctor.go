@@ -6,9 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
-	"path/filepath"
 	"reflect"
-	goruntime "runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -74,6 +72,7 @@ type ProbeController interface {
 type Dependencies struct {
 	Adapters           map[core.ProviderName]provider.Adapter
 	LookupEnv          provider.LookupEnv
+	LookupExecutable   func(string) (string, error)
 	NewRuntimeID       func() (string, error)
 	OpenRoot           func(string) (*process.Root, error)
 	Janitor            func(context.Context, *process.Root) error
@@ -214,6 +213,7 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 	}
 	cfg = cloneConfig(cfg)
 	if dependencies.LookupEnv == nil ||
+		dependencies.LookupExecutable == nil ||
 		dependencies.NewRuntimeID == nil ||
 		dependencies.OpenRoot == nil ||
 		dependencies.Janitor == nil ||
@@ -342,6 +342,7 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 			ranges[name],
 			controller,
 			dependencies.LookupEnv,
+			dependencies.LookupExecutable,
 			defaults,
 			defaultsErr,
 		)
@@ -526,6 +527,7 @@ func resolveProvider(
 	interval provider.Range,
 	controller ProbeController,
 	ambient provider.LookupEnv,
+	lookupExecutable func(string) (string, error),
 	defaults platformDefaults,
 	defaultsErr error,
 ) (Provider, ResolvedProvider, *frozenLookup, bool, bool) {
@@ -533,21 +535,26 @@ func resolveProvider(
 	executableMissing := executableDisposition == pathMissing
 	executableUnsafe := executableDisposition == pathUnsafe
 
-	prefix := slices.Clone(configured.PrefixArgs)
-	var entrypoint *validatedPath
+	command := nativeProviderCommand(executable)
 	if executableDisposition == pathSafe {
-		resolvedEntrypoint, valid := resolveProviderEntrypoint(executable, prefix)
+		var valid bool
+		command, valid = resolveProviderCommand(
+			executable,
+			slices.Clone(configured.PrefixArgs),
+			lookupExecutable,
+		)
 		if !valid {
 			executableUnsafe = true
-		} else if resolvedEntrypoint != nil {
-			entrypoint = resolvedEntrypoint
-			prefix = []string{resolvedEntrypoint.Resolved}
 		}
 	}
 	safePath := ""
 	if executableDisposition == pathSafe && !executableUnsafe && defaultsErr == nil {
 		var err error
-		safePath, err = buildSafePath(executable, entrypoint, defaults)
+		safePath, err = buildSafePath(
+			command.Executable,
+			command.Entrypoint,
+			defaults,
+		)
 		if err != nil {
 			executableUnsafe = true
 		}
@@ -608,8 +615,8 @@ func resolveProvider(
 	providerConfig := provider.ProviderConfig{}
 	if resolvable {
 		providerConfig = provider.ProviderConfig{
-			Executable:    executable.Resolved,
-			PrefixArgs:    prefix,
+			Executable:    command.Executable.Resolved,
+			PrefixArgs:    slices.Clone(command.PrefixArgs),
 			ConfigHome:    configHome.Resolved,
 			CredentialEnv: credentialNames,
 			SafePath:      safePath,
@@ -638,30 +645,6 @@ func resolveProvider(
 	health := adapter.Probe(ctx, providerConfig.Clone(), controller)
 	row, canonical := canonicalizeHealth(name, interval, health)
 	return row, ResolvedProvider{Config: providerConfig, Health: canonical}, frozen, true, true
-}
-
-func resolveProviderEntrypoint(
-	executable validatedPath,
-	prefix []string,
-) (*validatedPath, bool) {
-	if goruntime.GOOS != "windows" {
-		return nil, len(prefix) == 0
-	}
-	if len(prefix) == 0 {
-		return nil, true
-	}
-	if len(prefix) != 1 || !strings.EqualFold(filepath.Base(executable.Clean), "node.exe") {
-		return nil, false
-	}
-	extension := filepath.Ext(prefix[0])
-	if extension != ".js" && extension != ".mjs" {
-		return nil, false
-	}
-	entrypoint, disposition := validateEntrypointPath(prefix[0])
-	if disposition != pathSafe {
-		return nil, false
-	}
-	return &entrypoint, true
 }
 
 func canonicalizeHealth(

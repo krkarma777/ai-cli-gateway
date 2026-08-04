@@ -52,7 +52,7 @@ func TestDoctorReportsOnlyFixedConfigurationFailureBeforeDependencies(t *testing
 func TestProductionDependenciesAreCompleteAndLazy(t *testing.T) {
 	deps := ProductionDependencies(panicWriter{})
 
-	if deps.LookupEnv == nil || deps.NewRuntimeID == nil ||
+	if deps.LookupEnv == nil || deps.LookupExecutable == nil || deps.NewRuntimeID == nil ||
 		deps.GatewayExecutable == nil || deps.OpenRoot == nil ||
 		deps.Janitor == nil || deps.CloseRoot == nil ||
 		deps.NewProbeController == nil || deps.NewHTTPIDs == nil ||

@@ -453,6 +453,113 @@ func TestCommandSignalsExitCleanlyWithFakeCodexAndNoDescendants(t *testing.T) {
 	}
 }
 
+func TestDoctorCommandResolvesExactUnixEnvNodeLauncher(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix env-node launcher fixture; native Windows launcher coverage is separate")
+	}
+	testutil.AcquireRepositoryScanLock(t)
+	gatewayExecutable := testutil.BuildGateway(t)
+	base := testutil.TrustedTempDir(t)
+	// The command fixture parent intentionally requires owner-only access.
+	//nolint:gosec
+	if err := os.Chmod(base, 0o700); err != nil {
+		t.Fatalf("chmod command fixture: %v", err)
+	}
+	fakeCodex := buildCommandProbeFake(t, base)
+	nodeBin := filepath.Join(base, "node-bin")
+	if err := os.Mkdir(nodeBin, 0o700); err != nil {
+		t.Fatalf("create fake Node directory: %v", err)
+	}
+	node := filepath.Join(nodeBin, "node")
+	if err := os.Symlink(fakeCodex, node); err != nil {
+		t.Fatalf("symlink fake Node: %v", err)
+	}
+	launcher := filepath.Join(base, "codex")
+	if err := os.WriteFile(launcher, []byte("#!/usr/bin/env node\n"), 0o700); err != nil {
+		t.Fatalf("write exact Node launcher: %v", err)
+	}
+	if err := os.Chmod(launcher, 0o700); err != nil {
+		t.Fatalf("chmod exact Node launcher: %v", err)
+	}
+	configHome := testutil.TrustedTempDir(t)
+	runtimeRoot := filepath.Join(base, "PLANTED_COMMAND_PATH_SECRET-runtime")
+	configPath := writeCommandIntegrationConfig(
+		t,
+		base,
+		"127.0.0.1:8080",
+		runtimeRoot,
+		launcher,
+		configHome,
+	)
+	priorPath := os.Getenv("PATH")
+	startupPath := strings.Join([]string{nodeBin, priorPath}, string(os.PathListSeparator))
+
+	runDoctor := func(t *testing.T, path string) (int, string, string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), appIntegrationOuterTimeout)
+		defer cancel()
+		command := exec.CommandContext(ctx, gatewayExecutable, "doctor", "--config", configPath)
+		command.Env = make([]string, 0, len(os.Environ())+2)
+		for _, environment := range os.Environ() {
+			if !strings.HasPrefix(environment, "PATH=") {
+				command.Env = append(command.Env, environment)
+			}
+		}
+		command.Env = append(
+			command.Env,
+			"PATH="+path,
+			"PLANTED_AMBIENT_SECRET=PLANTED_AMBIENT_VALUE",
+		)
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		command.Stdout = &stdout
+		command.Stderr = &stderr
+		runErr := command.Run()
+		if command.ProcessState == nil {
+			t.Fatalf("run gateway doctor: %v", runErr)
+		}
+		return command.ProcessState.ExitCode(), stdout.String(), stderr.String()
+	}
+
+	t.Run("ready", func(t *testing.T) {
+		exitCode, stdout, stderr := runDoctor(t, startupPath)
+		if exitCode != 0 || !strings.Contains(stdout, "codex\tready\t0.146.0") {
+			t.Fatalf("doctor exit/output = %d/%q stderr=%q", exitCode, stdout, stderr)
+		}
+		if strings.Contains(stdout+stderr, "PLANTED_AMBIENT_SECRET") {
+			t.Fatalf("doctor exposed planted ambient name: stdout=%q stderr=%q", stdout, stderr)
+		}
+	})
+
+	t.Run("missing Node", func(t *testing.T) {
+		emptyPath := filepath.Join(base, "empty-path")
+		if err := os.Mkdir(emptyPath, 0o700); err != nil {
+			t.Fatalf("create empty startup PATH directory: %v", err)
+		}
+		exitCode, stdout, stderr := runDoctor(t, emptyPath)
+		if exitCode != 1 || !strings.Contains(stdout, "executable_unsafe") ||
+			strings.Contains(stdout, "version_unreadable") {
+			t.Fatalf("doctor exit/output = %d/%q stderr=%q", exitCode, stdout, stderr)
+		}
+		for _, secret := range []string{
+			"PLANTED_AMBIENT_SECRET",
+			"PLANTED_AMBIENT_VALUE",
+			base,
+			configPath,
+			launcher,
+			fakeCodex,
+			runtimeRoot,
+		} {
+			if strings.Contains(stdout+stderr, secret) {
+				t.Fatalf("doctor exposed %q: stdout=%q stderr=%q", secret, stdout, stderr)
+			}
+		}
+		if strings.Contains(stdout+stderr, string(os.PathSeparator)) {
+			t.Fatalf("doctor exposed filesystem path: stdout=%q stderr=%q", stdout, stderr)
+		}
+	})
+}
+
 func TestApplicationRedactsDistinctProcessAndDependencySecrets(t *testing.T) {
 	harness := newAppIntegrationHarness(t, "")
 	buildRedactionProviderFake(t, harness.configHome)
@@ -945,6 +1052,9 @@ import (
 	"strings"
 )
 func main() {
+	if os.Getenv("PLANTED_AMBIENT_SECRET") != "" {
+		os.Exit(91)
+	}
 	args := strings.Join(os.Args[1:], " ")
 	switch {
 	case strings.HasSuffix(args, "--version"):
