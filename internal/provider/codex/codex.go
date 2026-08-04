@@ -122,7 +122,6 @@ var codexCapabilities = [...]string{
 var requiredDoctorCheckNames = [...]string{
 	"auth.credentials",
 	"config.load",
-	"installation",
 }
 
 const (
@@ -239,7 +238,6 @@ func (a *Adapter) Probe(
 			false,
 			false,
 			authUnknown,
-			false,
 		)
 	}
 
@@ -260,7 +258,6 @@ func (a *Adapter) Probe(
 			versionSupported,
 			false,
 			authUnknown,
-			false,
 		)
 	}
 	helpResult, helpRunErr := runProbe(
@@ -305,16 +302,16 @@ func (a *Adapter) Probe(
 	}
 
 	doctorOK := doctorRunErr == nil &&
-		doctorResult.ExitCode == 0 &&
+		closedDoctorExitCode(doctorResult.ExitCode) &&
 		validDoctorReport(doctorResult.Stdout)
+	capabilitiesReady := helpOK && featuresOK && doctorOK
 
 	return buildHealth(
 		versionText,
 		versionParsed,
 		versionSupported,
-		helpOK && featuresOK,
+		capabilitiesReady,
 		auth,
-		doctorOK,
 	)
 }
 
@@ -540,20 +537,23 @@ func closedDoctorStatus(status string) bool {
 	}
 }
 
+func closedDoctorExitCode(exitCode int) bool {
+	return exitCode == 0 || exitCode == 1
+}
+
 func buildHealth(
 	version string,
 	versionParsed bool,
 	versionSupported bool,
-	capabilitiesProven bool,
+	capabilitiesReady bool,
 	auth string,
-	doctorOK bool,
 ) provider.Health {
 	health := provider.Health{
 		Provider: core.ProviderCodex,
 		Version:  version,
 		Auth:     auth,
 	}
-	if capabilitiesProven {
+	if capabilitiesReady {
 		health.Capabilities = append(
 			[]string(nil),
 			codexCapabilities[:]...,
@@ -572,7 +572,7 @@ func buildHealth(
 			provider.ProblemVersionUnsupported,
 		)
 	}
-	if !capabilitiesProven || !doctorOK {
+	if !capabilitiesReady {
 		health.Problems = append(
 			health.Problems,
 			provider.ProblemCapabilityMissing,
