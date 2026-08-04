@@ -1547,6 +1547,39 @@ func TestScannerSkipsOnlyTopLevelGitAndSuperpowersMetadata(t *testing.T) {
 	assertFinding(t, scanRepository(root), "secret_assignment", filepath.Join(".other", "hidden.env"), secret)
 }
 
+func TestScannerSkipsTopLevelGitFileForLinkedWorktree(t *testing.T) {
+	root := t.TempDir()
+	username := "krkarma" + "777"
+	writeFixtureFile(t, root, ".git", []byte("gitdir: /Users/"+username+"/Dev/repository/.git/worktrees/feature\n"))
+	writeFixtureFile(t, root, "clean.txt", []byte("clean\n"))
+
+	if err := scanRepository(root); err != nil {
+		t.Fatalf("scanRepository(linked worktree) error = %q, want skipped top-level Git metadata", err)
+	}
+}
+
+func TestScannerRejectsTopLevelGitSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ordinary Windows users may not have symlink privilege")
+	}
+	root := t.TempDir()
+	writeFixtureFile(t, root, "gitdir", []byte("clean\n"))
+	if err := os.Symlink("gitdir", filepath.Join(root, ".git")); err != nil {
+		t.Fatalf("create top-level Git symlink: %v", err)
+	}
+
+	assertFinding(t, scanRepository(root), "symlink", ".git")
+}
+
+func TestScannerDoesNotSkipNestedGitFile(t *testing.T) {
+	root := t.TempDir()
+	username := "krkarma" + "777"
+	relative := filepath.Join("nested", ".git")
+	writeFixtureFile(t, root, relative, []byte("gitdir: /Users/"+username+"/Dev/repository/.git/worktrees/feature\n"))
+
+	assertFinding(t, scanRepository(root), "developer_path", relative)
+}
+
 func TestScannerRejectsAuthAndGeneratedArtifactBasenames(t *testing.T) {
 	authFiles := []string{"auth.json", ".credentials.json", "credentials.json", "oauth_creds.json", "google_accounts.json"}
 	for _, name := range authFiles {
@@ -1822,13 +1855,19 @@ func scanRepository(root string) error {
 		if entry.Type()&os.ModeSymlink != 0 {
 			return scanFinding{category: "symlink", relative: relative}
 		}
+		if relative == ".git" {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 
 		base := strings.ToLower(entry.Name())
 		if isAuthArtifact(base, entry.IsDir()) {
 			return scanFinding{category: "auth_artifact", relative: relative}
 		}
 		if entry.IsDir() {
-			if relative == ".git" || relative == ".superpowers" {
+			if relative == ".superpowers" {
 				return filepath.SkipDir
 			}
 			return nil
