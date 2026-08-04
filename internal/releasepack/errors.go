@@ -27,6 +27,10 @@ func newCategorizedError(category errorCategory) error {
 	return &categorizedError{category: category}
 }
 
+func newArchiveFailure() error {
+	return newCategorizedError(categoryArchiveFailure)
+}
+
 // ErrorCategory returns the stable, non-sensitive category for err. Foreign
 // errors are deliberately collapsed to internal_error.
 func ErrorCategory(err error) string {
