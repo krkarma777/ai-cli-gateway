@@ -277,7 +277,19 @@ Codex uses its prepared dedicated config home and accepts no credential environm
 
 Every Gemini request gets a disposable `GEMINI_CLI_HOME`; cached personal OAuth reuse is unsupported. Naming one of these shapes proves only local configuration acceptance. It does not establish upstream availability, billing tier, quota, entitlement, or live credential validity.
 
-The child environment is minimal. Arbitrary proxy, custom-CA, keyring, shell, and other ambient variables are not inherited. A deployment that needs another value requires a future explicitly validated allowlist.
+When an exact Unix Node launcher is used, provider children run with the pinned absolute Node interpreter and launcher identities. The child environment is minimal: arbitrary proxy, custom-CA, keyring, shell, and other ambient variables are not inherited. A deployment that needs another value requires a future explicitly validated allowlist.
+
+### Unix Node launchers
+
+An absolute provider executable may resolve to a Node launcher whose first line
+is exactly #!/usr/bin/env node with LF or CRLF. At startup, Doctor resolves node
+once from the startup PATH, applies the same executable and ancestor safety
+checks, and pins the absolute Node and launcher identities. Provider children
+still receive a rebuilt safe path; the ambient PATH is not inherited. A missing
+or unsafe Node candidate reports `executable_unsafe` before probing.
+
+On Unix, every `config_home` must be an absolute non-symlink directory owned by
+the gateway effective user with exact mode `0700`.
 
 ### Windows paths
 

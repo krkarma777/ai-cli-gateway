@@ -7,11 +7,13 @@
 ## Summary
 
 AI CLI Gateway will support Unix provider executables installed as trusted Node
-launchers whose first line is exactly `#!/usr/bin/env node`. Doctor will resolve
-`node` once at startup, validate and pin its absolute filesystem identity, and
-execute the provider as an argv vector equivalent to `node /absolute/launcher.js
-...`. The provider process will continue to receive only the gateway's rebuilt
-environment and safe `PATH`; no shell or ambient environment inheritance is
+launchers whose first line is exactly `#!/usr/bin/env node` with LF or CRLF.
+Doctor will resolve `node` exactly once from the startup `PATH`, validate and
+pin the absolute Node and launcher filesystem identities, and execute the
+provider as an argv vector equivalent to `node /absolute/launcher.js ...`.
+Provider children will continue to receive only the gateway's rebuilt
+environment and safe `PATH`; ambient
+`PATH` is not inherited and no shell or ambient environment inheritance is
 introduced.
 
 This fixes the installed Codex CLI case where `command -v codex` resolves through
@@ -177,6 +179,8 @@ new path directories meet the same applicable policies.
   options, additional arguments, and non-Node interpreters are not transformed.
 - Authentication files and config contents are not inspected by launcher
   resolution. The configured provider home remains the only credential boundary.
+- On Unix, every `config_home` is an absolute non-symlink directory owned by the
+  gateway effective user with exact mode `0700`.
 - Existing stdout/stderr limits, timeouts, cancellation, process-group cleanup,
   concurrency limits, and bounded queue behavior remain unchanged.
 
@@ -220,8 +224,10 @@ README troubleshooting will explain:
 - Unix npm launchers using the exact Node env shebang are resolved and pinned by
   Doctor.
 - The gateway startup environment must be able to locate `node` once.
-- Doctor still rejects an interpreter or path that fails filesystem safety checks.
-- `config_home` must be a private non-symlink directory with mode `0700` on Unix.
+- Doctor still reports the existing `executable_unsafe` problem before probing
+  when the Node candidate is missing or fails filesystem safety checks.
+- On Unix, `config_home` must be an absolute non-symlink directory owned by the
+  gateway effective user with exact mode `0700`.
 
 The project continues to describe itself as a Responses API-compatible subset;
 this change does not expand the HTTP API contract.
