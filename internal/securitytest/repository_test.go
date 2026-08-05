@@ -1190,6 +1190,138 @@ func TestREADMEOpeningAndOfficialContractSources(t *testing.T) {
 	}
 }
 
+func TestREADMEReleaseQuickStart(t *testing.T) {
+	readme := string(readRepositoryFile(t, "README.md"))
+	paragraphs := markdownProseParagraphs(readme)
+	if len(paragraphs) < 2 {
+		t.Fatal("README.md must begin with the description and subset disclaimer")
+	}
+	const opening = "AI CLI Gateway turns locally authenticated AI CLIs into an OpenAI Responses-compatible API."
+	const disclaimer = "It deliberately implements a small **Responses API-compatible subset**, not full OpenAI API compatibility. The gateway is a local, final-output bridge with strict validation; it is not a drop-in implementation of every OpenAI endpoint or feature."
+	if paragraphs[0] != opening || paragraphs[1] != disclaimer {
+		t.Fatalf("README opening paragraphs changed: got %q followed by %q", paragraphs[0], paragraphs[1])
+	}
+
+	quickStartIndex := strings.Index(readme, "\n## Quick Start\n")
+	architectureIndex := strings.Index(readme, "\n## Architecture and scope\n")
+	if quickStartIndex < 0 {
+		t.Fatal("README.md is missing the release Quick Start")
+	}
+	if architectureIndex < 0 || quickStartIndex > architectureIndex {
+		t.Fatal("README Quick Start must precede Architecture and scope")
+	}
+	quickStart := readme[quickStartIndex:architectureIndex]
+
+	requireContainsAll(t, "README Quick Start release boundary", quickStart,
+		"v0.1.0",
+		"ai-cli-gateway_0.1.0_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.1.0_linux_arm64.tar.gz",
+		"ai-cli-gateway_0.1.0_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.1.0_darwin_arm64.tar.gz",
+		"ai-cli-gateway_0.1.0_windows_amd64.zip",
+		"Responses API-compatible subset",
+		"You are responsible for installing and authenticating each provider CLI and for using it in accordance with its applicable terms.",
+	)
+
+	posixIndex := strings.Index(quickStart, "\n### POSIX (macOS and Linux)\n")
+	windowsIndex := strings.Index(quickStart, "\n### Windows PowerShell\n")
+	sdkIndex := strings.Index(quickStart, "\n### Official SDK checks\n")
+	if posixIndex < 0 || windowsIndex < 0 || sdkIndex < 0 || posixIndex >= windowsIndex || windowsIndex >= sdkIndex {
+		t.Fatal("README Quick Start must keep separate ordered POSIX, Windows PowerShell, and SDK sections")
+	}
+	posix := quickStart[posixIndex:windowsIndex]
+	windows := quickStart[windowsIndex:sdkIndex]
+	sdk := quickStart[sdkIndex:]
+
+	requireContainsAll(t, "README POSIX Quick Start", posix,
+		"awk -v name=\"${ASSET}\"",
+		"matches != 1",
+		"${#EXPECTED_SHA}",
+		"*[!0-9a-f]*",
+		"shasum -a 256",
+		"tar -xzf",
+		"${HOME}/.local/bin",
+		"examples/config/codex.example.toml",
+		"/opt/ai-cli-gateway/bin/codex",
+		"/var/lib/ai-cli-gateway/codex-home",
+		"/var/lib/ai-cli-gateway/runtime",
+		"configured-provider-model",
+		"chmod 700",
+		"chmod 600",
+		"openssl rand -hex 32",
+		"LC_ALL=C tr -d '\\n'",
+		"export AI_CLI_GATEWAY_API_KEY=\"${GATEWAY_KEY}\"",
+		"ai-cli-gateway doctor --config",
+		"ai-cli-gateway serve --config",
+		"http://127.0.0.1:8080/v1/models",
+		"http://127.0.0.1:8080/v1/responses",
+		"gh attestation verify \"${ASSET}\"",
+		"--repo krkarma777/ai-cli-gateway",
+		"--predicate-type https://slsa.dev/provenance/v1",
+		"--signer-workflow github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml",
+		"[systemd service example](deploy/systemd/ai-cli-gateway.service)",
+	)
+	if strings.Contains(posix, "shasum -c") {
+		t.Fatal("README POSIX Quick Start must verify only the selected archive, not the incomplete manifest set")
+	}
+	if count := strings.Count(posix, "LC_ALL=C tr -d '\\n'"); count < 3 {
+		t.Fatalf("README POSIX Quick Start loads and validates the external key in %d terminals, want at least three", count)
+	}
+
+	requireContainsAll(t, "README PowerShell Quick Start", windows,
+		"ai-cli-gateway_0.1.0_windows_amd64.zip",
+		"Get-FileHash -Algorithm SHA256",
+		"$ManifestMatches.Count -ne 1",
+		"^[0-9a-f]{64}$",
+		"OrdinalIgnoreCase",
+		"Expand-Archive",
+		"C:/Tools/Codex/codex.exe",
+		"C:/GatewayService/codex-home",
+		"C:/GatewayService/runtime",
+		"examples/config/codex.example.toml",
+		"configured-provider-model",
+		"RandomNumberGenerator",
+		"ToHexString",
+		"UTF8Encoding]::new($false)",
+		"icacls.exe",
+		"$LASTEXITCODE -ne 0",
+		"[IO.File]::ReadAllText($GatewayKeyPath).Trim()",
+		"$env:AI_CLI_GATEWAY_API_KEY = $LoadedGatewayKey",
+		"ai-cli-gateway.exe doctor --config",
+		"ai-cli-gateway.exe serve --config",
+		"http://127.0.0.1:8080/v1/models",
+		"http://127.0.0.1:8080/v1/responses",
+	)
+	if digestIndex, extractIndex := strings.Index(windows, "Get-FileHash -Algorithm SHA256"), strings.Index(windows, "Expand-Archive"); digestIndex < 0 || extractIndex < 0 || digestIndex > extractIndex {
+		t.Fatal("README PowerShell Quick Start must compare the selected digest before extraction")
+	}
+	if count := strings.Count(windows, "[IO.File]::ReadAllText($GatewayKeyPath).Trim()"); count < 3 {
+		t.Fatalf("README PowerShell Quick Start loads and validates the external key in %d terminals, want at least three", count)
+	}
+	if strings.Contains(strings.ToLower(windows), "systemd") {
+		t.Fatal("README Windows Quick Start must not contain systemd instructions")
+	}
+
+	requireContainsAll(t, "README SDK Quick Start", sdk,
+		"examples/openai-sdk/python/requirements.lock",
+		"python3.12 -m venv",
+		"-m pip install --disable-pip-version-check --no-input",
+		"examples/openai-sdk/python/main.py",
+		"examples/openai-sdk/javascript/package-lock.json",
+		"npm ci --ignore-scripts --prefix",
+		"examples/openai-sdk/javascript/main.mjs",
+		"AI_CLI_GATEWAY_BASE_URL=\"http://127.0.0.1:8080/v1\"",
+		"AI_CLI_GATEWAY_MODEL=\"codex-local\"",
+		"AI_CLI_GATEWAY_TIMEOUT_SECONDS",
+		"1..300",
+		"300",
+		"five seconds",
+		"models.list()",
+		"responses.create()",
+		"non-streaming",
+	)
+}
+
 func TestREADMEExactAPISubsetExamplesAndErrors(t *testing.T) {
 	readme := string(readRepositoryFile(t, "README.md"))
 	requireContainsAll(t, "README architecture and endpoints", readme,
