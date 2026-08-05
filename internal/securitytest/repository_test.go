@@ -858,7 +858,7 @@ func TestSDKContractScript(t *testing.T) {
 	if !strings.HasPrefix(text, "#!/bin/sh\nset -eu\n") {
 		t.Fatal("script does not use the closed POSIX shell prologue")
 	}
-	for _, forbidden := range []string{"eval ", "sh -c", "bash -c", "ANTHROPIC_", "GEMINI_", "OPENAI_", "SDK contract input", "AI_CLI_GATEWAY_API_KEY="} {
+	for _, forbidden := range []string{"eval ", "sh -c", "bash -c", "ANTHROPIC_", "GEMINI_", "OPENAI_", "Return only the exact text requested.", "Reply with exactly: SDK_GATEWAY_OK", "AI_CLI_GATEWAY_API_KEY="} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("script contains forbidden construct %q", forbidden)
 		}

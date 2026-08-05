@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -399,12 +400,49 @@ func TestRunWithSystemSuppressesForbiddenGatewayOutput(t *testing.T) {
 	}
 }
 
+func TestRunWithSystemSuppressesCheckedInSDKInstructionAcrossWrites(t *testing.T) {
+	const instruction = "Return only the exact text requested."
+	pythonSource, err := os.ReadFile("../../examples/openai-sdk/python/main.py")
+	if err != nil {
+		t.Fatalf("read checked-in Python SDK example: %v", err)
+	}
+	javascriptSource, err := os.ReadFile("../../examples/openai-sdk/javascript/main.mjs")
+	if err != nil {
+		t.Fatalf("read checked-in JavaScript SDK example: %v", err)
+	}
+	for _, example := range []struct {
+		name   string
+		source []byte
+	}{
+		{name: "Python", source: pythonSource},
+		{name: "JavaScript", source: javascriptSource},
+	} {
+		if !bytes.Contains(example.source, []byte(instruction)) {
+			t.Fatalf("checked-in %s SDK example does not send the contract instruction", example.name)
+		}
+	}
+
+	sys := newFakeSystem()
+	sys.gatewayWrites = [][]byte{
+		[]byte("prefix Return only the exact "),
+		[]byte("text requested. suffix"),
+	}
+	var output bytes.Buffer
+	err = runWithSystem(context.Background(), fakeOptions(), &output, sys, testPolicy)
+	if got := ErrorCategory(err); got != categoryFailed {
+		t.Fatalf("category = %q, want %q", got, categoryFailed)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("public output = %q", output.String())
+	}
+}
+
 func TestRunWithSystemSuppressesEveryForbiddenGatewayValueAcrossWrites(t *testing.T) {
 	root := "/safe/repository/.sdk-contract-test"
 	values := []string{
 		"0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
-		"SDK contract instruction.",
-		"SDK contract input.",
+		"Return only the exact text requested.",
+		"Reply with exactly: SDK_GATEWAY_OK",
 		"SDK_GATEWAY_OK",
 		"/safe/python",
 		"/safe/node",

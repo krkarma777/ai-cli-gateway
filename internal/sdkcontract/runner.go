@@ -294,8 +294,8 @@ func runWithSystem(
 		}
 		capture := newDeferredScanner([]string{
 			key,
-			"SDK contract instruction.",
-			"SDK contract input.",
+			"Return only the exact text requested.",
+			"Reply with exactly: SDK_GATEWAY_OK",
 			"SDK_GATEWAY_OK",
 			options.PythonExecutable,
 			options.NodeExecutable,
