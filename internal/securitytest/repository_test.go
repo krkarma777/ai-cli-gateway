@@ -550,6 +550,9 @@ func validateOfficialSDKSource(language, contents string) error {
 			`assert message.type == "message"`, `assert message.status == "completed"`,
 			`assert message.role == "assistant"`, `assert len(message.content) == 1`, `assert content.type == "output_text"`,
 			`assert content.annotations == []`, `assert content.text == "SDK_GATEWAY_OK\n"`,
+			`status = getattr(error, "status_code", None)`,
+			`if isinstance(status, int) and not isinstance(status, bool) and 400 <= status <= 599:`,
+			`return str(status)`, `return "unknown"`,
 			`print(f"sdk_contract_error: missing {error.name}", file=sys.stderr)`,
 			`print("sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS", file=sys.stderr)`,
 			`print(f"sdk_contract_error: python_api {api_status(error)}", file=sys.stderr)`,
@@ -580,6 +583,8 @@ func validateOfficialSDKSource(language, contents string) error {
 			`assert.equal(message.content.length, 1)`, `assert.equal(content.type, "output_text")`,
 			`assert.deepEqual(content.annotations, [])`,
 			`assert.equal(content.text, "SDK_GATEWAY_OK\n")`,
+			`if (Number.isSafeInteger(error.status) && error.status >= 400 && error.status <= 599)`,
+			`return String(error.status)`, `return "unknown"`,
 			"console.error(`sdk_contract_error: missing ${error.name}`)",
 			`console.error("sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS")`,
 			"console.error(`sdk_contract_error: javascript_api ${apiStatus(error)}`)",
@@ -617,6 +622,10 @@ func validateOfficialSDKSource(language, contents string) error {
 	}
 	if language == "Python" && strings.Index(contents, `os.environ.pop("OPENAI_LOG", None)`) > strings.Index(contents, "import openai") {
 		return errors.New("Python logging suppression occurs after SDK import")
+	}
+	if (language == "Python" && strings.Contains(contents, "str(error)")) ||
+		(language == "JavaScript" && strings.Contains(contents, "String(error)")) {
+		return errors.New("source serializes an SDK exception")
 	}
 	variables := regexp.MustCompile(`AI_CLI_GATEWAY_[A-Z0-9_]+`).FindAllString(contents, -1)
 	gotVariables := make(map[string]struct{})
@@ -667,6 +676,11 @@ func TestOfficialSDKExamplesContractRejectsMutations(t *testing.T) {
 		{"python response text", "Python", "examples/openai-sdk/python/main.py", `assert content.text == "SDK_GATEWAY_OK\n"`, `assert content.text == "changed\n"`},
 		{"python fixed error", "Python", "examples/openai-sdk/python/main.py", `sdk_contract_error: python_assertion`, `sdk_contract_error: changed`},
 		{"python fixed success", "Python", "examples/openai-sdk/python/main.py", `python_sdk_contract_ok`, `python_contract_changed`},
+		{"python API status integer", "Python", "examples/openai-sdk/python/main.py", `isinstance(status, int)`, `status is not None`},
+		{"python API status boolean", "Python", "examples/openai-sdk/python/main.py", ` and not isinstance(status, bool)`, ``},
+		{"python API status lower bound", "Python", "examples/openai-sdk/python/main.py", `400 <= status`, `399 <= status`},
+		{"python API status upper bound", "Python", "examples/openai-sdk/python/main.py", `status <= 599`, `status <= 600`},
+		{"python API status exception disclosure", "Python", "examples/openai-sdk/python/main.py", `return "unknown"`, "return str(error)\n    return \"unknown\""},
 		{"javascript logging suppression", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `logLevel: "off"`, `logLevel: "warn"`},
 		{"javascript timeout maximum", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `seconds > 300`, `seconds > 301`},
 		{"javascript retries", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `maxRetries: 0`, `maxRetries: 1`},
@@ -676,6 +690,10 @@ func TestOfficialSDKExamplesContractRejectsMutations(t *testing.T) {
 		{"javascript response text", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `assert.equal(content.text, "SDK_GATEWAY_OK\n")`, `assert.equal(content.text, "changed\n")`},
 		{"javascript fixed error", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `sdk_contract_error: javascript_assertion`, `sdk_contract_error: changed`},
 		{"javascript fixed success", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `javascript_sdk_contract_ok`, `javascript_contract_changed`},
+		{"javascript API status integer", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `Number.isSafeInteger(error.status)`, `Number.isFinite(error.status)`},
+		{"javascript API status lower bound", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `error.status >= 400`, `error.status >= 399`},
+		{"javascript API status upper bound", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `error.status <= 599`, `error.status <= 600`},
+		{"javascript API status exception disclosure", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `return "unknown"`, "return String(error);\n  return \"unknown\""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -706,6 +724,13 @@ func TestOfficialSDKExamplesSuppressHostileLogging(t *testing.T) {
 			{name: "non-ASCII timeout", environment: sdkValidEnvironment("٣"), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
 			{name: "oversized timeout", environment: sdkValidEnvironment(strings.Repeat("9", 5000)), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
 			{name: "success", environment: sdkValidEnvironment("5"), output: "python_sdk_contract_ok\n", exitCode: 0},
+			{name: "models API status 400", environment: sdkAPIErrorEnvironment("models:400"), output: "sdk_contract_error: python_api 400\n", exitCode: 1},
+			{name: "responses API status 599", environment: sdkAPIErrorEnvironment("responses:599"), output: "sdk_contract_error: python_api 599\n", exitCode: 1},
+			{name: "API status missing", environment: sdkAPIErrorEnvironment("models:missing"), output: "sdk_contract_error: python_api unknown\n", exitCode: 1},
+			{name: "API status non-integer", environment: sdkAPIErrorEnvironment("responses:string"), output: "sdk_contract_error: python_api unknown\n", exitCode: 1},
+			{name: "API status boolean", environment: sdkAPIErrorEnvironment("models:boolean"), output: "sdk_contract_error: python_api unknown\n", exitCode: 1},
+			{name: "API status below range", environment: sdkAPIErrorEnvironment("responses:399"), output: "sdk_contract_error: python_api unknown\n", exitCode: 1},
+			{name: "API status above range", environment: sdkAPIErrorEnvironment("models:600"), output: "sdk_contract_error: python_api unknown\n", exitCode: 1},
 		})
 	})
 
@@ -722,6 +747,13 @@ func TestOfficialSDKExamplesSuppressHostileLogging(t *testing.T) {
 			{name: "non-ASCII timeout", environment: sdkValidEnvironment("٣"), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
 			{name: "oversized timeout", environment: sdkValidEnvironment(strings.Repeat("9", 5000)), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
 			{name: "success", environment: sdkValidEnvironment("5"), output: "javascript_sdk_contract_ok\n", exitCode: 0},
+			{name: "models API status 400", environment: sdkAPIErrorEnvironment("models:400"), output: "sdk_contract_error: javascript_api 400\n", exitCode: 1},
+			{name: "responses API status 599", environment: sdkAPIErrorEnvironment("responses:599"), output: "sdk_contract_error: javascript_api 599\n", exitCode: 1},
+			{name: "API status missing", environment: sdkAPIErrorEnvironment("models:missing"), output: "sdk_contract_error: javascript_api unknown\n", exitCode: 1},
+			{name: "API status non-integer", environment: sdkAPIErrorEnvironment("responses:string"), output: "sdk_contract_error: javascript_api unknown\n", exitCode: 1},
+			{name: "API status boolean", environment: sdkAPIErrorEnvironment("models:boolean"), output: "sdk_contract_error: javascript_api unknown\n", exitCode: 1},
+			{name: "API status below range", environment: sdkAPIErrorEnvironment("responses:399"), output: "sdk_contract_error: javascript_api unknown\n", exitCode: 1},
+			{name: "API status above range", environment: sdkAPIErrorEnvironment("models:600"), output: "sdk_contract_error: javascript_api unknown\n", exitCode: 1},
 		})
 	})
 }
@@ -764,6 +796,10 @@ func sdkValidEnvironment(timeout string) []string {
 	}
 }
 
+func sdkAPIErrorEnvironment(mode string) []string {
+	return append(sdkValidEnvironment("5"), "SDK_CONTRACT_FAKE_API_ERROR="+mode)
+}
+
 func runSDKClientCases(t *testing.T, executable, source string, baseEnvironment []string, cases []sdkClientCase) {
 	t.Helper()
 	for _, test := range cases {
@@ -803,6 +839,24 @@ if os.environ.get("OPENAI_LOG") == "debug":
 class APIError(Exception):
     pass
 
+def raise_api_error(location):
+    mode = os.environ.get("SDK_CONTRACT_FAKE_API_ERROR")
+    if mode is None or not mode.startswith(location + ":"):
+        return
+    kind = mode.split(":", 1)[1]
+    error = APIError("planted-sensitive-exception-message")
+    statuses = {
+        "400": 400,
+        "599": 599,
+        "string": "400",
+        "boolean": True,
+        "399": 399,
+        "600": 600,
+    }
+    if kind != "missing":
+        error.status_code = statuses[kind]
+    raise error
+
 class Value:
     def __init__(self, **fields):
         self.__dict__.update(fields)
@@ -810,6 +864,7 @@ class Value:
 
 class Models:
     def list(self):
+        raise_api_error("models")
         return Value(data=[Value(id="codex-sdk-test", object="model", created=0, owned_by="local")])
 
 class Responses:
@@ -826,6 +881,7 @@ class Responses:
         }
         if request != expected:
             raise AssertionError
+        raise_api_error("responses")
         content = Value(type="output_text", annotations=[], text="SDK_GATEWAY_OK\n")
         message = Value(id="msg_fixture", type="message", status="completed", role="assistant", content=[content])
         text = Value(format=Value(type="text"))
@@ -850,6 +906,27 @@ class OpenAI:
 
 const javaScriptSDKContractStub = `class APIError extends Error {}
 
+function raiseAPIError(location) {
+  const mode = process.env.SDK_CONTRACT_FAKE_API_ERROR;
+  if (mode === undefined || !mode.startsWith(location + ":")) {
+    return;
+  }
+  const kind = mode.slice(location.length + 1);
+  const error = new APIError("planted-sensitive-exception-message");
+  const statuses = {
+    "400": 400,
+    "599": 599,
+    string: "400",
+    boolean: true,
+    "399": 399,
+    "600": 600,
+  };
+  if (kind !== "missing") {
+    error.status = statuses[kind];
+  }
+  throw error;
+}
+
 class OpenAI {
   constructor(options) {
     if (process.env.OPENAI_LOG === "debug" && options.logLevel !== "off") {
@@ -859,7 +936,10 @@ class OpenAI {
       throw new Error();
     }
     this.models = {
-      list: async () => ({ data: [{ id: "codex-sdk-test", object: "model", created: 0, owned_by: "local" }] }),
+      list: async () => {
+        raiseAPIError("models");
+        return { data: [{ id: "codex-sdk-test", object: "model", created: 0, owned_by: "local" }] };
+      },
     };
     this.responses = {
       create: async (request) => {
@@ -876,6 +956,7 @@ class OpenAI {
         if (JSON.stringify(request) !== JSON.stringify(expected)) {
           throw new Error();
         }
+        raiseAPIError("responses");
         const response = {
           id: "resp_fixture",
           object: "response",
