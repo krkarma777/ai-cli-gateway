@@ -1,0 +1,19 @@
+# Replace all four generic values before serving.
+# This model marker is not a provider default or entitlement claim; replace it
+# with a model accessible to the already authenticated CLI.
+[server]
+listen = "127.0.0.1:8080"
+api_key_env = "AI_CLI_GATEWAY_API_KEY"
+
+[runtime]
+root = "/var/lib/ai-cli-gateway/runtime"
+
+[providers.codex]
+executable = "/opt/ai-cli-gateway/bin/codex"
+config_home = "/var/lib/ai-cli-gateway/codex-home"
+
+[[models]]
+id = "codex-local"
+provider = "codex"
+provider_model = "configured-provider-model"
+created = 0

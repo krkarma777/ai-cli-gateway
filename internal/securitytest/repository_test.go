@@ -31,6 +31,125 @@ const expectedModule = "github.com/krkarma777/ai-cli-gateway"
 
 var scanRootFlag = flag.String("scan-root", "", "scan an explicit absolute materialized repository root")
 
+func TestCodexConfigExampleContract(t *testing.T) {
+	contents := readRepositoryFile(t, "examples/config/codex.example.toml")
+	if !utf8.Valid(contents) {
+		t.Fatal("codex.example.toml is not valid UTF-8")
+	}
+	text := string(contents)
+	for _, forbidden := range []string{
+		"prefix_args", "credential_env", "concurrency", "queue_size", "queue_bytes", "queue_timeout", "execution_timeout",
+		"/Users/", "/home/", "C:\\\\Users\\\\", "auth.json", "credentials.json", "@", "account", "token",
+	} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+			t.Fatalf("codex.example.toml contains forbidden marker %q", forbidden)
+		}
+	}
+
+	var raw map[string]any
+	if err := toml.Unmarshal(contents, &raw); err != nil {
+		t.Fatalf("parse codex.example.toml as TOML: %v", err)
+	}
+	requireExactTableKeys(t, "root", raw, "server", "runtime", "providers", "models")
+	requireExactTableKeys(t, "server", requireTOMLTable(t, raw, "server"), "listen", "api_key_env")
+	requireExactTableKeys(t, "runtime", requireTOMLTable(t, raw, "runtime"), "root")
+	providers := requireTOMLTable(t, raw, "providers")
+	requireExactTableKeys(t, "providers", providers, "codex")
+	requireExactTableKeys(t, "providers.codex", requireTOMLTable(t, providers, "codex"), "executable", "config_home")
+	models, ok := raw["models"].([]any)
+	if !ok || len(models) != 1 {
+		t.Fatalf("models = %T with length %d, want exactly one table", raw["models"], lengthOfSlice(models))
+	}
+	model, ok := models[0].(map[string]any)
+	if !ok {
+		t.Fatalf("models[0] = %T, want TOML table", models[0])
+	}
+	requireExactTableKeys(t, "models[0]", model, "id", "provider", "provider_model", "created")
+
+	for _, marker := range []string{
+		"/opt/ai-cli-gateway/bin/codex",
+		"/var/lib/ai-cli-gateway/codex-home",
+		"/var/lib/ai-cli-gateway/runtime",
+		"configured-provider-model",
+	} {
+		if count := strings.Count(text, marker); count != 1 {
+			t.Fatalf("marker %q occurs %d times, want exactly once", marker, count)
+		}
+	}
+}
+
+func TestCodexConfigExampleUnixDecode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the committed example is deliberately Unix/systemd-oriented")
+	}
+	got, err := config.Decode(bytes.NewReader(readRepositoryFile(t, "examples/config/codex.example.toml")))
+	if err != nil {
+		t.Fatalf("Decode(unchanged codex.example.toml): %v", err)
+	}
+	requireCodexExampleDecoded(t, got, false)
+}
+
+func TestCodexConfigExampleWindowsDecodeAfterExactSubstitution(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows validates the deterministic test-local copy")
+	}
+	contents := string(readRepositoryFile(t, "examples/config/codex.example.toml"))
+	for _, substitution := range []struct{ unix, windows string }{
+		{"/opt/ai-cli-gateway/bin/codex", "C:/ai-cli-gateway/bin/codex.exe"},
+		{"/var/lib/ai-cli-gateway/codex-home", "C:/ProgramData/ai-cli-gateway/codex-home"},
+		{"/var/lib/ai-cli-gateway/runtime", "C:/ProgramData/ai-cli-gateway/runtime"},
+		{"configured-provider-model", "sdk-contract-model"},
+	} {
+		if count := strings.Count(contents, substitution.unix); count != 1 {
+			t.Fatalf("Unix marker %q occurs %d times, want exactly once", substitution.unix, count)
+		}
+		contents = strings.Replace(contents, substitution.unix, substitution.windows, 1)
+	}
+	got, err := config.Decode(strings.NewReader(contents))
+	if err != nil {
+		t.Fatalf("Decode(test-local Windows config copy): %v", err)
+	}
+	requireCodexExampleDecoded(t, got, true)
+}
+
+func requireCodexExampleDecoded(t *testing.T, got config.Config, windows bool) {
+	t.Helper()
+	runtimeRoot := "/var/lib/ai-cli-gateway/runtime"
+	executable := "/opt/ai-cli-gateway/bin/codex"
+	configHome := "/var/lib/ai-cli-gateway/codex-home"
+	providerModel := "configured-provider-model"
+	if windows {
+		runtimeRoot = "C:/ProgramData/ai-cli-gateway/runtime"
+		executable = "C:/ai-cli-gateway/bin/codex.exe"
+		configHome = "C:/ProgramData/ai-cli-gateway/codex-home"
+		providerModel = "sdk-contract-model"
+	}
+	if got.Server.Listen != "127.0.0.1:8080" || got.Server.APIKeyEnv != "AI_CLI_GATEWAY_API_KEY" {
+		t.Fatalf("Server = %#v, want explicit listener and API key environment", got.Server)
+	}
+	if got.Runtime.Root != runtimeRoot {
+		t.Fatalf("Runtime.Root = %q, want %q", got.Runtime.Root, runtimeRoot)
+	}
+	if len(got.Providers) != 1 {
+		t.Fatalf("Providers has %d entries, want exactly one", len(got.Providers))
+	}
+	provider, ok := got.Providers["codex"]
+	if !ok {
+		t.Fatal("Providers is missing codex")
+	}
+	if provider.Executable != executable || provider.ConfigHome != configHome || len(provider.PrefixArgs) != 0 || len(provider.CredentialEnv) != 0 {
+		t.Fatalf("Providers[codex] = %#v, want only explicit executable and config home", provider)
+	}
+	if provider.Concurrency != 1 || provider.QueueSize != 32 || provider.QueueBytes != 16_777_216 ||
+		provider.QueueTimeout != config.Duration(30*time.Second) || provider.ExecutionTimeout != config.Duration(5*time.Minute) {
+		t.Fatalf("Providers[codex] defaults = %#v, want decoder defaults", provider)
+	}
+	wantModels := []config.Model{{ID: "codex-local", Provider: "codex", ProviderModel: providerModel, Created: 0}}
+	if !reflect.DeepEqual(got.Models, wantModels) {
+		t.Fatalf("Models = %#v, want %#v", got.Models, wantModels)
+	}
+}
+
 func TestConfigExampleStaticContract(t *testing.T) {
 	contents := readRepositoryFile(t, "config.example.toml")
 	if !utf8.Valid(contents) {
