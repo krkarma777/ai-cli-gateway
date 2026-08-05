@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/krkarma777/ai-cli-gateway/internal/safejson"
@@ -763,9 +764,33 @@ func hasExactCreator(document map[string]any) bool {
 		}
 		if text == syftCreator {
 			count++
+			continue
+		}
+		if !validNonToolCreator(text) {
+			return false
 		}
 	}
 	return count == 1
+}
+func validNonToolCreator(creator string) bool {
+	var payload string
+	switch {
+	case strings.HasPrefix(creator, "Person: "):
+		payload = strings.TrimPrefix(creator, "Person: ")
+	case strings.HasPrefix(creator, "Organization: "):
+		payload = strings.TrimPrefix(creator, "Organization: ")
+	default:
+		return false
+	}
+	if payload == "" || payload != strings.TrimSpace(payload) {
+		return false
+	}
+	for _, r := range payload {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 func isClassifierShape(pkg rawPackage) bool {
 	return strings.HasPrefix(pkg.id, "SPDXRef-Package-binary-ai-cli-gateway-") && pkg.name == "ai-cli-gateway" && pkg.version == "UNKNOWN" && pkg.purlCount == 0

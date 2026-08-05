@@ -189,6 +189,61 @@ func TestFinalizeSPDXAcceptsCheckedSyft150Fixture(t *testing.T) {
 	}
 }
 
+func TestFinalizeSPDXValidatesCreatorIdentities(t *testing.T) {
+	valid := []struct {
+		name     string
+		creators []any
+	}{
+		{"Syft organization", []any{"Organization: Anchore, Inc", testSyftCreator}},
+		{"person", []any{"Person: Alice Example", testSyftCreator}},
+	}
+	for _, test := range valid {
+		t.Run("accepts "+test.name, func(t *testing.T) {
+			options, catalog := testSBOMCatalog()
+			document := rawSPDXForCatalog(catalog, options.StagingRoot)
+			document["creationInfo"].(map[string]any)["creators"] = test.creators
+
+			finalized, err := finalizeSPDX(marshalRawSPDX(t, document), catalog, options, "0.1.0")
+			if err != nil {
+				t.Fatalf("finalizeSPDX() error = %v", err)
+			}
+			var finalDocument map[string]any
+			if err := json.Unmarshal(finalized, &finalDocument); err != nil {
+				t.Fatalf("Unmarshal(final SPDX): %v", err)
+			}
+			got := finalDocument["creationInfo"].(map[string]any)["creators"].([]any)
+			if len(got) != 1 || got[0] != testSyftCreator {
+				t.Fatalf("creators = %#v, want exact tool only", got)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name     string
+		creators []any
+	}{
+		{"second different tool", []any{testSyftCreator, "Tool: other-1.0"}},
+		{"no identity prefix", []any{"Anchore, Inc", testSyftCreator}},
+		{"person prefix only", []any{"Person: ", testSyftCreator}},
+		{"organization prefix only", []any{"Organization: ", testSyftCreator}},
+		{"non-string", []any{true, testSyftCreator}},
+		{"leading payload whitespace", []any{"Person:  Alice", testSyftCreator}},
+		{"trailing payload whitespace", []any{"Organization: Anchore, Inc ", testSyftCreator}},
+		{"control character", []any{"Person: Alice\nExample", testSyftCreator}},
+	}
+	for _, test := range invalid {
+		t.Run("rejects "+test.name, func(t *testing.T) {
+			options, catalog := testSBOMCatalog()
+			document := rawSPDXForCatalog(catalog, options.StagingRoot)
+			document["creationInfo"].(map[string]any)["creators"] = test.creators
+
+			if _, err := finalizeSPDX(marshalRawSPDX(t, document), catalog, options, "0.1.0"); err == nil {
+				t.Fatal("finalizeSPDX() error = nil")
+			}
+		})
+	}
+}
+
 func TestFinalizeSPDXAcceptsInverseContainmentDirection(t *testing.T) {
 	options, catalog := testSBOMCatalog()
 	document := rawSPDXForCatalog(catalog, options.StagingRoot)
