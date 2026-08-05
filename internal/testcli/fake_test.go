@@ -197,7 +197,7 @@ func TestMainCodexReady(t *testing.T) {
 }
 
 func TestCodexReadyCommandBuilds(t *testing.T) {
-	cmd := exec.Command("go", "build", "-o", filepath.Join(t.TempDir(), "fake-codex-cli"), "./cmd/fake-codex-cli")
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", filepath.Join(t.TempDir(), "fake-codex-cli"), "./cmd/fake-codex-cli") //nolint:gosec // Fixed go/build/package argv; only the test-owned TempDir output path varies.
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, output)
 	}

@@ -1,3 +1,4 @@
+// Package main exposes the deterministic Codex-ready test CLI as a temporary executable.
 package main
 
 import (
