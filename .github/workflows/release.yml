@@ -256,7 +256,7 @@ jobs:
           build_info="$(run_clean_go version -m "${SYFT_BIN}")"
           grep -F $'path\tgithub.com/anchore/syft/cmd/syft' <<<"${build_info}" >/dev/null
           test "$(grep -Ec $'^\tmod\tgithub[.]com/anchore/syft\t' <<<"${build_info}")" = 1
-          test "$(grep -Ec $'^\tmod\tgithub[.]com/anchore/syft\tv1[.]50[.]0\th1:[A-Za-z0-9+/]{42}[AQgw]=$' <<<"${build_info}")" = 1
+          test "$(grep -Ec $'^\tmod\tgithub[.]com/anchore/syft\tv1[.]50[.]0\th1:[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$' <<<"${build_info}")" = 1
           grep -F -- '-X main.version=1.50.0' <<<"${build_info}" >/dev/null
           run_clean_syft() {
             "${ENV_BIN}" -i \

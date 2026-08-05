@@ -3249,8 +3249,9 @@ func TestReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "Syft root identity revalidation removed", mutate: replaceReleaseOnce("            test \"$(stat -c '%d:%i' -- \"${tools_root}\")\" = \"${TOOLS_ROOT_IDENTITY}\"\n", "")},
 		{name: "Syft config identity revalidation removed", mutate: replaceReleaseOnce("            test \"$(stat -c '%d:%i' -- \"${tools_root}/config/syft.yaml\")\" = \"${SYFT_CONFIG_IDENTITY}\"\n", "")},
 		{name: "Syft runtime root validation removed", mutate: replaceReleaseOnce("          revalidate_syft() {\n            validate_roots\n", "          revalidate_syft() {\n")},
-		{name: "Syft checksum accepts bare prefix", mutate: replaceReleaseOnce("h1:[A-Za-z0-9+/]{42}[AQgw]=$", "h1:")},
-		{name: "Syft checksum accepts noncanonical padding bits", mutate: replaceReleaseOnce("[A-Za-z0-9+/]{42}[AQgw]=", "[A-Za-z0-9+/]{43}=")},
+		{name: "Syft checksum accepts bare prefix", mutate: replaceReleaseOnce("h1:[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$", "h1:")},
+		{name: "Syft checksum accepts noncanonical padding bits", mutate: replaceReleaseOnce("[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=", "[A-Za-z0-9+/]{43}=")},
+		{name: "Syft checksum canonical set narrowed", mutate: replaceReleaseOnce("[AEIMQUYcgkosw048]", "[AQgw]")},
 		{name: "Syft post-scan revalidation removed", mutate: replaceReleaseOnce("            -c \"${tools_root}/config/syft.yaml\" -o \"spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json\"\n          revalidate_syft\n", "            -c \"${tools_root}/config/syft.yaml\" -o \"spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json\"\n")},
 		{name: "moving checkout ref", mutate: replaceReleaseOnce(checkoutAction, "actions/checkout@v7")},
 		{name: "unpeeled golangci tag object", mutate: replaceReleaseOnce(attestAction, "actions/attest@d583c34f0599d37dbac4a198b9c83201be380893")},
@@ -3699,11 +3700,18 @@ func TestReleaseSyftIsolationScript(t *testing.T) {
 		wantOK bool
 	}{
 		{name: "closed environments", mode: "syft-go", wantOK: true},
+		{name: "canonical checksum final A", mode: "syft-go-valid-checksum-a", wantOK: true},
+		{name: "canonical checksum final 8", mode: "syft-go-valid-checksum-8", wantOK: true},
 		{name: "wrong command path", mode: "syft-go-wrong-path"},
 		{name: "wrong module version", mode: "syft-go-wrong-module"},
 		{name: "missing module checksum", mode: "syft-go-missing-checksum"},
 		{name: "bare module checksum prefix", mode: "syft-go-bare-checksum"},
 		{name: "noncanonical module checksum padding", mode: "syft-go-invalid-checksum-padding"},
+		{name: "short module checksum", mode: "syft-go-short-checksum"},
+		{name: "long module checksum", mode: "syft-go-long-checksum"},
+		{name: "missing module checksum padding", mode: "syft-go-missing-checksum-padding"},
+		{name: "extra module checksum padding", mode: "syft-go-extra-checksum-padding"},
+		{name: "invalid module checksum alphabet", mode: "syft-go-invalid-checksum-alphabet"},
 		{name: "duplicate module record", mode: "syft-go-duplicate-module"},
 		{name: "wrong build setting", mode: "syft-go-wrong-build-setting"},
 		{name: "wrong reported version", mode: "syft-go-wrong-version"},
@@ -3949,7 +3957,7 @@ func runWorkflowToolFake(mode, testBinary string, args []string) int {
 		if len(args) == 3 && args[0] == "version" && args[1] == "-m" && strings.HasPrefix(mode, "syft-go") {
 			path := "github.com/anchore/syft/cmd/syft"
 			moduleVersion := "v1.50.0"
-			checksum := "h1:" + strings.Repeat("A", 43) + "="
+			checksum := "h1:kSQ4oshw6dwHxcYhrH1jUZl/M05kiCfyPoGJgvXe61s="
 			buildSetting := "-X main.version=1.50.0"
 			switch mode {
 			case "syft-go-wrong-path":
@@ -3962,6 +3970,20 @@ func runWorkflowToolFake(mode, testBinary string, args []string) int {
 				checksum = "h1:"
 			case "syft-go-invalid-checksum-padding":
 				checksum = "h1:" + strings.Repeat("A", 42) + "B="
+			case "syft-go-valid-checksum-a":
+				checksum = "h1:" + strings.Repeat("A", 43) + "="
+			case "syft-go-valid-checksum-8":
+				checksum = "h1:" + strings.Repeat("A", 42) + "8="
+			case "syft-go-short-checksum":
+				checksum = "h1:" + strings.Repeat("A", 42) + "="
+			case "syft-go-long-checksum":
+				checksum = "h1:" + strings.Repeat("A", 44) + "="
+			case "syft-go-missing-checksum-padding":
+				checksum = "h1:" + strings.Repeat("A", 43)
+			case "syft-go-extra-checksum-padding":
+				checksum = "h1:" + strings.Repeat("A", 43) + "=="
+			case "syft-go-invalid-checksum-alphabet":
+				checksum = "h1:" + strings.Repeat("A", 42) + "-="
 			case "syft-go-wrong-build-setting":
 				buildSetting = "-X main.version=1.49.0"
 			}
@@ -5337,7 +5359,7 @@ func validateReleaseSyftStep(step releaseWorkflowStep) error {
 		`test "$(stat -c '%d:%i' -- "${tools_root}")" = "${TOOLS_ROOT_IDENTITY}"`,
 		`test "$(stat -c '%d:%i' -- "${tools_root}/config/syft.yaml")" = "${SYFT_CONFIG_IDENTITY}"`,
 		`^\tmod\tgithub[.]com/anchore/syft\t`,
-		`^\tmod\tgithub[.]com/anchore/syft\tv1[.]50[.]0\th1:[A-Za-z0-9+/]{42}[AQgw]=$`,
+		`^\tmod\tgithub[.]com/anchore/syft\tv1[.]50[.]0\th1:[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$`,
 		`run_clean_syft help`,
 		`run_clean_syft scan --help`,
 		`run_clean_syft version --help`,
