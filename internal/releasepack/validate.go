@@ -16,6 +16,8 @@ const releaseModulePath = "github.com/krkarma777/ai-cli-gateway"
 
 var exactReleaseTag = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
+var validateModuleClose = (*os.File).Close
+
 var commonSourceNames = [...]string{
 	"go.mod",
 	"README.md",
@@ -319,11 +321,11 @@ func validateExactDirectoryNames(directory string, expected []string) error {
 }
 
 func validateModuleDeclaration(path string) error {
+	//nolint:gosec // The module path was validated as a regular repository descendant.
 	file, err := os.Open(path)
 	if err != nil {
 		return newCategorizedError(categoryMissingInput)
 	}
-	defer file.Close()
 
 	want := "module " + releaseModulePath
 	moduleLines := 0
@@ -336,7 +338,9 @@ func validateModuleDeclaration(path string) error {
 			valid = line == want
 		}
 	}
-	if scanner.Err() != nil || moduleLines != 1 || !valid {
+	scanErr := scanner.Err()
+	closeErr := validateModuleClose(file)
+	if scanErr != nil || closeErr != nil || moduleLines != 1 || !valid {
 		return newCategorizedError(categoryMissingInput)
 	}
 	return nil

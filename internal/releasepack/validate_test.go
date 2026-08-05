@@ -7,7 +7,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -168,7 +167,6 @@ func TestNewArchivePlanRejectsUnsafeRoots(t *testing.T) {
 	})
 
 	t.Run("symlink in repository root components", func(t *testing.T) {
-		requireSymlink(t)
 		fixture := newReleaseFixture(t)
 		linkedParent := filepath.Join(t.TempDir(), "linked-parent")
 		mustSymlink(t, filepath.Dir(fixture.repositoryRoot), linkedParent)
@@ -228,7 +226,6 @@ func TestNewArchivePlanRejectsInvalidRepositoryInputs(t *testing.T) {
 			name:     "symlinked descendant directory",
 			category: categoryUnsafePath,
 			mutate: func(t *testing.T, fixture *releaseFixture) {
-				requireSymlink(t)
 				examples := filepath.Join(fixture.repositoryRoot, "examples")
 				realExamples := filepath.Join(fixture.repositoryRoot, "real-examples")
 				mustRename(t, examples, realExamples)
@@ -243,6 +240,27 @@ func TestNewArchivePlanRejectsInvalidRepositoryInputs(t *testing.T) {
 			test.mutate(t, &fixture)
 			assertCategory(t, newArchivePlanError(fixture.options), test.category)
 		})
+	}
+}
+
+func TestValidateModuleDeclarationRejectsCloseFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "go.mod")
+	mustWriteFile(t, path, "module "+releaseModulePath+"\n")
+	originalClose := validateModuleClose
+	closeCalls := 0
+	validateModuleClose = func(file *os.File) error {
+		closeCalls++
+		if err := file.Close(); err != nil {
+			return err
+		}
+		return errors.New("module close failed")
+	}
+	t.Cleanup(func() { validateModuleClose = originalClose })
+
+	err := validateModuleDeclaration(path)
+	assertCategory(t, err, categoryMissingInput)
+	if closeCalls != 1 {
+		t.Fatalf("module close calls = %d, want 1", closeCalls)
 	}
 }
 
@@ -285,7 +303,6 @@ func TestNewArchivePlanRejectsInvalidStagingInputs(t *testing.T) {
 			name:     "symlinked target directory",
 			category: categoryUnsafePath,
 			mutate: func(t *testing.T, fixture *releaseFixture) {
-				requireSymlink(t)
 				directory := filepath.Join(fixture.stagingRoot, "darwin_amd64")
 				realDirectory := filepath.Join(filepath.Dir(fixture.stagingRoot), "real-darwin-amd64")
 				mustRename(t, directory, realDirectory)
@@ -296,7 +313,6 @@ func TestNewArchivePlanRejectsInvalidStagingInputs(t *testing.T) {
 			name:     "staged executable symlink",
 			category: categoryUnsafePath,
 			mutate: func(t *testing.T, fixture *releaseFixture) {
-				requireSymlink(t)
 				directory := filepath.Join(fixture.stagingRoot, "darwin_arm64")
 				executable := filepath.Join(directory, "ai-cli-gateway")
 				realExecutable := filepath.Join(filepath.Dir(fixture.stagingRoot), "real-ai-cli-gateway")
@@ -323,7 +339,6 @@ func TestNewArchivePlanRejectsUnsafeOutput(t *testing.T) {
 	})
 
 	t.Run("output root symlink", func(t *testing.T) {
-		requireSymlink(t)
 		fixture := newReleaseFixture(t)
 		realOutput := filepath.Join(filepath.Dir(fixture.outputRoot), "real-output")
 		mustMkdir(t, realOutput)
@@ -332,7 +347,6 @@ func TestNewArchivePlanRejectsUnsafeOutput(t *testing.T) {
 	})
 
 	t.Run("absent output beneath symlinked parent", func(t *testing.T) {
-		requireSymlink(t)
 		fixture := newReleaseFixture(t)
 		realParent := filepath.Join(t.TempDir(), "real-parent")
 		mustMkdir(t, realParent)
@@ -471,12 +485,5 @@ func mustSymlink(t *testing.T, oldPath, newPath string) {
 	t.Helper()
 	if err := os.Symlink(oldPath, newPath); err != nil {
 		t.Fatalf("Symlink(%q, %q): %v", oldPath, newPath, err)
-	}
-}
-
-func requireSymlink(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture symlinks require privileges not guaranteed on Windows")
 	}
 }

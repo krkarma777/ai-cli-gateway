@@ -12,11 +12,11 @@ func writeZIP(output io.Writer, entries []archiveEntry, sourceTime time.Time, so
 	writer := zip.NewWriter(output)
 	for _, entry := range entries {
 		header := &zip.FileHeader{
-			Name:    entry.Name,
-			Comment: "",
-			Method:  zip.Deflate,
+			Name:     entry.Name,
+			Comment:  "",
+			Method:   zip.Deflate,
+			Modified: sourceTime,
 		}
-		header.SetModTime(sourceTime)
 		if entry.Directory {
 			header.Method = zip.Store
 			header.SetMode(fs.ModeDir | 0o755)

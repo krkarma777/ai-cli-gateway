@@ -1,3 +1,4 @@
+// Package releasepack creates and validates deterministic release artifacts.
 package releasepack
 
 import (
@@ -334,9 +335,11 @@ func prepareArchiveOutputRoot(outputRoot string) (os.FileInfo, bool, error) {
 }
 
 func secureCreatedArchiveOutputRoot(outputRoot string, createdInfo os.FileInfo, hooks archiveFileHooks) (os.FileInfo, error) {
+	//nolint:gosec // The release output root is deliberately restricted to its owner.
 	if err := os.Chmod(outputRoot, 0o700); err != nil {
 		return nil, err
 	}
+	//nolint:gosec // The validated, newly created directory is reopened to verify its identity.
 	directory, err := os.Open(outputRoot)
 	if err != nil {
 		return nil, err
@@ -367,12 +370,16 @@ func writePlannedArchive(output io.Writer, archive plannedArchive, sourceTime ti
 	}
 }
 
-func copyArchiveSource(destination io.Writer, entry archiveEntry, source archiveSource, hooks archiveFileHooks) error {
+func copyArchiveSource(destination io.Writer, entry archiveEntry, source archiveSource, hooks archiveFileHooks) (resultErr error) {
 	file, err := hooks.openFile(entry.SourcePath)
 	if err != nil {
 		return errors.New("open archive source")
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := hooks.closeFile(file); closeErr != nil && resultErr == nil {
+			resultErr = errors.New("close archive source")
+		}
+	}()
 
 	before, err := file.Stat()
 	if err != nil || !before.Mode().IsRegular() || !os.SameFile(source.Info, before) || before.Size() != source.Size {

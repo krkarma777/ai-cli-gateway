@@ -150,12 +150,14 @@ func writeCLIArchives(t *testing.T, root string) {
 func mustWriteCLI(t *testing.T, path, contents string) {
 	t.Helper()
 	mustMkdirCLI(t, filepath.Dir(path))
+	//nolint:gosec // Test fixture paths are fixed descendants of a private t.TempDir.
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
 func mustMkdirCLI(t *testing.T, path string) {
 	t.Helper()
+	//nolint:gosec // Test fixture paths are fixed descendants of a private t.TempDir.
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatal(err)
 	}

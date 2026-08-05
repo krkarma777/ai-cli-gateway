@@ -26,6 +26,7 @@ func TestZIPHeadersContainOnlyExactExtendedTimestamp(t *testing.T) {
 	if assets[len(assets)-1].Path != zipPath {
 		t.Fatalf("last asset path = %q, want %q", assets[len(assets)-1].Path, zipPath)
 	}
+	//nolint:gosec // zipPath is a fixed release asset beneath the private fixture output root.
 	data, err := os.ReadFile(zipPath)
 	if err != nil {
 		t.Fatalf("ReadFile(ZIP): %v", err)
@@ -41,7 +42,12 @@ func TestZIPHeadersContainOnlyExactExtendedTimestamp(t *testing.T) {
 	}
 	entryCount := int(binary.LittleEndian.Uint16(end[10:12]))
 	centralOffset := int(binary.LittleEndian.Uint32(end[16:20]))
-	wantUnix := uint32(fixture.options.SourceTime.Unix())
+	sourceUnix := fixture.options.SourceTime.Unix()
+	const maxZIPUnixTime = int64(1<<32 - 1)
+	if sourceUnix < 0 || sourceUnix > maxZIPUnixTime {
+		t.Fatalf("source timestamp = %d, want unsigned 32-bit range", sourceUnix)
+	}
+	wantUnix := uint32(sourceUnix) //nolint:gosec // The timestamp range is checked immediately above.
 
 	offset := centralOffset
 	for entry := 0; entry < entryCount; entry++ {

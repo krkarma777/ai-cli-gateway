@@ -9,6 +9,7 @@ import (
 	"strings"
 )
 
+// ChecksumOptions identifies the validated release assets to checksum.
 type ChecksumOptions struct {
 	RepositoryRoot string
 	StagingRoot    string
@@ -21,6 +22,7 @@ var (
 	checksumWriteOutput = func(writer io.Writer, data []byte) (int, error) { return writer.Write(data) }
 )
 
+// WriteChecksums publishes a deterministic SHA256SUMS manifest for the release assets.
 func WriteChecksums(options ChecksumOptions) (asset Asset, resultErr error) {
 	if err := validateRootSet(options.RepositoryRoot, options.StagingRoot, options.OutputRoot, false); err != nil {
 		return Asset{}, err
@@ -65,6 +67,7 @@ func WriteChecksums(options ChecksumOptions) (asset Asset, resultErr error) {
 	}
 
 	asset = Asset{Name: "SHA256SUMS", Path: filepath.Join(options.OutputRoot, "SHA256SUMS")}
+	//nolint:gosec // A checksum manifest is a public release asset and must be world-readable.
 	file, err := os.OpenFile(asset.Path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return Asset{}, newChecksumFailure()

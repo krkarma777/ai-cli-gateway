@@ -540,6 +540,7 @@ func TestWriteSBOMRejectsUnsafeOutputAuthorityBeforeRawOrBuildInfo(t *testing.T)
 	}{
 		{"mode", func(t *testing.T, fixture *releaseFixture) {
 			mustMkdir(t, fixture.outputRoot)
+			//nolint:gosec // The intentionally permissive directory mode is the condition under test.
 			if err := os.Chmod(fixture.outputRoot, 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -553,9 +554,11 @@ func TestWriteSBOMRejectsUnsafeOutputAuthorityBeforeRawOrBuildInfo(t *testing.T)
 		{"writable ancestor", func(t *testing.T, fixture *releaseFixture) {
 			ancestor := filepath.Join(filepath.Dir(fixture.outputRoot), "unsafe")
 			mustMkdir(t, filepath.Join(ancestor, "output"))
+			//nolint:gosec // The intentionally unsafe directory mode is required by this rejection test.
 			if err := os.Chmod(ancestor, 0o777); err != nil {
 				t.Fatal(err)
 			}
+			//nolint:gosec // Cleanup restores the owner-only mode on this test directory.
 			t.Cleanup(func() { _ = os.Chmod(ancestor, 0o700) })
 			fixture.outputRoot = filepath.Join(ancestor, "output")
 		}},
@@ -582,7 +585,6 @@ func TestWriteSBOMRejectsRelativeSymlinkedAndOverlappingRawPaths(t *testing.T) {
 	}{
 		{"relative", func(_ *testing.T, _ releaseFixture) string { return "relative.spdx.json" }},
 		{"symlink", func(t *testing.T, fixture releaseFixture) string {
-			requireSymlink(t)
 			target := filepath.Join(filepath.Dir(fixture.repositoryRoot), "raw-target.spdx.json")
 			mustWriteFile(t, target, "{}")
 			link := filepath.Join(filepath.Dir(fixture.repositoryRoot), "raw-link.spdx.json")

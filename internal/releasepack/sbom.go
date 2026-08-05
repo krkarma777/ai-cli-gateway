@@ -27,6 +27,7 @@ const (
 	releaseGoVersion = "go1.26.5"
 )
 
+// SBOMOptions identifies the validated inputs used to publish the release SBOM.
 type SBOMOptions struct {
 	RepositoryRoot string
 	StagingRoot    string
@@ -60,6 +61,7 @@ var (
 	sbomWriteOutput                                          = func(writer io.Writer, data []byte) (int, error) { return writer.Write(data) }
 )
 
+// WriteSBOM publishes a deterministic SPDX JSON document for the release binaries.
 func WriteSBOM(options SBOMOptions) (asset Asset, resultErr error) {
 	if err := validateRootSet(options.RepositoryRoot, options.StagingRoot, options.OutputRoot, false); err != nil {
 		return Asset{}, err
@@ -97,6 +99,7 @@ func WriteSBOM(options SBOMOptions) (asset Asset, resultErr error) {
 		Name: "ai-cli-gateway_" + version + "_sbom.spdx.json",
 		Path: filepath.Join(options.OutputRoot, "ai-cli-gateway_"+version+"_sbom.spdx.json"),
 	}
+	//nolint:gosec // The SBOM is a public release asset and must be world-readable.
 	file, err := os.OpenFile(asset.Path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return Asset{}, newSBOMFailure()
@@ -810,9 +813,10 @@ func validSPDXID(id string) bool {
 		return false
 	}
 	for _, r := range strings.TrimPrefix(id, "SPDXRef-") {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-') {
-			return false
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' {
+			continue
 		}
+		return false
 	}
 	return true
 }

@@ -57,7 +57,6 @@ func TestWriteChecksumsRejectsInvalidRootsAndClosedMembership(t *testing.T) {
 	}{
 		{"relative root", func(_ *testing.T, fixture *checksumFixture) { fixture.options.OutputRoot = "relative" }, categoryUnsafePath},
 		{"symlinked root", func(t *testing.T, fixture *checksumFixture) {
-			requireSymlink(t)
 			link := filepath.Join(filepath.Dir(fixture.outputRoot), "output-link")
 			mustSymlink(t, fixture.outputRoot, link)
 			fixture.options.OutputRoot = link
@@ -74,7 +73,6 @@ func TestWriteChecksumsRejectsInvalidRootsAndClosedMembership(t *testing.T) {
 			mustRename(t, old, old+".bad")
 		}, categoryUnsafePath},
 		{"symlink asset", func(t *testing.T, fixture *checksumFixture) {
-			requireSymlink(t)
 			path := filepath.Join(fixture.outputRoot, expectedArchiveNames("0.1.0")[0])
 			mustRemove(t, path)
 			mustSymlink(t, fixture.options.RepositoryRoot, path)
@@ -164,6 +162,7 @@ func TestWriteChecksumsRejectsUnsafeOutputAuthorityBeforeHashing(t *testing.T) {
 		alter func(*testing.T, *checksumFixture)
 	}{
 		{"mode", func(t *testing.T, fixture *checksumFixture) {
+			//nolint:gosec // The intentionally permissive directory mode is the condition under test.
 			if err := os.Chmod(fixture.outputRoot, 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -176,9 +175,11 @@ func TestWriteChecksumsRejectsUnsafeOutputAuthorityBeforeHashing(t *testing.T) {
 		{"writable ancestor", func(t *testing.T, fixture *checksumFixture) {
 			ancestor := filepath.Join(filepath.Dir(fixture.outputRoot), "unsafe")
 			mustMkdir(t, ancestor)
+			//nolint:gosec // The intentionally unsafe directory mode is required by this rejection test.
 			if err := os.Chmod(ancestor, 0o777); err != nil {
 				t.Fatal(err)
 			}
+			//nolint:gosec // Cleanup restores the owner-only mode on this test directory.
 			t.Cleanup(func() { _ = os.Chmod(ancestor, 0o700) })
 			mustRename(t, fixture.outputRoot, filepath.Join(ancestor, "output"))
 			fixture.outputRoot = filepath.Join(ancestor, "output")
@@ -216,12 +217,17 @@ func newChecksumFixture(t *testing.T) checksumFixture {
 	return checksumFixture{repositoryRoot: release.repositoryRoot, stagingRoot: release.stagingRoot, outputRoot: release.outputRoot, options: ChecksumOptions{RepositoryRoot: release.repositoryRoot, StagingRoot: release.stagingRoot, OutputRoot: release.outputRoot, Tag: "v0.1.0"}}
 }
 
-func independentlyVerifyChecksums(path string) error {
+func independentlyVerifyChecksums(path string) (resultErr error) {
+	//nolint:gosec // The verifier receives the generated manifest path from a private test fixture.
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && resultErr == nil {
+			resultErr = closeErr
+		}
+	}()
 	seen := map[string]struct{}{}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {

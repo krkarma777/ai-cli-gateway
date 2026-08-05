@@ -1,3 +1,4 @@
+// Package main provides the releasepack command-line entry point.
 package main
 
 import (

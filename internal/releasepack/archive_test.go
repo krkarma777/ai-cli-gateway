@@ -158,6 +158,35 @@ func TestWriteArchivesReturnsArchiveFailureAndCleansOwnedPaths(t *testing.T) {
 	}
 }
 
+func TestWriteArchivesReturnsArchiveFailureWhenSourceCloseFails(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	hooks := defaultArchiveFileHooks()
+	sourcePath := filepath.Join(fixture.repositoryRoot, "README.md")
+	sourceCloseCalls := 0
+	hooks.closeFile = func(file *os.File) error {
+		closeErr := file.Close()
+		if file.Name() != sourcePath {
+			return closeErr
+		}
+		sourceCloseCalls++
+		if closeErr != nil {
+			return closeErr
+		}
+		return errors.New("source close failed")
+	}
+	withArchiveFileHooks(t, hooks)
+
+	assets, err := WriteArchives(fixture.options)
+	if len(assets) != 0 {
+		t.Fatalf("assets = %#v, want none", assets)
+	}
+	assertCategory(t, err, categoryArchiveFailure)
+	if sourceCloseCalls != 1 {
+		t.Fatalf("source close calls = %d, want 1", sourceCloseCalls)
+	}
+	assertOutputAbsentOrEmpty(t, fixture.outputRoot)
+}
+
 func TestWriteArchivesDoesNotClobberOrCleanAttackerFinal(t *testing.T) {
 	fixture := newReleaseFixture(t)
 	hooks := defaultArchiveFileHooks()
@@ -218,6 +247,7 @@ func TestWriteArchivesPreservesFinalReplacedAfterLink(t *testing.T) {
 func TestWriteArchivesAcceptsExistingPrivateOutputRoot(t *testing.T) {
 	fixture := newReleaseFixture(t)
 	mustMkdir(t, fixture.outputRoot)
+	//nolint:gosec // This is an owner-only test directory, not a secret-bearing file.
 	if err := os.Chmod(fixture.outputRoot, 0o700); err != nil {
 		t.Fatalf("Chmod(output, 0700): %v", err)
 	}
@@ -234,6 +264,7 @@ func TestWriteArchivesAcceptsExistingPrivateOutputRoot(t *testing.T) {
 func TestWriteArchivesRejectsExistingOutputRootWithoutMode0700(t *testing.T) {
 	fixture := newReleaseFixture(t)
 	mustMkdir(t, fixture.outputRoot)
+	//nolint:gosec // The intentionally permissive directory mode is the condition under test.
 	if err := os.Chmod(fixture.outputRoot, 0o755); err != nil {
 		t.Fatalf("Chmod(output, 0755): %v", err)
 	}
@@ -252,9 +283,11 @@ func TestWriteArchivesRejectsWritableNonStickyOutputAncestor(t *testing.T) {
 	fixture := newReleaseFixture(t)
 	unsafeAncestor := filepath.Join(filepath.Dir(fixture.outputRoot), "unsafe-ancestor")
 	mustMkdir(t, unsafeAncestor)
+	//nolint:gosec // The intentionally unsafe directory mode is required by this rejection test.
 	if err := os.Chmod(unsafeAncestor, 0o777); err != nil {
 		t.Fatalf("Chmod(unsafe ancestor, 0777): %v", err)
 	}
+	//nolint:gosec // Cleanup restores the owner-only mode on this test directory.
 	t.Cleanup(func() { _ = os.Chmod(unsafeAncestor, 0o700) })
 	fixture.options.OutputRoot = filepath.Join(unsafeAncestor, "output")
 
@@ -271,6 +304,7 @@ func TestWriteArchivesRejectsWritableNonStickyOutputAncestor(t *testing.T) {
 func TestWriteArchivesRejectsForeignOwnedOutputRoot(t *testing.T) {
 	fixture := newReleaseFixture(t)
 	mustMkdir(t, fixture.outputRoot)
+	//nolint:gosec // This is an owner-only test directory, not a secret-bearing file.
 	if err := os.Chmod(fixture.outputRoot, 0o700); err != nil {
 		t.Fatalf("Chmod(output, 0700): %v", err)
 	}
@@ -642,6 +676,7 @@ func TestWriteArchivesRejectsChangedValidatedFiles(t *testing.T) {
 			if replaceErr != nil {
 				return nil, replaceErr
 			}
+			//nolint:gosec // This fault-injection hook reopens a validated fixture archive source.
 			return os.Open(name)
 		}
 		withArchiveFileHooks(t, hooks)
@@ -696,7 +731,11 @@ func inspectTarGzip(t *testing.T, data []byte, base string, includeSystemd bool,
 	if err != nil {
 		t.Fatalf("gzip.NewReader(%q): %v", base, err)
 	}
-	defer reader.Close()
+	defer func() {
+		if closeErr := reader.Close(); closeErr != nil {
+			t.Errorf("close gzip reader %q: %v", base, closeErr)
+		}
+	}()
 	if reader.Name != "" || reader.Comment != "" || len(reader.Extra) != 0 {
 		t.Errorf("gzip metadata for %q = name %q comment %q extra %x, want empty", base, reader.Name, reader.Comment, reader.Extra)
 	}
@@ -747,6 +786,7 @@ func inspectTarGzip(t *testing.T, data []byte, base string, includeSystemd bool,
 				t.Errorf("tar file %q type/size = %d/%d, want regular/nonnegative", header.Name, header.Typeflag, header.Size)
 			}
 		}
+		//nolint:gosec // The archive is generated from bounded in-memory test fixtures.
 		if _, err := io.Copy(io.Discard, tarReader); err != nil {
 			t.Fatalf("read tar entry %q: %v", header.Name, err)
 		}
@@ -800,6 +840,7 @@ func inspectZIP(t *testing.T, data []byte, base string, sourceTime time.Time) {
 		if openErr != nil {
 			t.Fatalf("open ZIP entry %q: %v", file.Name, openErr)
 		}
+		//nolint:gosec // The ZIP entry is generated from bounded in-memory test fixtures.
 		_, copyErr := io.Copy(io.Discard, opened)
 		closeErr := opened.Close()
 		if copyErr != nil || closeErr != nil {
@@ -926,6 +967,7 @@ func assertOutputAbsentOrEmpty(t *testing.T, outputRoot string) {
 
 func mustReadFile(t *testing.T, name string) []byte {
 	t.Helper()
+	//nolint:gosec // Callers read fixed release fixture paths beneath private t.TempDir roots.
 	data, err := os.ReadFile(name)
 	if err != nil {
 		t.Fatalf("ReadFile(%q): %v", name, err)
