@@ -2258,6 +2258,76 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 					"\n# parser boundary\n  shadow: { runs-on: ubuntu-latest, timeout-minutes: 1, steps: [{ uses: attacker/action@deadbeef }] }\n"
 			},
 		},
+		{
+			name: "action hidden after job-indented comment boundary",
+			mutate: func(document string) string {
+				return strings.TrimRight(document, "\n") +
+					"\n    # parser boundary\n      - uses: attacker/action@deadbeef\n"
+			},
+		},
+		{
+			name: "trigger hidden after top-level comment boundary",
+			mutate: replaceCIOnce(
+				"  workflow_call:\n\npermissions:",
+				"  workflow_call:\n# parser boundary\n  workflow_dispatch:\n\npermissions:",
+			),
+		},
+		{
+			name: "permission hidden after top-level comment boundary",
+			mutate: replaceCIOnce(
+				"permissions:\n  contents: read\n\njobs:",
+				"permissions:\n  contents: read\n# parser boundary\n  actions: write # hidden\n\njobs:",
+			),
+		},
+		{
+			name: "strategy field hidden after job-indented comment boundary",
+			mutate: replaceCIOnce(
+				"          extension: .exe\n    steps:",
+				"          extension: .exe\n    # parser boundary\n      max-parallel: 1\n    steps:",
+			),
+		},
+		{
+			name: "trigger after trigger-indented comment",
+			mutate: replaceCIOnce(
+				"  workflow_call:\n",
+				"  workflow_call:\n  # parser boundary\n  workflow_dispatch:\n",
+			),
+		},
+		{
+			name: "permission after permission-indented comment",
+			mutate: replaceCIOnce(
+				"  contents: read\n",
+				"  contents: read\n  # parser boundary\n  actions: write\n",
+			),
+		},
+		{
+			name: "job field after job-indented comment",
+			mutate: func(document string) string {
+				return strings.TrimRight(document, "\n") +
+					"\n    # parser boundary\n    permissions: { contents: write }\n"
+			},
+		},
+		{
+			name: "action after list-indented comment",
+			mutate: func(document string) string {
+				return strings.TrimRight(document, "\n") +
+					"\n      # parser boundary\n      - uses: attacker/action@deadbeef\n"
+			},
+		},
+		{
+			name: "step field after step-indented comment",
+			mutate: replaceCIOnce(
+				"      - uses: actions/checkout@v7\n",
+				"      - uses: actions/checkout@v7\n        # parser boundary\n        continue-on-error: true\n",
+			),
+		},
+		{
+			name: "strategy field after blank line",
+			mutate: replaceCIOnce(
+				"          extension: .exe\n    steps:",
+				"          extension: .exe\n\n      max-parallel: 1\n    steps:",
+			),
+		},
 	}
 
 	for _, test := range tests {
@@ -2583,10 +2653,10 @@ func parseYAMLJobBlocks(workflow string) (map[string]string, error) {
 	for _, line := range lines[jobsStart:] {
 		trimmed := strings.TrimSpace(line)
 		indentation := leadingSpaces(line)
+		if isYAMLCommentOnly(line) && indentation <= 2 {
+			continue
+		}
 		if trimmed != "" && indentation == 0 {
-			if strings.HasPrefix(trimmed, "#") {
-				continue
-			}
 			return nil, fmt.Errorf("unexpected top-level content after jobs mapping %q", line)
 		}
 		if trimmed != "" && indentation == 2 {
@@ -2666,10 +2736,14 @@ func parseYAMLSteps(jobBlock string) ([]string, error) {
 		return nil
 	}
 	for _, line := range lines[stepsStart:] {
-		if strings.TrimSpace(line) == "" {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
 		indentation := leadingSpaces(line)
+		if isYAMLCommentOnly(line) && indentation <= 8 {
+			continue
+		}
 		if indentation <= 4 {
 			break
 		}
@@ -2732,6 +2806,9 @@ func validateYAMLStepFields(step string) error {
 		if leadingSpaces(line) != 2 {
 			continue
 		}
+		if isYAMLCommentOnly(line) {
+			continue
+		}
 		if err := addField(strings.TrimPrefix(line, "  ")); err != nil {
 			return err
 		}
@@ -2777,10 +2854,15 @@ func parseIndentedYAMLBlock(document, key string, indentation int) ([]string, er
 	prefix := strings.Repeat(" ", indentation)
 	result := make([]string, 0)
 	for _, line := range lines[start:] {
-		if strings.TrimSpace(line) == "" {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
-		if leadingSpaces(line) <= indentation {
+		lineIndentation := leadingSpaces(line)
+		if isYAMLCommentOnly(line) && lineIndentation <= indentation {
+			continue
+		}
+		if lineIndentation <= indentation {
 			break
 		}
 		result = append(result, strings.TrimPrefix(line, prefix))
@@ -2807,6 +2889,10 @@ func leadingSpaces(line string) int {
 	return len(line) - len(strings.TrimLeft(line, " "))
 }
 
+func isYAMLCommentOnly(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "#")
+}
+
 func extractYAMLJobBlocks(t *testing.T, workflow string) map[string]string {
 	t.Helper()
 	lines := strings.Split(strings.ReplaceAll(workflow, "\r\n", "\n"), "\n")
@@ -2830,7 +2916,12 @@ func extractYAMLJobBlocks(t *testing.T, workflow string) map[string]string {
 		}
 	}
 	for _, line := range lines[jobsStart:] {
-		if strings.TrimSpace(line) != "" && len(line)-len(strings.TrimLeft(line, " ")) == 0 {
+		trimmed := strings.TrimSpace(line)
+		indentation := leadingSpaces(line)
+		if isYAMLCommentOnly(line) && indentation <= 2 {
+			continue
+		}
+		if trimmed != "" && indentation == 0 {
 			break
 		}
 		if match := jobHeader.FindStringSubmatch(line); match != nil {
@@ -2862,12 +2953,13 @@ func topLevelYAMLBlockLines(document, header string) []string {
 	result := make([]string, 0)
 	for _, line := range lines[start:] {
 		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && len(line)-len(strings.TrimLeft(line, " ")) == 0 {
+		if trimmed == "" || isYAMLCommentOnly(line) {
+			continue
+		}
+		if leadingSpaces(line) == 0 {
 			break
 		}
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-			result = append(result, trimmed)
-		}
+		result = append(result, trimmed)
 	}
 	return result
 }
