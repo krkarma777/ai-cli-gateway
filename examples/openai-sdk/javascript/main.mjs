@@ -92,6 +92,7 @@ async function main() {
     "instructions",
     "model",
     "output",
+    "output_text",
     "parallel_tool_calls",
     "previous_response_id",
     "store",
@@ -111,6 +112,7 @@ async function main() {
   assert.equal(response.incomplete_details, null);
   assert.equal(response.instructions, "SDK contract instruction.");
   assert.equal(response.model, modelName);
+  assert.equal(response.output_text, "SDK_GATEWAY_OK\n");
   assert.equal(response.parallel_tool_calls, false);
   assert.equal(response.previous_response_id, null);
   assert.equal(response.store, false);

@@ -2,6 +2,7 @@
 
 import os
 import sys
+import math
 
 os.environ.pop("OPENAI_LOG", None)
 
@@ -41,6 +42,12 @@ def timeout_seconds() -> float:
 
 def assert_fields(value: object, expected: set[str]) -> None:
     assert getattr(value, "model_fields_set") == expected
+
+
+def assert_integer_timestamp(value: object) -> None:
+    assert isinstance(value, (int, float)) and not isinstance(value, bool)
+    numeric = float(value)
+    assert math.isfinite(numeric) and numeric.is_integer()
 
 
 def main() -> None:
@@ -100,7 +107,6 @@ def main() -> None:
             "output",
             "parallel_tool_calls",
             "previous_response_id",
-            "store",
             "text",
             "tools",
             "tool_choice",
@@ -108,8 +114,8 @@ def main() -> None:
     )
     assert isinstance(response.id, str) and response.id.startswith("resp_")
     assert response.object == "response"
-    assert isinstance(response.created_at, int) and not isinstance(response.created_at, bool)
-    assert isinstance(response.completed_at, int) and not isinstance(response.completed_at, bool)
+    assert_integer_timestamp(response.created_at)
+    assert_integer_timestamp(response.completed_at)
     assert response.completed_at >= response.created_at
     assert response.status == "completed"
     assert response.background is False

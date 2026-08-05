@@ -535,9 +535,10 @@ func validateOfficialSDKSource(language, contents string) error {
 			`assert model.object == "model"`, `assert model.created == 0`, `assert model.owned_by == "local"`,
 			`assert isinstance(response._request_id, str)`, `assert response._request_id.startswith("req_")`,
 			`assert isinstance(response.id, str) and response.id.startswith("resp_")`,
-			`assert response.object == "response"`,
-			`assert isinstance(response.created_at, int) and not isinstance(response.created_at, bool)`,
-			`assert isinstance(response.completed_at, int) and not isinstance(response.completed_at, bool)`,
+			`assert response.object == "response"`, `def assert_integer_timestamp(value: object) -> None:`,
+			`assert isinstance(value, (int, float)) and not isinstance(value, bool)`,
+			`assert math.isfinite(numeric) and numeric.is_integer()`,
+			`assert_integer_timestamp(response.created_at)`, `assert_integer_timestamp(response.completed_at)`,
 			`assert response.completed_at >= response.created_at`, `assert response.status == "completed"`,
 			`assert response.background is False`, `assert response.error is None`,
 			`assert response.incomplete_details is None`, `assert response.instructions == "SDK contract instruction."`,
@@ -573,6 +574,7 @@ func validateOfficialSDKSource(language, contents string) error {
 			`assert.equal(response.status, "completed")`, `assert.equal(response.background, false)`,
 			`assert.equal(response.error, null)`, `assert.equal(response.incomplete_details, null)`,
 			`assert.equal(response.instructions, "SDK contract instruction.")`, `assert.equal(response.model, modelName)`,
+			`assert.equal(response.output_text, "SDK_GATEWAY_OK\n")`,
 			`assert.equal(response.parallel_tool_calls, false)`, `assert.equal(response.previous_response_id, null)`,
 			`assert.equal(response.store, false)`, `assert.deepEqual(response.tools, [])`,
 			`assert.equal(response.tool_choice, "none")`, `assertFields(response.text, ["format"])`,
@@ -594,13 +596,13 @@ func validateOfficialSDKSource(language, contents string) error {
 	normalizedRequired := map[string][]string{
 		"Python": {
 			`response = client.responses.create( model=model_name, instructions="SDK contract instruction.", input="SDK contract input.", text={"format": {"type": "text"}}, stream=False, store=False, tools=[], tool_choice="none", )`,
-			`assert_fields( response, { "id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "instructions", "model", "output", "parallel_tool_calls", "previous_response_id", "store", "text", "tools", "tool_choice", }, )`,
+			`assert_fields( response, { "id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "instructions", "model", "output", "parallel_tool_calls", "previous_response_id", "text", "tools", "tool_choice", }, )`,
 			`assert_fields(message, {"id", "type", "status", "role", "content"})`,
 			`assert_fields(content, {"type", "annotations", "text"})`,
 		},
 		"JavaScript": {
 			`const response = await client.responses.create({ model: modelName, instructions: "SDK contract instruction.", input: "SDK contract input.", text: { format: { type: "text" } }, stream: false, store: false, tools: [], tool_choice: "none", });`,
-			`assertFields(response, [ "id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "instructions", "model", "output", "parallel_tool_calls", "previous_response_id", "store", "text", "tools", "tool_choice", ]);`,
+			`assertFields(response, [ "id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "instructions", "model", "output", "output_text", "parallel_tool_calls", "previous_response_id", "store", "text", "tools", "tool_choice", ]);`,
 			`assertFields(message, ["id", "type", "status", "role", "content"]);`,
 			`assertFields(content, ["type", "annotations", "text"]);`,
 		},
@@ -758,6 +760,61 @@ func TestOfficialSDKExamplesSuppressHostileLogging(t *testing.T) {
 	})
 }
 
+func TestSDKContractScript(t *testing.T) {
+	root, err := repositoryScanRoot("")
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
+	path := filepath.Join(root, "scripts", "sdk-contract.sh")
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat sdk-contract script: %v", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o755 {
+		t.Fatalf("script mode = %v, want regular 0755", info.Mode())
+	}
+	contents, err := os.ReadFile(path) //nolint:gosec // fixed repository-owned script.
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	text := string(contents)
+	if !strings.HasPrefix(text, "#!/bin/sh\nset -eu\n") {
+		t.Fatal("script does not use the closed POSIX shell prologue")
+	}
+	for _, forbidden := range []string{"eval ", "sh -c", "bash -c", "ANTHROPIC_", "GEMINI_", "OPENAI_", "SDK contract input", "AI_CLI_GATEWAY_API_KEY="} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("script contains forbidden construct %q", forbidden)
+		}
+	}
+	if strings.Count(text, "exec go run -trimpath ./internal/sdkcontract/cmd/sdk-contract") != 1 {
+		t.Fatal("script does not contain exactly one closed Go runner exec")
+	}
+	command := exec.CommandContext(context.Background(), path) //nolint:gosec // fixed repository-owned executable under test.
+	command.Env = []string{"PATH=" + os.Getenv("PATH")}
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err = command.Run()
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) || exitError.ExitCode() != 2 || stdout.Len() != 0 || stderr.String() != "usage: scripts/sdk-contract.sh PYTHON NODE JAVASCRIPT\n" {
+		t.Fatalf("zero-argument script result err=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+}
+
+func TestSDKContractRecoveryGuidance(t *testing.T) {
+	contents := string(readRepositoryFile(t, "README.md"))
+	for _, required := range []string{
+		"sdk_contract_cleanup_failed",
+		"owner-only `.sdk-contract-*` sibling",
+		"ensure no recorded contract process remains",
+		"remove only the exact retained directory",
+		"never prints the retained path or underlying error",
+	} {
+		if !strings.Contains(contents, required) {
+			t.Fatalf("README is missing SDK recovery guidance %q", required)
+		}
+	}
+}
+
 type sdkClientCase struct {
 	name        string
 	environment []string
@@ -886,11 +943,12 @@ class Responses:
         message = Value(id="msg_fixture", type="message", status="completed", role="assistant", content=[content])
         text = Value(format=Value(type="text"))
         response = Value(
-            id="resp_fixture", object="response", created_at=1, completed_at=2, status="completed",
+            id="resp_fixture", object="response", created_at=1.0, completed_at=2.0, status="completed",
             background=False, error=None, incomplete_details=None, instructions="SDK contract instruction.",
             model="codex-sdk-test", output=[message], parallel_tool_calls=False, previous_response_id=None,
-            store=False, text=text, tools=[], tool_choice="none",
+            text=text, tools=[], tool_choice="none",
         )
+        response.store = False
         response._request_id = "req_fixture"
         return response
 
@@ -975,6 +1033,7 @@ class OpenAI {
             role: "assistant",
             content: [{ type: "output_text", annotations: [], text: "SDK_GATEWAY_OK\n" }],
           }],
+          output_text: "SDK_GATEWAY_OK\n",
           parallel_tool_calls: false,
           previous_response_id: null,
           store: false,

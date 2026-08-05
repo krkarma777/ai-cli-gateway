@@ -358,6 +358,15 @@ The selected API-key or Vertex mode also requires its corresponding provider env
 
 GitHub Actions uses Node24-based official actions. GitHub-hosted runners meet that runtime automatically; a self-hosted runner needs `actions/runner` v2.327.1 or later.
 
+### SDK contract recovery
+
+The local SDK contract harness normally removes its private working directory.
+An `sdk_contract_cleanup_failed` result can retain an owner-only `.sdk-contract-*` sibling
+when the harness cannot prove that a process or group
+is absent, or that the root still has its original identity. Before recovery,
+ensure no recorded contract process remains. Then inspect it and remove only the exact retained directory—never its parent and never a wildcard. The command
+never prints the retained path or underlying error.
+
 ## Security and terms
 
 See [SECURITY.md](SECURITY.md) for private vulnerability reporting. The gateway reduces accidental exposure and owns child cleanup, but it is not an isolation boundary between mutually untrusted users sharing an OS account.
