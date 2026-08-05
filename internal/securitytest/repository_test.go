@@ -426,6 +426,152 @@ func lengthOfSlice(values []any) int {
 	return len(values)
 }
 
+func TestOfficialSDKExamplesContract(t *testing.T) {
+	requirements := string(readRepositoryFile(t, "examples/openai-sdk/python/requirements.txt"))
+	requirementLines := nonCommentLines(requirements)
+	if !reflect.DeepEqual(requirementLines, []string{"openai==2.53.0"}) {
+		t.Fatalf("requirements.txt pins = %q, want exactly openai==2.53.0", requirementLines)
+	}
+
+	lockedRequirements := nonCommentLines(string(readRepositoryFile(t, "examples/openai-sdk/python/requirements.lock")))
+	exactPythonPin := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*==[A-Za-z0-9][A-Za-z0-9.!+_-]*$`)
+	foundPythonSDK := false
+	for _, line := range lockedRequirements {
+		if !exactPythonPin.MatchString(line) {
+			t.Fatalf("requirements.lock contains a non-exact dependency pin")
+		}
+		if line == "openai==2.53.0" {
+			foundPythonSDK = true
+		}
+	}
+	if !foundPythonSDK {
+		t.Fatal("requirements.lock does not contain openai==2.53.0")
+	}
+	lockedPythonBytes := []byte(strings.Join(lockedRequirements, "\n"))
+	if hasClosedCatalogToken(lockedPythonBytes) || hasDeveloperHomePath(lockedPythonBytes) {
+		t.Fatal("requirements.lock contains credential or developer-specific material")
+	}
+	for _, forbidden := range []string{"://", " @ ", "-e ", "--editable", "../", "~/", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"} {
+		if strings.Contains(string(lockedPythonBytes), forbidden) {
+			t.Fatalf("requirements.lock contains forbidden dependency or credential marker %q", forbidden)
+		}
+	}
+
+	var packageManifest struct {
+		Name         string            `json:"name"`
+		Private      bool              `json:"private"`
+		Type         string            `json:"type"`
+		Engines      map[string]string `json:"engines"`
+		Dependencies map[string]string `json:"dependencies"`
+		Scripts      map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(readRepositoryFile(t, "examples/openai-sdk/javascript/package.json"), &packageManifest); err != nil {
+		t.Fatalf("parse package.json: %v", err)
+	}
+	if packageManifest.Type != "module" || packageManifest.Engines["node"] != ">=24" ||
+		packageManifest.Dependencies["openai"] != "6.48.0" {
+		t.Fatalf("package.json does not pin the required module, Node, and OpenAI SDK contract")
+	}
+	if !packageManifest.Private || len(packageManifest.Engines) != 1 || len(packageManifest.Dependencies) != 1 {
+		t.Fatal("package.json must be private and contain only the declared engine and dependency")
+	}
+	for name := range packageManifest.Scripts {
+		if isNPMLifecycleScript(name) {
+			t.Fatalf("package.json declares forbidden lifecycle script %q", name)
+		}
+	}
+
+	var packageLock struct {
+		LockfileVersion int `json:"lockfileVersion"`
+		Packages        map[string]struct {
+			Version      string            `json:"version"`
+			Integrity    string            `json:"integrity"`
+			Dependencies map[string]string `json:"dependencies"`
+			Scripts      map[string]string `json:"scripts"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(readRepositoryFile(t, "examples/openai-sdk/javascript/package-lock.json"), &packageLock); err != nil {
+		t.Fatalf("parse package-lock.json: %v", err)
+	}
+	rootPackage, ok := packageLock.Packages[""]
+	if packageLock.LockfileVersion != 3 || !ok || rootPackage.Dependencies["openai"] != "6.48.0" {
+		t.Fatal("package-lock.json does not lock the required root package and OpenAI SDK")
+	}
+	for name := range rootPackage.Scripts {
+		if isNPMLifecycleScript(name) {
+			t.Fatalf("package-lock.json root declares forbidden lifecycle script %q", name)
+		}
+	}
+	for path, dependency := range packageLock.Packages {
+		if path != "" && dependency.Integrity == "" {
+			t.Fatalf("package-lock.json package %q has no integrity", path)
+		}
+	}
+
+	for _, source := range []struct {
+		name     string
+		contents string
+		markers  []string
+	}{
+		{
+			name:     "Python",
+			contents: string(readRepositoryFile(t, "examples/openai-sdk/python/main.py")),
+			markers: []string{
+				`"max_retries": 0`, `.models.list(`, `.responses.create(`, `stream=False`, `tools=[]`,
+				`AI_CLI_GATEWAY_TIMEOUT_SECONDS`, `300.0`, `value.isascii()`, `value.isdecimal()`,
+			},
+		},
+		{
+			name:     "JavaScript",
+			contents: string(readRepositoryFile(t, "examples/openai-sdk/javascript/main.mjs")),
+			markers: []string{
+				`maxRetries: 0`, `.models.list(`, `.responses.create(`, `stream: false`, `tools: []`,
+				`AI_CLI_GATEWAY_TIMEOUT_SECONDS`, `300_000`, `/^[0-9]+$/`,
+			},
+		},
+	} {
+		requireContainsAll(t, source.name+" SDK source", source.contents, source.markers...)
+		variables := regexp.MustCompile(`AI_CLI_GATEWAY_[A-Z0-9_]+`).FindAllString(source.contents, -1)
+		gotVariables := make(map[string]struct{})
+		for _, variable := range variables {
+			gotVariables[variable] = struct{}{}
+		}
+		wantVariables := map[string]struct{}{
+			"AI_CLI_GATEWAY_BASE_URL": {}, "AI_CLI_GATEWAY_API_KEY": {},
+			"AI_CLI_GATEWAY_MODEL": {}, "AI_CLI_GATEWAY_TIMEOUT_SECONDS": {},
+		}
+		if !reflect.DeepEqual(gotVariables, wantVariables) {
+			t.Fatalf("%s SDK source gateway variables = %v, want exactly %v", source.name, gotVariables, wantVariables)
+		}
+		lower := strings.ToLower(source.contents)
+		for _, forbidden := range []string{
+			"stream=true", "stream: true", "submit_tool_outputs", "function_call_output",
+			`"type": "function"`, `type: "function"`,
+			"openai_log", "loglevel", "debug=true", "debug: true",
+		} {
+			if strings.Contains(lower, forbidden) {
+				t.Fatalf("%s SDK source contains forbidden behavior marker %q", source.name, forbidden)
+			}
+		}
+		for _, line := range strings.Split(source.contents, "\n") {
+			trimmed := strings.ReplaceAll(strings.TrimSpace(line), " ", "")
+			if strings.HasPrefix(trimmed, "tools=") && trimmed != "tools=[]," ||
+				strings.HasPrefix(trimmed, "tools:") && trimmed != "tools:[]," {
+				t.Fatalf("%s SDK source contains a nonempty or indirect tools request", source.name)
+			}
+		}
+	}
+}
+
+func isNPMLifecycleScript(name string) bool {
+	switch name {
+	case "preinstall", "install", "postinstall", "prepublish", "prepublishOnly", "prepare":
+		return true
+	default:
+		return false
+	}
+}
+
 func TestREADMEOpeningAndOfficialContractSources(t *testing.T) {
 	readme := string(readRepositoryFile(t, "README.md"))
 	paragraphs := markdownProseParagraphs(readme)
