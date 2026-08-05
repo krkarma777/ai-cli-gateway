@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -1864,10 +1865,8 @@ func requireSystemdAssignment(t *testing.T, assignments map[string][]string, key
 
 func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	workflow := string(readRepositoryFile(t, ".github/workflows/ci.yml"))
-	if !regexp.MustCompile(`(?m)^on:\s*$`).MatchString(workflow) ||
-		!regexp.MustCompile(`(?m)^  push:\s*$`).MatchString(workflow) ||
-		!regexp.MustCompile(`(?m)^  pull_request:\s*$`).MatchString(workflow) {
-		t.Fatal("CI must use normal push and pull_request triggers")
+	if err := validateSDKCIWorkflowContract(workflow); err != nil {
+		t.Fatalf("CI SDK contract: %v", err)
 	}
 	if strings.Contains(workflow, "pull_request_target") {
 		t.Fatal("CI must not use privileged pull_request_target")
@@ -1880,7 +1879,9 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	}
 
 	jobs := extractYAMLJobBlocks(t, workflow)
-	wantJobs := map[string]struct{}{"lint": {}, "linux": {}, "macos": {}, "windows": {}, "cross-build": {}}
+	wantJobs := map[string]struct{}{
+		"lint": {}, "linux": {}, "macos": {}, "windows": {}, "cross-build": {}, "sdk-contract": {},
+	}
 	gotJobs := make(map[string]struct{}, len(jobs))
 	for name := range jobs {
 		gotJobs[name] = struct{}{}
@@ -1905,9 +1906,11 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 		}
 	}
 	wantActionCounts := map[string]int{
-		"actions/checkout@v7":              5,
-		"actions/setup-go@v7":              5,
+		"actions/checkout@v7":              6,
+		"actions/setup-go@v7":              6,
 		"golangci/golangci-lint-action@v9": 1,
+		"actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97": 1,
+		"actions/setup-node@820762786026740c76f36085b0efc47a31fe5020":   1,
 	}
 	if !reflect.DeepEqual(actionCounts, wantActionCounts) {
 		t.Fatalf("CI actions = %v, want only current pinned majors %v", actionCounts, wantActionCounts)
@@ -1946,6 +1949,10 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	if strings.Count(cross, "goos:") != 5 || strings.Count(cross, "goarch:") != 5 {
 		t.Fatal("cross-build matrix must contain exactly five explicit target tuples")
 	}
+	requireContainsAll(t, "SDK contract job", jobs["sdk-contract"],
+		"runs-on: ubuntu-latest", "timeout-minutes: 12",
+		"actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+		"actions/setup-node@820762786026740c76f36085b0efc47a31fe5020")
 
 	if strings.Count(workflow, "-tags=live") != 1 ||
 		!strings.Contains(workflow, "go test -tags=live -run '^$' ./internal/provider/...") {
@@ -1966,6 +1973,412 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 			t.Fatalf("CI appears to invoke an installed provider via %q", strings.TrimSpace(invocation))
 		}
 	}
+}
+
+func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
+	workflow := string(readRepositoryFile(t, ".github/workflows/ci.yml"))
+	if err := validateSDKCIWorkflowContract(workflow); err != nil {
+		t.Fatalf("base CI SDK contract must be valid before mutation checks: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{name: "missing workflow_call trigger", mutate: replaceCIOnce("  workflow_call:\n", "")},
+		{name: "extra trigger", mutate: replaceCIOnce("  workflow_call:\n", "  workflow_call:\n  schedule:\n")},
+		{name: "workflow_call inputs", mutate: replaceCIOnce("  workflow_call:\n", "  workflow_call:\n    inputs:\n")},
+		{name: "workflow_call secrets", mutate: replaceCIOnce("  workflow_call:\n", "  workflow_call:\n    secrets:\n")},
+		{name: "missing SDK job", mutate: replaceCIOnce("  sdk-contract:\n", "  sdk-contract-removed:\n")},
+		{name: "extra job", mutate: replaceCIOnce("jobs:\n", "jobs:\n  unexpected:\n    runs-on: ubuntu-latest\n    timeout-minutes: 1\n    steps:\n")},
+		{
+			name: "wrong SDK runner",
+			mutate: replaceCIOnce(
+				"  sdk-contract:\n    runs-on: ubuntu-latest\n",
+				"  sdk-contract:\n    runs-on: macos-latest\n",
+			),
+		},
+		{
+			name: "wrong SDK timeout",
+			mutate: replaceCIOnce(
+				"  sdk-contract:\n    runs-on: ubuntu-latest\n    timeout-minutes: 12\n",
+				"  sdk-contract:\n    runs-on: ubuntu-latest\n    timeout-minutes: 13\n",
+			),
+		},
+		{
+			name: "wrong setup-python action",
+			mutate: replaceCIOnce(
+				"actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+				"actions/setup-python@v6",
+			),
+		},
+		{
+			name: "wrong setup-node action",
+			mutate: replaceCIOnce(
+				"actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+				"actions/setup-node@v6",
+			),
+		},
+		{name: "wrong Python runtime", mutate: replaceCIOnce(`python-version: "3.12"`, `python-version: "3.13"`)},
+		{name: "wrong Node runtime", mutate: replaceCIOnce(`node-version: "24"`, `node-version: "22"`)},
+		{
+			name: "Python root below workspace",
+			mutate: func(document string) string {
+				return strings.ReplaceAll(document, "${RUNNER_TEMP}/sdk-python", "${GITHUB_WORKSPACE}/sdk-python")
+			},
+		},
+		{
+			name: "JavaScript root below workspace",
+			mutate: func(document string) string {
+				return strings.ReplaceAll(document, "${RUNNER_TEMP}/sdk-javascript", "${GITHUB_WORKSPACE}/sdk-javascript")
+			},
+		},
+		{
+			name: "Python root create mode weakened",
+			mutate: replaceCIOnce(
+				`install -d -m 0700 "${RUNNER_TEMP}/sdk-python"`,
+				`install -d -m 0755 "${RUNNER_TEMP}/sdk-python"`,
+			),
+		},
+		{
+			name: "JavaScript root reassert mode weakened",
+			mutate: replaceCIOnce(
+				`chmod 0700 "${RUNNER_TEMP}/sdk-javascript"`,
+				`chmod 0755 "${RUNNER_TEMP}/sdk-javascript"`,
+			),
+		},
+		{
+			name: "Python exact-mode check removed",
+			mutate: replaceCIOnce(
+				`          test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-python")" = "700"`+"\n",
+				"",
+			),
+		},
+		{
+			name: "JavaScript exact-mode check removed",
+			mutate: replaceCIOnce(
+				`          test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-javascript")" = "700"`+"\n",
+				"",
+			),
+		},
+		{name: "unlocked Python requirements", mutate: replaceCIOnce("requirements.lock", "requirements.txt")},
+		{
+			name:   "pip version-check flag removed",
+			mutate: replaceCIOnce(" --disable-pip-version-check", ""),
+		},
+		{name: "pip noninteractive flag removed", mutate: replaceCIOnce(" --no-input", "")},
+		{
+			name: "extra JavaScript copy",
+			mutate: replaceCIOnce(
+				`          cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/package-lock.json" "${RUNNER_TEMP}/sdk-javascript/package-lock.json"`+"\n",
+				`          cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/package-lock.json" "${RUNNER_TEMP}/sdk-javascript/package-lock.json"`+"\n"+
+					`          cp "${GITHUB_WORKSPACE}/README.md" "${RUNNER_TEMP}/sdk-javascript/README.md"`+"\n",
+			),
+		},
+		{name: "npm lifecycle scripts enabled", mutate: replaceCIOnce("npm ci --ignore-scripts", "npm ci")},
+		{
+			name: "wrong npm prefix",
+			mutate: replaceCIOnce(
+				`npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"`,
+				`npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-python"`,
+			),
+		},
+		{
+			name: "SDK argument added",
+			mutate: replaceCIOnce(
+				`            "${RUNNER_TEMP}/sdk-javascript/main.mjs"`,
+				`            "${RUNNER_TEMP}/sdk-javascript/main.mjs" "extra"`,
+			),
+		},
+		{
+			name:   "SDK argument removed",
+			mutate: replaceCIOnce(`            "$(command -v node)" \`+"\n", ""),
+		},
+		{
+			name: "SDK arguments reordered",
+			mutate: replaceCIOnce(
+				"            \"${RUNNER_TEMP}/sdk-python/bin/python\" \\\n"+
+					"            \"$(command -v node)\" \\\n",
+				"            \"$(command -v node)\" \\\n"+
+					"            \"${RUNNER_TEMP}/sdk-python/bin/python\" \\\n",
+			),
+		},
+		{
+			name: "SDK argument unquoted",
+			mutate: replaceCIOnce(
+				`            "${RUNNER_TEMP}/sdk-python/bin/python" \`,
+				`            ${RUNNER_TEMP}/sdk-python/bin/python \`,
+			),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := test.mutate(workflow)
+			if mutated == workflow {
+				t.Fatal("mutation did not change the workflow fixture")
+			}
+			if err := validateSDKCIWorkflowContract(mutated); err == nil {
+				t.Fatal("CI SDK contract accepted the mutation")
+			}
+		})
+	}
+}
+
+func validateSDKCIWorkflowContract(workflow string) error {
+	if count := len(regexp.MustCompile(`(?m)^on:\s*$`).FindAllStringIndex(workflow, -1)); count != 1 {
+		return fmt.Errorf("top-level on blocks = %d, want exactly one", count)
+	}
+	if got, want := topLevelYAMLBlockLines(workflow, "on:"), []string{"push:", "pull_request:", "workflow_call:"}; !reflect.DeepEqual(got, want) {
+		return fmt.Errorf("top-level triggers = %q, want exactly %q without inputs or secrets", got, want)
+	}
+
+	jobs, err := parseYAMLJobBlocks(workflow)
+	if err != nil {
+		return err
+	}
+	wantJobs := map[string]struct{}{
+		"lint": {}, "linux": {}, "macos": {}, "windows": {}, "cross-build": {}, "sdk-contract": {},
+	}
+	gotJobs := make(map[string]struct{}, len(jobs))
+	for name := range jobs {
+		gotJobs[name] = struct{}{}
+	}
+	if !reflect.DeepEqual(gotJobs, wantJobs) {
+		return fmt.Errorf("jobs = %v, want exact set %v", gotJobs, wantJobs)
+	}
+
+	sdkJob := jobs["sdk-contract"]
+	fields, err := parseImmediateYAMLFields(sdkJob, 4)
+	if err != nil {
+		return fmt.Errorf("sdk-contract job: %w", err)
+	}
+	wantFields := map[string]string{
+		"runs-on": "ubuntu-latest", "timeout-minutes": "12", "steps": "",
+	}
+	if !reflect.DeepEqual(fields, wantFields) {
+		return fmt.Errorf("sdk-contract fields = %v, want exact fields %v", fields, wantFields)
+	}
+
+	steps, err := parseYAMLSteps(sdkJob)
+	if err != nil {
+		return fmt.Errorf("sdk-contract steps: %w", err)
+	}
+	wantSteps := []string{
+		"- uses: actions/checkout@v7",
+		strings.Join([]string{
+			"- uses: actions/setup-go@v7",
+			"  with:",
+			"    go-version-file: .go-version",
+			"    cache: true",
+		}, "\n"),
+		strings.Join([]string{
+			"- uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+			"  with:",
+			`    python-version: "3.12"`,
+		}, "\n"),
+		strings.Join([]string{
+			"- uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+			"  with:",
+			`    node-version: "24"`,
+		}, "\n"),
+		strings.Join([]string{
+			"- name: Verify official SDK compatibility",
+			"  shell: bash",
+			"  run: |",
+			"    set -eu",
+			"    umask 077",
+			`    install -d -m 0700 "${RUNNER_TEMP}/sdk-python"`,
+			`    python -m venv "${RUNNER_TEMP}/sdk-python"`,
+			`    chmod 0700 "${RUNNER_TEMP}/sdk-python"`,
+			`    test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-python")" = "700"`,
+			`    "${RUNNER_TEMP}/sdk-python/bin/python" -m pip install --disable-pip-version-check --no-input --requirement "${GITHUB_WORKSPACE}/examples/openai-sdk/python/requirements.lock"`,
+			`    install -d -m 0700 "${RUNNER_TEMP}/sdk-javascript"`,
+			`    cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/main.mjs" "${RUNNER_TEMP}/sdk-javascript/main.mjs"`,
+			`    cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/package.json" "${RUNNER_TEMP}/sdk-javascript/package.json"`,
+			`    cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/package-lock.json" "${RUNNER_TEMP}/sdk-javascript/package-lock.json"`,
+			`    chmod 0700 "${RUNNER_TEMP}/sdk-javascript"`,
+			`    test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-javascript")" = "700"`,
+			`    npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"`,
+			`    scripts/sdk-contract.sh \`,
+			`      "${RUNNER_TEMP}/sdk-python/bin/python" \`,
+			`      "$(command -v node)" \`,
+			`      "${RUNNER_TEMP}/sdk-javascript/main.mjs"`,
+		}, "\n"),
+	}
+	if !reflect.DeepEqual(steps, wantSteps) {
+		return fmt.Errorf("sdk-contract steps differ from the closed preparation and three-argv contract")
+	}
+
+	actionCounts := make(map[string]int)
+	for name, job := range jobs {
+		jobSteps, parseErr := parseYAMLSteps(job)
+		if parseErr != nil {
+			return fmt.Errorf("job %s steps: %w", name, parseErr)
+		}
+		for _, step := range jobSteps {
+			if action := parsedStepAction(step); action != "" {
+				actionCounts[action]++
+			}
+		}
+	}
+	wantActionCounts := map[string]int{
+		"actions/checkout@v7":              6,
+		"actions/setup-go@v7":              6,
+		"golangci/golangci-lint-action@v9": 1,
+		"actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97": 1,
+		"actions/setup-node@820762786026740c76f36085b0efc47a31fe5020":   1,
+	}
+	if !reflect.DeepEqual(actionCounts, wantActionCounts) {
+		return fmt.Errorf("actions = %v, want exact pins and counts %v", actionCounts, wantActionCounts)
+	}
+	return nil
+}
+
+func replaceCIOnce(old, replacement string) func(string) string {
+	return func(document string) string {
+		return strings.Replace(document, old, replacement, 1)
+	}
+}
+
+func parseYAMLJobBlocks(workflow string) (map[string]string, error) {
+	lines := strings.Split(strings.ReplaceAll(workflow, "\r\n", "\n"), "\n")
+	jobsStart := -1
+	for index, line := range lines {
+		if line == "jobs:" {
+			jobsStart = index + 1
+			break
+		}
+	}
+	if jobsStart < 0 {
+		return nil, errors.New("no top-level jobs mapping")
+	}
+	jobHeader := regexp.MustCompile(`^  ([A-Za-z0-9_-]+):\s*$`)
+	blocks := make(map[string]string)
+	current := ""
+	currentLines := make([]string, 0)
+	flush := func() error {
+		if current == "" {
+			return nil
+		}
+		if _, exists := blocks[current]; exists {
+			return fmt.Errorf("duplicate job %q", current)
+		}
+		blocks[current] = strings.Join(currentLines, "\n")
+		return nil
+	}
+	for _, line := range lines[jobsStart:] {
+		if strings.TrimSpace(line) != "" && leadingSpaces(line) == 0 {
+			break
+		}
+		if match := jobHeader.FindStringSubmatch(line); match != nil {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+			current = match[1]
+			currentLines = []string{line}
+			continue
+		}
+		if current != "" {
+			currentLines = append(currentLines, line)
+		}
+	}
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	if len(blocks) == 0 {
+		return nil, errors.New("no jobs")
+	}
+	return blocks, nil
+}
+
+func parseImmediateYAMLFields(block string, indentation int) (map[string]string, error) {
+	fields := make(map[string]string)
+	prefix := strings.Repeat(" ", indentation)
+	fieldPattern := regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `([A-Za-z0-9_-]+):(?:\s*(.*))?$`)
+	for _, line := range strings.Split(block, "\n") {
+		if strings.TrimSpace(line) == "" || leadingSpaces(line) != indentation {
+			continue
+		}
+		match := fieldPattern.FindStringSubmatch(line)
+		if match == nil {
+			return nil, fmt.Errorf("invalid field line %q", line)
+		}
+		if _, exists := fields[match[1]]; exists {
+			return nil, fmt.Errorf("duplicate field %q", match[1])
+		}
+		fields[match[1]] = strings.TrimSpace(match[2])
+	}
+	return fields, nil
+}
+
+func parseYAMLSteps(jobBlock string) ([]string, error) {
+	lines := strings.Split(strings.ReplaceAll(jobBlock, "\r\n", "\n"), "\n")
+	stepsStart := -1
+	for index, line := range lines {
+		if line == "    steps:" {
+			if stepsStart >= 0 {
+				return nil, errors.New("duplicate steps mapping")
+			}
+			stepsStart = index + 1
+		}
+	}
+	if stepsStart < 0 {
+		return nil, errors.New("missing steps mapping")
+	}
+
+	steps := make([]string, 0)
+	current := make([]string, 0)
+	flush := func() {
+		if len(current) > 0 {
+			steps = append(steps, strings.Join(current, "\n"))
+		}
+	}
+	for _, line := range lines[stepsStart:] {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indentation := leadingSpaces(line)
+		if indentation <= 4 {
+			break
+		}
+		if indentation == 6 {
+			if !strings.HasPrefix(line, "      - ") {
+				return nil, fmt.Errorf("invalid step boundary %q", line)
+			}
+			flush()
+			current = []string{strings.TrimPrefix(line, "      ")}
+			continue
+		}
+		if len(current) == 0 {
+			return nil, fmt.Errorf("step content before first list item %q", line)
+		}
+		if indentation < 8 {
+			return nil, fmt.Errorf("invalid step indentation %q", line)
+		}
+		current = append(current, strings.TrimPrefix(line, "      "))
+	}
+	flush()
+	if len(steps) == 0 {
+		return nil, errors.New("empty steps list")
+	}
+	return steps, nil
+}
+
+func parsedStepAction(step string) string {
+	for index, line := range strings.Split(step, "\n") {
+		if index == 0 && strings.HasPrefix(line, "- uses: ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "- uses: "))
+		}
+		if strings.HasPrefix(line, "  uses: ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "  uses: "))
+		}
+	}
+	return ""
+}
+
+func leadingSpaces(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " "))
 }
 
 func extractYAMLJobBlocks(t *testing.T, workflow string) map[string]string {
