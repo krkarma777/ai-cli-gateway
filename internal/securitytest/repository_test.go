@@ -44,6 +44,8 @@ func TestCodexConfigExampleContentSafety(t *testing.T) {
 		".CODEX/SESSION-AUTH.JSON",
 		"LOGIN-state.toml",
 		"tokens.yaml",
+		"token",
+		"ToKeN",
 	} {
 		t.Run(mutation, func(t *testing.T) {
 			if err := codexConfigContentSafety(append(contents, []byte("\n# "+mutation)...)); err == nil {
@@ -61,7 +63,7 @@ func codexConfigContentSafety(contents []byte) error {
 	lower := strings.ToLower(text)
 	for _, forbidden := range []string{
 		"prefix_args", "credential_env", "concurrency", "queue_size", "queue_bytes", "queue_timeout", "execution_timeout",
-		"/users/", "/home/", "c:\\users\\", "c:/users/", "@", "account",
+		"/users/", "/home/", "c:\\users\\", "c:/users/", "@", "account", "token",
 	} {
 		if strings.Contains(lower, forbidden) {
 			return errors.New("contains forbidden marker " + strconv.Quote(forbidden))
