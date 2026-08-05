@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"os"
@@ -1276,8 +1277,9 @@ func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
 		t.Fatalf("baseline README Quick Start must be valid before mutation checks: %v", err)
 	}
 	tests := []struct {
-		name   string
-		mutate func(string) (string, error)
+		name     string
+		sealOnly bool
+		mutate   func(string) (string, error)
 	}{
 		{name: "broad POSIX filename regex", mutate: replaceREADMEOnce(`length($0) == 66 + length(name) && substr($0, 65) == " *" name`, `$0 ~ name`)},
 		{name: "commented POSIX exact count", mutate: replaceREADMEOnce(`      if (matches != 1) exit 1`, `      # if (matches != 1) exit 1`)},
@@ -1286,8 +1288,15 @@ func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
 		{name: "PowerShell checksum comparison is inert", mutate: replaceREADMEOnce(`if (-not [String]::Equals($ExpectedSHA, $ActualSHA, [StringComparison]::OrdinalIgnoreCase)) {`, `[StringComparison]::OrdinalIgnoreCase | Out-Null`+"\n"+`if ($false) {`)},
 		{name: "printed POSIX key", mutate: replaceREADMENth(`export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`, `export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`+"\n"+`printf '%s\n' "${GATEWAY_KEY}"`, 2)},
 		{name: "commented POSIX terminal load", mutate: replaceREADMENth(`GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`, `# GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`, 2)},
+		{name: "POSIX terminal load in dead branch", mutate: replaceREADMENth(`GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`, "if false; then\n  "+`GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`+"\nfi", 2)},
 		{name: "bare PowerShell terminal key", mutate: replaceREADMENth(`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, `$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`+"\n"+`$LoadedGatewayKey`, 2)},
+		{name: "PowerShell terminal key piped to host", mutate: replaceREADMENth(`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, `$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`+"\n"+`$LoadedGatewayKey | Out-Host`, 2)},
+		{name: "indirect POSIX key file output", sealOnly: true, mutate: replaceREADMEOnce(`ai-cli-gateway doctor --config "${GATEWAY_CONFIG_FILE}"`, `cat "${GATEWAY_CONFIG_DIR}"/*`+"\n"+`ai-cli-gateway doctor --config "${GATEWAY_CONFIG_FILE}"`)},
+		{name: "indirect PowerShell key file output", sealOnly: true, mutate: replaceREADMEOnce(`ai-cli-gateway.exe doctor --config $GatewayConfigFile`, `Get-ChildItem $GatewayConfigDir | Get-Content | Out-Host`+"\n"+`ai-cli-gateway.exe doctor --config $GatewayConfigFile`)},
+		{name: "comment-only fence source change", sealOnly: true, mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.1.0", "```bash\nset -eu\n# sealed source changed\nVERSION=0.1.0")},
+		{name: "early POSIX fence prints key", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.1.0", "```bash\nset -eu\nprintf '%s\\n' \"${GATEWAY_KEY}\"\nVERSION=0.1.0")},
 		{name: "unexpected shell fence prints key", mutate: replaceREADMEOnce("### Official SDK checks\n", "```sh\nprintf '%s\\n' \"${GATEWAY_KEY}\"\n```\n\n### Official SDK checks\n")},
+		{name: "tilde PowerShell fence prints key", mutate: replaceREADMEOnce("### Official SDK checks\n", "~~~powershell\n$LoadedGatewayKey | Out-Host\n~~~\n\n### Official SDK checks\n")},
 		{name: "first Bash fence changed to text", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.1.0", "```text\nset -eu\nVERSION=0.1.0")},
 		{name: "Darwin ARM64 branch removed", mutate: replaceREADMEOnce(`  Darwin:arm64) ASSET="ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz" ;;`+"\n", "")},
 		{name: "Darwin ARM64 branch moved to unused function", mutate: moveREADMEHostBranchToUnusedFunction},
@@ -1295,10 +1304,14 @@ func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
 		{name: "POSIX chmod commented", mutate: replaceREADMEOnce(`chmod 700 "${GATEWAY_CONFIG_DIR}" "${GATEWAY_RUNTIME_DIR}" "${CODEX_CONFIG_HOME}"`, `# chmod 700 "${GATEWAY_CONFIG_DIR}" "${GATEWAY_RUNTIME_DIR}" "${CODEX_CONFIG_HOME}"`)},
 		{name: "models curl commented", mutate: replaceREADMENth("curl --fail-with-body \\\n  -H \"Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}\" \\\n  http://127.0.0.1:8080/v1/models", "# curl --fail-with-body \\\n#   -H \"Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}\" \\\n#   http://127.0.0.1:8080/v1/models", 1)},
 		{name: "Node SDK command commented", mutate: replaceREADMEOnce(`node "${SDK_WORK_ROOT}/javascript/main.mjs"`, `# node "${SDK_WORK_ROOT}/javascript/main.mjs"`)},
+		{name: "Node SDK command in dead branch", mutate: replaceREADMEOnce(`node "${SDK_WORK_ROOT}/javascript/main.mjs"`, "if false; then\n  "+`node "${SDK_WORK_ROOT}/javascript/main.mjs"`+"\nfi")},
+		{name: "SDK fence prints gateway key", mutate: replaceREADMEOnce(`node "${SDK_WORK_ROOT}/javascript/main.mjs"`, `node "${SDK_WORK_ROOT}/javascript/main.mjs"`+"\n"+`printf '%s\n' "${AI_CLI_GATEWAY_API_KEY}"`)},
 		{name: "subset only in HTML comment", mutate: replaceREADMEOnce(`It exercises the documented non-streaming **Responses API-compatible subset**;`, `It exercises the documented non-streaming local subset. <!-- Responses API-compatible subset -->`)},
 		{name: "subset only in Markdown reference", mutate: replaceREADMEOnce(`This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. It exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility.`, "This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. It is fully OpenAI API compatible.[subset-contract]\n\n[subset-contract]: Responses API-compatible subset")},
+		{name: "subset sentence hidden in details", mutate: replaceREADMEOnce(`It exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility.`, "This setup implements the entire OpenAI Responses API.\n\n<details>\n<summary>Compatibility detail</summary>\n\nIt exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility.\n</details>")},
 		{name: "systemd link moved to Windows", mutate: moveREADMESystemdLink},
 		{name: "raw systemd path added to Windows", mutate: replaceREADMEOnce(`Use PowerShell 7 as an unprivileged gateway identity.`, `Use PowerShell 7 as an unprivileged gateway identity. See deploy/systemd/ai-cli-gateway.service.`)},
+		{name: "encoded systemd path added to Windows", mutate: replaceREADMEOnce(`Use PowerShell 7 as an unprivileged gateway identity.`, `Use PowerShell 7 as an unprivileged gateway identity. See [Linux service unit](deploy/%73ystemd/ai-cli-gateway.service).`)},
 		{name: "PowerShell accepts preexisting target", mutate: replaceREADMEOnce(`if (Test-Path -LiteralPath $FreshTarget) { throw 'private target already exists' }`, `if (Test-Path -LiteralPath $FreshTarget) { Write-Output 'reusing target' }`)},
 		{name: "PowerShell directory basic right parenthesized", mutate: replaceREADMEOnce(`& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null`, `& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)(F)" | Out-Null`)},
 		{name: "PowerShell file basic rights parenthesized", mutate: replaceREADMENth(`(RD,REA,RA,RC,WD,AD,WEA,WA,S)`, `(R,W)`, 1)},
@@ -1306,7 +1319,9 @@ func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
 		{name: "PowerShell adds another ACE", mutate: replaceREADMEOnce(`& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null`, `& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null`+"\n"+`  & icacls.exe $PrivateDir /grant 'BUILTIN\Users:R' | Out-Null`)},
 		{name: "PowerShell omits exact ACL count", mutate: replaceREADMEOnce(`if ($Rules.Count -ne 1) { throw 'private ACL must contain exactly one rule' }`, `# if ($Rules.Count -ne 1) { throw 'private ACL must contain exactly one rule' }`)},
 		{name: "PowerShell key ACL assertion is inert", mutate: replaceREADMEOnce(`Assert-ExactPrivateFileACL $GatewayKeyPath`, `$null = 'Assert-ExactPrivateFileACL $GatewayKeyPath'`)},
+		{name: "PowerShell key ACL assertion in dead branch", mutate: replaceREADMEOnce(`Assert-ExactPrivateFileACL $GatewayKeyPath`, "if ($false) {\n  Assert-ExactPrivateFileACL $GatewayKeyPath\n}")},
 		{name: "PowerShell TOML model assertion is inert", mutate: replaceREADMEOnce(`Assert-SafeTOMLValue $CodexModelTOML`, `$null = 'Assert-SafeTOMLValue $CodexModelTOML'`)},
+		{name: "PowerShell TOML model assertion in dead branch", mutate: replaceREADMEOnce(`Assert-SafeTOMLValue $CodexModelTOML`, "if ($false) {\n  Assert-SafeTOMLValue $CodexModelTOML\n}")},
 		{name: "PowerShell terminal load commented", mutate: replaceREADMENth(`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, `# $LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, 2)},
 	}
 	for _, test := range tests {
@@ -1318,8 +1333,128 @@ func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
 			if err := validateREADMEReleaseQuickStart(mutated); err == nil {
 				t.Fatal("README Quick Start validator accepted the mutation")
 			}
+			semanticErr := validateREADMEReleaseQuickStartSemantics(mutated)
+			if test.sealOnly && semanticErr != nil {
+				t.Fatalf("source-seal-only mutation was rejected before source sealing: %v", semanticErr)
+			}
+			if !test.sealOnly && semanticErr == nil {
+				t.Fatal("README Quick Start semantic validator accepted the mutation before source sealing")
+			}
 		})
 	}
+}
+
+func TestREADMEQuickStartSemanticHelpersRejectBypasses(t *testing.T) {
+	readme := string(readRepositoryFile(t, "README.md"))
+	t.Run("cross-section HTML comment", func(t *testing.T) {
+		mutated, err := replaceREADMEOnce("### POSIX (macOS and Linux)\n", "<!--\n### POSIX (macOS and Linux)\n")(readme)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mutated, err = replaceREADMEOnce("\n## Architecture and scope\n", "\n-->\n## Architecture and scope\n")(mutated)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parseREADMEQuickStart(mutated); err == nil {
+			t.Fatal("Quick Start parser accepted a cross-section HTML comment")
+		}
+	})
+
+	t.Run("Markdown-obfuscated compatibility claim", func(t *testing.T) {
+		const subsetSentence = "It exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility."
+		const prefix = "This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. "
+		prose := prefix + subsetSentence + "\nThis setup has complete Open**AI** Responses **API** compatibility."
+		if err := validateREADMECompatibilityClaims(prose, subsetSentence); err == nil {
+			t.Fatal("compatibility validator accepted a Markdown-obfuscated broad claim")
+		}
+	})
+
+	t.Run("subset sentence in link title", func(t *testing.T) {
+		const subsetSentence = "It exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility."
+		const prefix = "This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. "
+		prose := `[Compatibility](https://example.invalid "` + prefix + subsetSentence + `")`
+		if err := validateREADMECompatibilityClaims(prose, subsetSentence); err == nil {
+			t.Fatal("compatibility validator accepted the required paragraph only in a link title")
+		}
+	})
+
+	t.Run("indented code in prose", func(t *testing.T) {
+		mutated, err := replaceREADMEOnce(
+			"Use PowerShell 7 as an unprivileged gateway identity.",
+			"Use PowerShell 7 as an unprivileged gateway identity.\n\n    $LoadedGatewayKey | Out-Host",
+		)(readme)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parseREADMEQuickStart(mutated); err == nil {
+			t.Fatal("Quick Start parser accepted indented executable code in prose")
+		}
+	})
+
+	t.Run("tab-expanded indented code in prose", func(t *testing.T) {
+		mutated, err := replaceREADMEOnce(
+			"Use PowerShell 7 as an unprivileged gateway identity.",
+			"Use PowerShell 7 as an unprivileged gateway identity.\n\n   \t$LoadedGatewayKey | Out-Host",
+		)(readme)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parseREADMEQuickStart(mutated); err == nil {
+			t.Fatal("Quick Start parser accepted tab-expanded indented code in prose")
+		}
+	})
+
+	t.Run("Windows reference link", func(t *testing.T) {
+		if err := validateREADMEWindowsServiceLinks("See [Linux unit][svc]."); err == nil {
+			t.Fatal("Windows prose validator accepted a reference-style link")
+		}
+	})
+
+	t.Run("literal percent prose", func(t *testing.T) {
+		if err := validateREADMEWindowsServiceLinks("The gateway remains 100% local."); err != nil {
+			t.Fatalf("Windows prose validator rejected a literal percent: %v", err)
+		}
+	})
+
+	t.Run("Markdown-obfuscated Windows service path", func(t *testing.T) {
+		if err := validateREADMEWindowsServiceLinks(`See deploy/sys**temd**/ai-cli-gateway.**service**.`); err == nil {
+			t.Fatal("Windows prose validator accepted Markdown-obfuscated service terms")
+		}
+	})
+
+	t.Run("cross-section HTML processing instruction", func(t *testing.T) {
+		mutated, err := replaceREADMEOnce("### POSIX (macOS and Linux)\n", "<?hidden\n### POSIX (macOS and Linux)\n")(readme)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mutated, err = replaceREADMEOnce("\n## Architecture and scope\n", "\n?>\n## Architecture and scope\n")(mutated)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parseREADMEQuickStart(mutated); err == nil {
+			t.Fatal("Quick Start parser accepted a cross-section HTML processing instruction")
+		}
+	})
+
+	t.Run("shell logical continuation", func(t *testing.T) {
+		statements, err := shellTopLevelStatements("false && \\\n  node \"${SDK_WORK_ROOT}/javascript/main.mjs\"")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(statements, `node "${SDK_WORK_ROOT}/javascript/main.mjs"`) {
+			t.Fatal("shell reachability parser treated a continued conditional command as independently top-level")
+		}
+	})
+
+	t.Run("shell top-level termination", func(t *testing.T) {
+		statements, err := shellTopLevelStatements("exit 0\nnode \"${SDK_WORK_ROOT}/javascript/main.mjs\"")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(statements, `node "${SDK_WORK_ROOT}/javascript/main.mjs"`) {
+			t.Fatal("shell reachability parser treated a command after top-level exit as reachable")
+		}
+	})
 }
 
 func replaceREADMEOnce(old, replacement string) func(string) (string, error) {
@@ -1379,6 +1514,7 @@ func moveREADMEHostBranchToUnusedFunction(document string) (string, error) {
 type readmeQuickStartFence struct {
 	section  string
 	language string
+	source   string
 	body     string
 }
 
@@ -1395,6 +1531,14 @@ const (
 )
 
 func validateREADMEReleaseQuickStart(readme string) error {
+	return validateREADMEReleaseQuickStartContract(readme, true)
+}
+
+func validateREADMEReleaseQuickStartSemantics(readme string) error {
+	return validateREADMEReleaseQuickStartContract(readme, false)
+}
+
+func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) error {
 	paragraphs := markdownProseParagraphs(readme)
 	const opening = "AI CLI Gateway turns locally authenticated AI CLIs into an OpenAI Responses-compatible API."
 	const disclaimer = "It deliberately implements a small **Responses API-compatible subset**, not full OpenAI API compatibility. The gateway is a local, final-output bridge with strict validation; it is not a drop-in implementation of every OpenAI endpoint or feature."
@@ -1417,12 +1561,8 @@ func validateREADMEReleaseQuickStart(readme string) error {
 		return errors.New("active Quick Start prose is missing the exact rendered subset qualification")
 	}
 	visibleQuickStartProse := strings.Join([]string{rootProse, posixProse, windowsProse, sdkProse}, "\n")
-	for _, forbidden := range []string{
-		"fully OpenAI API compatible", "complete OpenAI API compatibility", "drop-in replacement for the OpenAI API",
-	} {
-		if strings.Contains(strings.ToLower(visibleQuickStartProse), strings.ToLower(forbidden)) {
-			return fmt.Errorf("active Quick Start prose makes forbidden compatibility claim %q", forbidden)
-		}
+	if err := validateREADMECompatibilityClaims(visibleQuickStartProse, subsetSentence); err != nil {
+		return err
 	}
 	for _, marker := range []string{
 		"v0.1.0", "ai-cli-gateway_0.1.0_linux_amd64.tar.gz",
@@ -1439,8 +1579,11 @@ func validateREADMEReleaseQuickStart(readme string) error {
 		return errors.New("active SDK prose is missing the provider-terms notice")
 	}
 	const systemdLink = "[systemd service example](deploy/systemd/ai-cli-gateway.service)"
-	if !strings.Contains(posixProse, systemdLink) || strings.Contains(strings.ToLower(windowsProse), "systemd") {
+	if !strings.Contains(posixProse, systemdLink) {
 		return errors.New("systemd link is not active POSIX-only prose")
+	}
+	if err := validateREADMEWindowsServiceLinks(windowsProse); err != nil {
+		return err
 	}
 
 	posixFences := quickStartFences(document, quickStartPOSIXSection, "bash")
@@ -1519,13 +1662,8 @@ func validateREADMEReleaseQuickStart(readme string) error {
 			return fmt.Errorf("PowerShell key terminal %d: %w", index+1, err)
 		}
 	}
-	secretOutput := regexp.MustCompile(`(?mi)^\s*(?:echo|printf|cat|source|\.|Write-Output|Write-Host|Get-Content)\b[^\n]*(?:GATEWAY_KEY|LoadedGatewayKey|GatewayKey|gateway\.key|AI_CLI_GATEWAY_API_KEY)`)
-	barePowerShellSecret := regexp.MustCompile(`(?mi)^\s*\$(?:LoadedGatewayKey|GatewayKey)\s*$`)
-	inertPowerShellString := regexp.MustCompile(`(?mi)^\s*\$null\s*=\s*['"][^\r\n]*['"]\s*$`)
-	literalKey := regexp.MustCompile(`(?mi)AI_CLI_GATEWAY_API_KEY\s*=\s*["']?[0-9a-f]{16}`)
-	if secretOutput.MatchString(posixCode+"\n"+windowsCode) || barePowerShellSecret.MatchString(windowsCode) ||
-		inertPowerShellString.MatchString(windowsCode) || literalKey.MatchString(posixCode+"\n"+windowsCode) {
-		return errors.New("Quick Start prints, sources, or literally assigns gateway key material")
+	if err := validateREADMEKeyUseContract(posixFences, windowsFences, sdkFences); err != nil {
+		return err
 	}
 
 	for _, marker := range []string{
@@ -1566,13 +1704,19 @@ func validateREADMEReleaseQuickStart(readme string) error {
 			return fmt.Errorf("active PowerShell configuration is missing %q", marker)
 		}
 	}
-	for _, statement := range []string{
-		`Assert-SafeTOMLValue $CodexModelTOML`,
-		`Assert-ExactPrivateFileACL $GatewayKeyPath`,
-	} {
-		if !containsExactTrimmedLine(windowsFences[3], statement) {
-			return fmt.Errorf("active PowerShell configuration is missing executable statement %q", statement)
-		}
+	powerShellSetupStatements, err := powerShellTopLevelStatements(windowsFences[3])
+	if err != nil {
+		return fmt.Errorf("PowerShell configuration reachability: %w", err)
+	}
+	if err := requireTopLevelStatementCounts(powerShellSetupStatements, map[string]int{
+		`Assert-SafeTOMLValue $CodexExecutableTOML`:     1,
+		`Assert-SafeTOMLValue $CodexConfigHomeTOML`:     1,
+		`Assert-SafeTOMLValue $GatewayRuntimeTOML`:      1,
+		`Assert-SafeTOMLValue $CodexModelTOML`:          1,
+		`Assert-ExactPrivateFileACL $GatewayConfigFile`: 1,
+		`Assert-ExactPrivateFileACL $GatewayKeyPath`:    1,
+	}); err != nil {
+		return fmt.Errorf("PowerShell configuration reachability: %w", err)
 	}
 	if _, err := extractREADMEWindowsACLGrants(windowsFences[3]); err != nil {
 		return fmt.Errorf("PowerShell ACL grant contract: %w", err)
@@ -1590,6 +1734,20 @@ func validateREADMEReleaseQuickStart(readme string) error {
 	); err != nil {
 		return fmt.Errorf("active PowerShell curl contract: %w", err)
 	}
+	posixRequestStatements, err := shellTopLevelStatements(posixFences[5])
+	if err != nil {
+		return fmt.Errorf("active POSIX request reachability: %w", err)
+	}
+	if err := requireTopLevelStatementCounts(posixRequestStatements, map[string]int{`curl --fail-with-body \`: 2}); err != nil {
+		return fmt.Errorf("active POSIX request reachability: %w", err)
+	}
+	powerShellRequestStatements, err := powerShellTopLevelStatements(windowsFences[5])
+	if err != nil {
+		return fmt.Errorf("active PowerShell request reachability: %w", err)
+	}
+	if err := requireTopLevelStatementCounts(powerShellRequestStatements, map[string]int{`curl.exe --fail-with-body ` + "`": 2}); err != nil {
+		return fmt.Errorf("active PowerShell request reachability: %w", err)
+	}
 	for _, marker := range []string{
 		`python3.12 -m venv`, `examples/openai-sdk/python/requirements.lock`,
 		`examples/openai-sdk/python/main.py`, `npm ci --ignore-scripts --prefix`,
@@ -1600,12 +1758,24 @@ func validateREADMEReleaseQuickStart(readme string) error {
 			return fmt.Errorf("active SDK commands are missing %q", marker)
 		}
 	}
+	sdkStatements, err := shellTopLevelStatements(sdkCode)
+	if err != nil {
+		return fmt.Errorf("active SDK reachability: %w", err)
+	}
+	if err := requireTopLevelStatementCounts(sdkStatements, map[string]int{`node "${SDK_WORK_ROOT}/javascript/main.mjs"`: 1}); err != nil {
+		return fmt.Errorf("active SDK reachability: %w", err)
+	}
 	for _, marker := range []string{
 		"1..300", "300", "five seconds", "models.list()", "responses.create()", "non-streaming",
 		"SDK_GATEWAY_OK", "zero or one trailing newline",
 	} {
 		if !strings.Contains(sdkProse, marker) {
 			return fmt.Errorf("active SDK prose is missing %q", marker)
+		}
+	}
+	if sealSources {
+		if err := validateREADMEQuickStartFenceSources(document); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1623,6 +1793,10 @@ func parseREADMEQuickStart(readme string) (readmeQuickStartDocument, error) {
 	if start < 0 || end < 0 || start >= end {
 		return readmeQuickStartDocument{}, errors.New("Quick Start must precede Architecture and scope")
 	}
+	quickStartSource := normalized[start+len(quickStartMarker) : end]
+	if strings.Contains(quickStartSource, "<!--") || strings.Contains(quickStartSource, "-->") {
+		return readmeQuickStartDocument{}, errors.New("Quick Start must not contain HTML comments")
+	}
 	section := quickStartRootSection
 	sectionOrder := []string{quickStartPOSIXSection, quickStartWindowsSection, quickStartSDKSection}
 	nextSection := 0
@@ -1630,14 +1804,19 @@ func parseREADMEQuickStart(readme string) (readmeQuickStartDocument, error) {
 		quickStartRootSection: {}, quickStartPOSIXSection: {}, quickStartWindowsSection: {}, quickStartSDKSection: {},
 	}
 	fences := make([]readmeQuickStartFence, 0)
-	inFence := false
+	var fenceMarker byte
+	fenceLength := 0
 	language := ""
 	fenceLines := make([]string, 0)
-	for _, line := range strings.Split(normalized[start+len(quickStartMarker):end], "\n") {
-		if inFence {
-			if line == "```" {
-				fences = append(fences, readmeQuickStartFence{section: section, language: language, body: executableREADMEFence(strings.Join(fenceLines, "\n"))})
-				inFence = false
+	for _, line := range strings.Split(quickStartSource, "\n") {
+		if fenceLength > 0 {
+			if isGFMFenceClosing(line, fenceMarker, fenceLength) {
+				source := strings.Join(fenceLines, "\n")
+				fences = append(fences, readmeQuickStartFence{
+					section: section, language: language, source: source, body: executableREADMEFence(source),
+				})
+				fenceMarker = 0
+				fenceLength = 0
 				language = ""
 				fenceLines = fenceLines[:0]
 				continue
@@ -1645,9 +1824,14 @@ func parseREADMEQuickStart(readme string) (readmeQuickStartDocument, error) {
 			fenceLines = append(fenceLines, line)
 			continue
 		}
-		if strings.HasPrefix(line, "```") {
-			inFence = true
-			language = strings.TrimPrefix(line, "```")
+		marker, length, info, opening, err := parseGFMFenceOpening(line)
+		if err != nil {
+			return readmeQuickStartDocument{}, err
+		}
+		if opening {
+			fenceMarker = marker
+			fenceLength = length
+			language = info
 			continue
 		}
 		if strings.HasPrefix(line, "### ") {
@@ -1672,9 +1856,12 @@ func parseREADMEQuickStart(readme string) (readmeQuickStartDocument, error) {
 		if regexp.MustCompile(`^[ \t]{0,3}\[[^]\r\n]+\]:`).MatchString(line) {
 			return readmeQuickStartDocument{}, errors.New("Quick Start prose contains a non-rendered Markdown reference definition")
 		}
+		if err := validateREADMEQuickStartProseLine(line); err != nil {
+			return readmeQuickStartDocument{}, err
+		}
 		proseLines[section] = append(proseLines[section], line)
 	}
-	if inFence {
+	if fenceLength > 0 {
 		return readmeQuickStartDocument{}, errors.New("Quick Start has an unterminated code fence")
 	}
 	if nextSection != len(sectionOrder) {
@@ -1682,9 +1869,276 @@ func parseREADMEQuickStart(readme string) (readmeQuickStartDocument, error) {
 	}
 	prose := make(map[string]string, len(proseLines))
 	for name, lines := range proseLines {
-		prose[name] = stripREADMEHTMLComments(strings.Join(lines, "\n"))
+		rendered, err := renderedREADMEProse(strings.Join(lines, "\n"))
+		if err != nil {
+			return readmeQuickStartDocument{}, fmt.Errorf("Quick Start %s prose: %w", name, err)
+		}
+		prose[name] = rendered
 	}
 	return readmeQuickStartDocument{prose: prose, fences: fences}, nil
+}
+
+func validateREADMEQuickStartProseLine(line string) error {
+	if strings.ContainsAny(line, "<>") {
+		return errors.New("Quick Start prose contains a raw HTML construct")
+	}
+	if strings.TrimSpace(line) != "" && readmeIndentColumns(line) >= 4 {
+		return errors.New("Quick Start prose contains indented code outside an explicit fence")
+	}
+	trimmed := strings.TrimLeft(line, " ")
+	if strings.HasPrefix(trimmed, ">") || regexp.MustCompile(`^(?:[-+*]|[0-9]+[.)])[ \t]+`).MatchString(trimmed) {
+		return errors.New("Quick Start prose contains a Markdown container outside an explicit fence")
+	}
+	return nil
+}
+
+func readmeIndentColumns(line string) int {
+	columns := 0
+	for index := 0; index < len(line); index++ {
+		switch line[index] {
+		case ' ':
+			columns++
+		case '\t':
+			columns += 4 - columns%4
+		default:
+			return columns
+		}
+	}
+	return columns
+}
+
+func parseGFMFenceOpening(line string) (byte, int, string, bool, error) {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || indent == len(line) || (line[indent] != '`' && line[indent] != '~') {
+		return 0, 0, "", false, nil
+	}
+	marker := line[indent]
+	end := indent
+	for end < len(line) && line[end] == marker {
+		end++
+	}
+	length := end - indent
+	if length < 3 {
+		return 0, 0, "", false, nil
+	}
+	info := strings.TrimSpace(line[end:])
+	if marker == '`' && strings.Contains(info, "`") {
+		return 0, 0, "", false, errors.New("Quick Start contains an invalid backtick fence info string")
+	}
+	return marker, length, info, true, nil
+}
+
+func isGFMFenceClosing(line string, marker byte, openingLength int) bool {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || indent == len(line) || line[indent] != marker {
+		return false
+	}
+	end := indent
+	for end < len(line) && line[end] == marker {
+		end++
+	}
+	if end-indent < openingLength {
+		return false
+	}
+	return strings.Trim(line[end:], " \t") == ""
+}
+
+func renderedREADMEProse(document string) (string, error) {
+	withoutComments := stripREADMEHTMLComments(document)
+	if regexp.MustCompile(`(?i)<[[:space:]]*/?[[:space:]]*[a-z][^>]*>`).MatchString(withoutComments) {
+		return "", errors.New("contains raw HTML outside a code fence")
+	}
+	return withoutComments, nil
+}
+
+func validateREADMECompatibilityClaims(prose, allowedSubsetSentence string) error {
+	const quickStartParagraphPrefix = "This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. "
+	requiredParagraph := quickStartParagraphPrefix + allowedSubsetSentence
+	if stringsCount(markdownProseParagraphs(prose), requiredParagraph) != 1 || strings.Count(prose, allowedSubsetSentence) != 1 {
+		return errors.New("active Quick Start prose does not contain the exact visible subset paragraph")
+	}
+	withoutAllowedBoundary := strings.ReplaceAll(prose, allowedSubsetSentence, "")
+	normalized := strings.ReplaceAll(withoutAllowedBoundary, "`examples/openai-sdk`", "")
+	for iteration := 0; iteration < 8; iteration++ {
+		next := html.UnescapeString(normalized)
+		if next == normalized {
+			break
+		}
+		normalized = next
+	}
+	var compact strings.Builder
+	for _, character := range strings.ToLower(normalized) {
+		if unicode.IsLetter(character) || unicode.IsDigit(character) {
+			compact.WriteRune(character)
+		}
+	}
+	if strings.Contains(compact.String(), "openai") || strings.Contains(compact.String(), "responsesapi") {
+		return errors.New("active Quick Start prose contains an OpenAI compatibility claim outside the exact subset qualification")
+	}
+	return nil
+}
+
+func validateREADMEWindowsServiceLinks(prose string) error {
+	if strings.ContainsAny(prose, "[]") {
+		return errors.New("Windows Quick Start prose contains Markdown link syntax")
+	}
+	normalized := prose
+	for iteration := 0; iteration < 8; iteration++ {
+		next := decodeREADMEPercentEscapes(html.UnescapeString(normalized))
+		if next == normalized {
+			break
+		}
+		normalized = next
+		if iteration == 7 {
+			return errors.New("Windows Quick Start prose exceeds the decoding limit")
+		}
+	}
+	normalized = strings.NewReplacer("*", "", "_", "", "~", "", "`", "").Replace(normalized)
+	normalized = strings.ToLower(strings.ReplaceAll(normalized, `\`, "/"))
+	if strings.Contains(normalized, "systemd") || strings.Contains(normalized, ".service") {
+		return errors.New("Windows Quick Start prose contains a service or systemd reference")
+	}
+	return nil
+}
+
+func decodeREADMEPercentEscapes(value string) string {
+	var decoded strings.Builder
+	decoded.Grow(len(value))
+	for index := 0; index < len(value); index++ {
+		if value[index] == '%' && index+2 < len(value) {
+			high, highOK := decodeREADMEHexDigit(value[index+1])
+			low, lowOK := decodeREADMEHexDigit(value[index+2])
+			if highOK && lowOK {
+				decoded.WriteByte(high<<4 | low)
+				index += 2
+				continue
+			}
+		}
+		decoded.WriteByte(value[index])
+	}
+	return decoded.String()
+}
+
+func decodeREADMEHexDigit(value byte) (byte, bool) {
+	switch {
+	case value >= '0' && value <= '9':
+		return value - '0', true
+	case value >= 'a' && value <= 'f':
+		return value - 'a' + 10, true
+	case value >= 'A' && value <= 'F':
+		return value - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
+func validateREADMEKeyUseContract(posixFences, windowsFences, sdkFences []string) error {
+	if len(posixFences) != 6 || len(windowsFences) != 6 || len(sdkFences) != 1 {
+		return errors.New("Quick Start key-use contract requires all POSIX, PowerShell, and SDK fences")
+	}
+	posixExpected := make([][]string, len(posixFences))
+	posixExpected[3] = []string{
+		`openssl rand -hex 32 > "${GATEWAY_CONFIG_DIR}/gateway.key"`,
+		`chmod 600 "${GATEWAY_CONFIG_DIR}/gateway.key"`,
+		`GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`,
+		`test "${#GATEWAY_KEY}" -eq 64`,
+		`case "${GATEWAY_KEY}" in *[!0-9a-f]*) exit 1 ;; esac`,
+		`export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`,
+	}
+	posixExpected[4] = []string{
+		`GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`,
+		`test "${#GATEWAY_KEY}" -eq 64`,
+		`case "${GATEWAY_KEY}" in *[!0-9a-f]*) exit 1 ;; esac`,
+		`export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`,
+	}
+	posixExpected[5] = []string{
+		`GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`,
+		`test "${#GATEWAY_KEY}" -eq 64`,
+		`case "${GATEWAY_KEY}" in *[!0-9a-f]*) exit 1 ;; esac`,
+		`export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`,
+		`-H "Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}" \`,
+		`-H "Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}" \`,
+	}
+	windowsExpected := make([][]string, len(windowsFences))
+	windowsExpected[3] = []string{
+		`$GatewayKeyPath = Join-Path $GatewayConfigDir 'gateway.key'`,
+		`foreach ($FreshTarget in @($GatewayConfigDir, $GatewayRuntimeDir, $GatewayConfigFile, $GatewayKeyPath)) {`,
+		`$GatewayKey = [Convert]::ToHexString($RandomBytes).ToLowerInvariant()`,
+		`[IO.File]::WriteAllText($GatewayKeyPath, $GatewayKey, [Text.UTF8Encoding]::new($false))`,
+		`& icacls.exe $GatewayKeyPath /inheritance:r /grant:r "${CurrentIdentity}:(RD,REA,RA,RC,WD,AD,WEA,WA,S)" | Out-Null`,
+		`Assert-ExactPrivateFileACL $GatewayKeyPath`,
+		`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`,
+		`if ($LoadedGatewayKey -cnotmatch '^[0-9a-f]{64}$') { throw 'invalid gateway key file' }`,
+		`$env:AI_CLI_GATEWAY_API_KEY = $LoadedGatewayKey`,
+	}
+	windowsExpected[4] = []string{
+		`$GatewayKeyPath = Join-Path $GatewayConfigDir 'gateway.key'`,
+		`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`,
+		`if ($LoadedGatewayKey -cnotmatch '^[0-9a-f]{64}$') { throw 'invalid gateway key file' }`,
+		`$env:AI_CLI_GATEWAY_API_KEY = $LoadedGatewayKey`,
+	}
+	windowsExpected[5] = []string{
+		`$GatewayKeyPath = Join-Path $GatewayConfigDir 'gateway.key'`,
+		`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`,
+		`if ($LoadedGatewayKey -cnotmatch '^[0-9a-f]{64}$') { throw 'invalid gateway key file' }`,
+		`$env:AI_CLI_GATEWAY_API_KEY = $LoadedGatewayKey`,
+		`-H "Authorization: Bearer $env:AI_CLI_GATEWAY_API_KEY" ` + "`",
+		`-H "Authorization: Bearer $env:AI_CLI_GATEWAY_API_KEY" ` + "`",
+	}
+	for index, expected := range posixExpected {
+		if actual := readmeKeyBearingLines(posixFences[index]); !slices.Equal(actual, expected) {
+			return fmt.Errorf("POSIX key-use contract differs in fence %d", index+1)
+		}
+		topLevel, err := shellTopLevelStatements(posixFences[index])
+		if err != nil {
+			return fmt.Errorf("POSIX fence %d reachability: %w", index+1, err)
+		}
+		for _, statement := range expected {
+			if strings.HasPrefix(statement, "-H ") {
+				continue
+			}
+			if !slices.Contains(topLevel, statement) {
+				return fmt.Errorf("POSIX key-use statement in fence %d is not top-level reachable", index+1)
+			}
+		}
+	}
+	for index, expected := range windowsExpected {
+		actual := readmeKeyBearingLines(windowsFences[index])
+		if !slices.Equal(actual, expected) {
+			return fmt.Errorf("PowerShell key-use contract differs in fence %d", index+1)
+		}
+		topLevel, err := powerShellTopLevelStatements(windowsFences[index])
+		if err != nil {
+			return fmt.Errorf("PowerShell fence %d reachability: %w", index+1, err)
+		}
+		for _, statement := range expected {
+			if !slices.Contains(topLevel, statement) {
+				return fmt.Errorf("PowerShell key-use statement in fence %d is not top-level reachable", index+1)
+			}
+		}
+	}
+	if actual := readmeKeyBearingLines(sdkFences[0]); len(actual) != 0 {
+		return errors.New("SDK key-use contract forbids key-bearing statements")
+	}
+	return nil
+}
+
+func readmeKeyBearingLines(block string) []string {
+	result := make([]string, 0)
+	for _, line := range strings.Split(block, "\n") {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "gateway_key") || strings.Contains(lower, "gatewaykey") ||
+			strings.Contains(lower, "gateway.key") || strings.Contains(lower, "ai_cli_gateway_api_key") {
+			result = append(result, strings.TrimSpace(line))
+		}
+	}
+	return result
 }
 
 func quickStartFences(document readmeQuickStartDocument, section, language string) []string {
@@ -1725,6 +2179,38 @@ func validateREADMEQuickStartFenceSequence(document readmeQuickStartDocument) er
 	return nil
 }
 
+func validateREADMEQuickStartFenceSources(document readmeQuickStartDocument) error {
+	expected := []string{
+		"8b27de336607dffb1ab2e2f64d871d871e4f3beef4d5fc74d22476c911cc8414", // POSIX download and checksum.
+		"3f492cee04c9825a4b8542d983b4ebe7f84e251af786bab5f2e0dfb236262c5d", // POSIX attestation.
+		"d54bf15936a9f8afd0dfbe3688e928719b92adf10411d31947d93a4c05652389", // POSIX install.
+		"70a3ca8fb27e89baa998ee97fc4ea5dd79f404bfe13e9d9657c754efdee9f0ac", // POSIX configuration.
+		"4db8c2817d0f3ea8ac4994d9bcff5b715954ff389a2b21288f4fb8bc21b50476", // POSIX serve.
+		"635ec9abb0c8d2a3a05f630403104391341f8669a0ca97b854b7aaf3c561c1fd", // POSIX requests.
+		"055e3b1a0d12505f1f854879ebf0c0c1ffe52b10d94621aba03f63f81299aed7", // Windows download and checksum.
+		"67f363e541443c9275a1aacc834d1ce93c7ac7d638db764cd323b81d1fce7c3b", // Windows attestation.
+		"57b0a84d1b0fbd75264c24c4cbbc8f3807f28a3f3d0e0e5088ea001c69c9bc46", // Windows install.
+		"4533bc74fcd590a2ccbda847e3eee4af2a623180ef445ec9287e7f47570ec6d0", // Windows configuration.
+		"5b26c7ae1423bf83919abc35593accd9137111778cb21f641c473441e72cadc0", // Windows serve.
+		"ab30f260752be7690d82a380260d41ece4a6680c13d59755ea3d980447b679a0", // Windows requests.
+		"182d7dd2aba1e42acce798618dac0dc23f13051ad1c96a7190162ca18558ca6f", // SDK checks.
+	}
+	if len(document.fences) != len(expected) {
+		return errors.New("Quick Start fence source contract requires exactly thirteen fences")
+	}
+	for index, fence := range document.fences {
+		digest := sha256.Sum256([]byte(fence.source))
+		actual := hex.EncodeToString(digest[:])
+		if actual != expected[index] {
+			return fmt.Errorf(
+				"Quick Start fence %d (%s/%s) source digest = %s, want %s",
+				index+1, fence.section, fence.language, actual, expected[index],
+			)
+		}
+	}
+	return nil
+}
+
 func extractREADMEPOSIXHostSelector(block string) (string, error) {
 	const startMarker = `case "$(uname -s):$(uname -m)" in`
 	start := strings.Index(block, startMarker)
@@ -1755,6 +2241,213 @@ func containsExactTrimmedLine(document, expected string) bool {
 		}
 	}
 	return false
+}
+
+func powerShellTopLevelStatements(block string) ([]string, error) {
+	depth := 0
+	statements := make([]string, 0)
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if depth == 0 {
+			statements = append(statements, trimmed)
+		}
+		delta, err := powerShellBraceDelta(line)
+		if err != nil {
+			return nil, err
+		}
+		depth += delta
+		if depth < 0 {
+			return nil, errors.New("PowerShell block closes more scopes than it opens")
+		}
+	}
+	if depth != 0 {
+		return nil, errors.New("PowerShell block has an unclosed scope")
+	}
+	return statements, nil
+}
+
+func powerShellBraceDelta(line string) (int, error) {
+	delta := 0
+	inSingleQuote := false
+	inDoubleQuote := false
+	for index := 0; index < len(line); index++ {
+		character := line[index]
+		if character == '`' && !inSingleQuote {
+			index++
+			continue
+		}
+		if inSingleQuote {
+			if character == '\'' {
+				if index+1 < len(line) && line[index+1] == '\'' {
+					index++
+					continue
+				}
+				inSingleQuote = false
+			}
+			continue
+		}
+		if inDoubleQuote {
+			if character == '"' {
+				inDoubleQuote = false
+			}
+			continue
+		}
+		switch character {
+		case '#':
+			return delta, nil
+		case '\'':
+			inSingleQuote = true
+		case '"':
+			inDoubleQuote = true
+		case '{':
+			delta++
+		case '}':
+			delta--
+		}
+	}
+	if inSingleQuote || inDoubleQuote {
+		return 0, errors.New("PowerShell line has an unclosed quoted string")
+	}
+	return delta, nil
+}
+
+func shellTopLevelStatements(block string) ([]string, error) {
+	depth := 0
+	statements := make([]string, 0)
+	functionStart := regexp.MustCompile(`^(?:function[[:space:]]+)?[[:alnum:]_]+\(\)[[:space:]]*\{$`)
+	inSingleQuote := false
+	inDoubleQuote := false
+	pending := ""
+	terminated := false
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		startedInQuote := inSingleQuote || inDoubleQuote
+		if !startedInQuote && (trimmed == "fi" || trimmed == "done" || trimmed == "esac" || trimmed == "}") {
+			depth--
+			if depth < 0 {
+				return nil, errors.New("shell block closes more scopes than it opens")
+			}
+		}
+		if !startedInQuote && depth == 0 && pending == "" && !terminated {
+			statements = append(statements, trimmed)
+		}
+		var continuation bool
+		var err error
+		inSingleQuote, inDoubleQuote, continuation, err = scanShellLine(line, inSingleQuote, inDoubleQuote)
+		if err != nil {
+			return nil, err
+		}
+		if startedInQuote || inSingleQuote || inDoubleQuote {
+			continue
+		}
+		piece := strings.TrimSpace(strings.TrimSuffix(strings.TrimRight(line, " \t"), `\`))
+		control := piece
+		if pending != "" {
+			control = pending + " " + piece
+		}
+		if continuation {
+			pending = control
+			continue
+		}
+		pending = ""
+		if trimmed == "fi" || trimmed == "done" || trimmed == "esac" || trimmed == "}" {
+			continue
+		}
+		wasTopLevel := depth == 0
+		switch {
+		case strings.HasPrefix(control, "if ") && (strings.HasSuffix(control, "; then") || strings.HasSuffix(control, " then")) && !strings.Contains(control, "; fi"):
+			depth++
+		case (strings.HasPrefix(control, "for ") || strings.HasPrefix(control, "while ") || strings.HasPrefix(control, "until ")) && strings.HasSuffix(control, "; do"):
+			depth++
+		case strings.HasPrefix(control, "case ") && strings.HasSuffix(control, " in") && !strings.Contains(control, " esac"):
+			depth++
+		case functionStart.MatchString(control):
+			depth++
+		}
+		if wasTopLevel && isUnconditionalShellTerminator(control) {
+			terminated = true
+		}
+	}
+	if inSingleQuote || inDoubleQuote {
+		return nil, errors.New("shell block has an unclosed quoted string")
+	}
+	if pending != "" {
+		return nil, errors.New("shell block has an unclosed line continuation")
+	}
+	if depth != 0 {
+		return nil, errors.New("shell block has an unclosed scope")
+	}
+	return statements, nil
+}
+
+func isUnconditionalShellTerminator(statement string) bool {
+	fields := strings.Fields(statement)
+	if len(fields) == 0 {
+		return false
+	}
+	return fields[0] == "exit" || fields[0] == "return" || fields[0] == "exec"
+}
+
+func scanShellLine(line string, inSingleQuote, inDoubleQuote bool) (bool, bool, bool, error) {
+	trimmedRight := strings.TrimRight(line, " \t")
+	continuation := false
+	for index := 0; index < len(trimmedRight); index++ {
+		character := trimmedRight[index]
+		if inSingleQuote {
+			if character == '\'' {
+				inSingleQuote = false
+			}
+			continue
+		}
+		if character == '\\' {
+			if index == len(trimmedRight)-1 {
+				continuation = true
+				continue
+			}
+			index++
+			continue
+		}
+		if inDoubleQuote {
+			if character == '"' {
+				inDoubleQuote = false
+			}
+			continue
+		}
+		switch character {
+		case '#':
+			return inSingleQuote, inDoubleQuote, false, nil
+		case '\'':
+			inSingleQuote = true
+		case '"':
+			inDoubleQuote = true
+		}
+	}
+	return inSingleQuote, inDoubleQuote, continuation, nil
+}
+
+func requireTopLevelStatementCounts(statements []string, expected map[string]int) error {
+	for statement, want := range expected {
+		if got := stringsCount(statements, statement); got != want {
+			return fmt.Errorf("top-level statement %q occurs %d times, want %d", statement, got, want)
+		}
+	}
+	return nil
+}
+
+func stringsCount(values []string, expected string) int {
+	count := 0
+	for _, value := range values {
+		if value == expected {
+			count++
+		}
+	}
+	return count
 }
 
 type readmeWindowsACLGrants struct {
