@@ -31,6 +31,14 @@ func newArchiveFailure() error {
 	return newCategorizedError(categoryArchiveFailure)
 }
 
+func newSBOMFailure() error {
+	return newCategorizedError(categorySBOMFailure)
+}
+
+func newChecksumFailure() error {
+	return newCategorizedError(categoryChecksumFailure)
+}
+
 // ErrorCategory returns the stable, non-sensitive category for err. Foreign
 // errors are deliberately collapsed to internal_error.
 func ErrorCategory(err error) string {

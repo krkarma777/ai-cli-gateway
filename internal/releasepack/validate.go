@@ -359,3 +359,43 @@ func validateEmptyOutputRoot(outputRoot string) error {
 	}
 	return nil
 }
+
+func expectedArchiveNames(version string) []string {
+	names := make([]string, 0, len(releaseTargets))
+	for _, releaseTarget := range releaseTargets {
+		extension := ".tar.gz"
+		if releaseTarget.Format == formatZIP {
+			extension = ".zip"
+		}
+		names = append(names, "ai-cli-gateway_"+version+"_"+releaseTarget.GOOS+"_"+releaseTarget.GOARCH+extension)
+	}
+	return names
+}
+
+func validateExactRegularFiles(root string, expected []string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, newCategorizedError(categoryUnsafePath)
+	}
+	wanted := append([]string(nil), expected...)
+	slices.Sort(wanted)
+	actual := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		actual = append(actual, entry.Name())
+	}
+	slices.Sort(actual)
+	for _, name := range actual {
+		if _, found := slices.BinarySearch(wanted, name); !found {
+			return nil, newCategorizedError(categoryUnsafePath)
+		}
+	}
+	for _, name := range wanted {
+		if _, found := slices.BinarySearch(actual, name); !found {
+			return nil, newCategorizedError(categoryMissingInput)
+		}
+		if _, err := validateRegularDescendant(root, name); err != nil {
+			return nil, err
+		}
+	}
+	return wanted, nil
+}

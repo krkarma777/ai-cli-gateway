@@ -1,0 +1,1602 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "fixture-root-marker",
+  "documentNamespace": "https://example.invalid/fixture-root-marker",
+  "creationInfo": {
+    "licenseListVersion": "3.28",
+    "creators": [
+      "Organization: Anchore, Inc",
+      "Tool: syft-1.50.0"
+    ],
+    "created": "2026-08-04T06:29:53Z"
+  },
+  "packages": [
+    {
+      "name": "ai-cli-gateway",
+      "SPDXID": "SPDXRef-Package-binary-ai-cli-gateway-ecb15ff648ebb48f",
+      "versionInfo": "UNKNOWN",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "sourceInfo": "acquired package info from the following paths: /windows_amd64/ai-cli-gateway.exe",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:ai-cli-gateway:ai-cli-gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:ai-cli-gateway:ai_cli_gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:ai_cli_gateway:ai-cli-gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:ai_cli_gateway:ai_cli_gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:ai-cli:ai-cli-gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:ai-cli:ai_cli_gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:ai_cli:ai-cli-gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:ai_cli:ai_cli_gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:ai:ai-cli-gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:ai:ai_cli_gateway:*:*:*:*:*:*:*:*"
+        }
+      ]
+    },
+    {
+      "name": "github.com/krkarma777/ai-cli-gateway",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-b826e3eace8bdbc4",
+      "versionInfo": "UNKNOWN",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "sourceInfo": "acquired package info from go module information: /darwin_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:krkarma777:ai-cli-gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:krkarma777:ai_cli_gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/krkarma777/ai-cli-gateway"
+        }
+      ]
+    },
+    {
+      "name": "github.com/krkarma777/ai-cli-gateway",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-29cbf5643bf7606b",
+      "versionInfo": "UNKNOWN",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "sourceInfo": "acquired package info from go module information: /darwin_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:krkarma777:ai-cli-gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:krkarma777:ai_cli_gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/krkarma777/ai-cli-gateway"
+        }
+      ]
+    },
+    {
+      "name": "github.com/krkarma777/ai-cli-gateway",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-2381d5f9a8b02440",
+      "versionInfo": "UNKNOWN",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "sourceInfo": "acquired package info from go module information: /linux_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:krkarma777:ai-cli-gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:krkarma777:ai_cli_gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/krkarma777/ai-cli-gateway"
+        }
+      ]
+    },
+    {
+      "name": "github.com/krkarma777/ai-cli-gateway",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-ae0e36fb6380f5b8",
+      "versionInfo": "UNKNOWN",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "sourceInfo": "acquired package info from go module information: /linux_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:krkarma777:ai-cli-gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:krkarma777:ai_cli_gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/krkarma777/ai-cli-gateway"
+        }
+      ]
+    },
+    {
+      "name": "github.com/krkarma777/ai-cli-gateway",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-053f972b2f57e3f9",
+      "versionInfo": "UNKNOWN",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "sourceInfo": "acquired package info from go module information: /windows_amd64/ai-cli-gateway.exe",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:krkarma777:ai-cli-gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:krkarma777:ai_cli_gateway:*:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/krkarma777/ai-cli-gateway"
+        }
+      ]
+    },
+    {
+      "name": "github.com/pelletier/go-toml/v2",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-dc33e5dcbc817a6f",
+      "versionInfo": "v2.4.3",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "19346f250bad90e49fb712050f9c70f5a7a991836e3d69952697df7433d85696"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /darwin_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:pelletier:go-toml\\/v2:v2.4.3:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:pelletier:go_toml\\/v2:v2.4.3:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/pelletier/go-toml/v2@v2.4.3"
+        }
+      ]
+    },
+    {
+      "name": "github.com/pelletier/go-toml/v2",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-2d3e93fda66717dd",
+      "versionInfo": "v2.4.3",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "19346f250bad90e49fb712050f9c70f5a7a991836e3d69952697df7433d85696"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /darwin_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:pelletier:go-toml\\/v2:v2.4.3:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:pelletier:go_toml\\/v2:v2.4.3:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/pelletier/go-toml/v2@v2.4.3"
+        }
+      ]
+    },
+    {
+      "name": "github.com/pelletier/go-toml/v2",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-ebc7d8233b7767de",
+      "versionInfo": "v2.4.3",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "19346f250bad90e49fb712050f9c70f5a7a991836e3d69952697df7433d85696"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /linux_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:pelletier:go-toml\\/v2:v2.4.3:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:pelletier:go_toml\\/v2:v2.4.3:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/pelletier/go-toml/v2@v2.4.3"
+        }
+      ]
+    },
+    {
+      "name": "github.com/pelletier/go-toml/v2",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-00b9f58bb7dd1a59",
+      "versionInfo": "v2.4.3",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "19346f250bad90e49fb712050f9c70f5a7a991836e3d69952697df7433d85696"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /linux_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:pelletier:go-toml\\/v2:v2.4.3:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:pelletier:go_toml\\/v2:v2.4.3:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/pelletier/go-toml/v2@v2.4.3"
+        }
+      ]
+    },
+    {
+      "name": "github.com/pelletier/go-toml/v2",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-918b26447acaff2f",
+      "versionInfo": "v2.4.3",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "19346f250bad90e49fb712050f9c70f5a7a991836e3d69952697df7433d85696"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /windows_amd64/ai-cli-gateway.exe",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:pelletier:go-toml\\/v2:v2.4.3:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:pelletier:go_toml\\/v2:v2.4.3:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/pelletier/go-toml/v2@v2.4.3"
+        }
+      ]
+    },
+    {
+      "name": "github.com/santhosh-tekuri/jsonschema/v6",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-d5b8bc43f45637a9",
+      "versionInfo": "v6.0.2",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "291cc56f69bb62d765742124cece8aaa6270e27a8455918aec83769099234ee4"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /darwin_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh-tekuri:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh_tekuri:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/santhosh-tekuri/jsonschema/v6@v6.0.2"
+        }
+      ]
+    },
+    {
+      "name": "github.com/santhosh-tekuri/jsonschema/v6",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-2779cfb751dd4a9c",
+      "versionInfo": "v6.0.2",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "291cc56f69bb62d765742124cece8aaa6270e27a8455918aec83769099234ee4"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /darwin_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh-tekuri:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh_tekuri:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/santhosh-tekuri/jsonschema/v6@v6.0.2"
+        }
+      ]
+    },
+    {
+      "name": "github.com/santhosh-tekuri/jsonschema/v6",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-0c33860e9b18f710",
+      "versionInfo": "v6.0.2",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "291cc56f69bb62d765742124cece8aaa6270e27a8455918aec83769099234ee4"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /linux_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh-tekuri:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh_tekuri:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/santhosh-tekuri/jsonschema/v6@v6.0.2"
+        }
+      ]
+    },
+    {
+      "name": "github.com/santhosh-tekuri/jsonschema/v6",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-15e797da54a49e74",
+      "versionInfo": "v6.0.2",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "291cc56f69bb62d765742124cece8aaa6270e27a8455918aec83769099234ee4"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /linux_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh-tekuri:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh_tekuri:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/santhosh-tekuri/jsonschema/v6@v6.0.2"
+        }
+      ]
+    },
+    {
+      "name": "github.com/santhosh-tekuri/jsonschema/v6",
+      "SPDXID": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-4b61367ad4555474",
+      "versionInfo": "v6.0.2",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "291cc56f69bb62d765742124cece8aaa6270e27a8455918aec83769099234ee4"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /windows_amd64/ai-cli-gateway.exe",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh-tekuri:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh_tekuri:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:santhosh:jsonschema\\/v6:v6.0.2:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/github.com/santhosh-tekuri/jsonschema/v6@v6.0.2"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/sys",
+      "SPDXID": "SPDXRef-Package-go-module-golang.org-x-sys-96452ea8e7b072b7",
+      "versionInfo": "v0.47.0",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a3b5c63af6500800c1410e18ed536ad9d456411ec998e516f0ac71e19b0d816b"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /darwin_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:x\\/sys:v0.47.0:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/sys@v0.47.0"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/sys",
+      "SPDXID": "SPDXRef-Package-go-module-golang.org-x-sys-f606b0ad35641501",
+      "versionInfo": "v0.47.0",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a3b5c63af6500800c1410e18ed536ad9d456411ec998e516f0ac71e19b0d816b"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /darwin_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:x\\/sys:v0.47.0:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/sys@v0.47.0"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/sys",
+      "SPDXID": "SPDXRef-Package-go-module-golang.org-x-sys-0b7a61ac18246414",
+      "versionInfo": "v0.47.0",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a3b5c63af6500800c1410e18ed536ad9d456411ec998e516f0ac71e19b0d816b"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /linux_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:x\\/sys:v0.47.0:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/sys@v0.47.0"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/sys",
+      "SPDXID": "SPDXRef-Package-go-module-golang.org-x-sys-96a5b64194b8235e",
+      "versionInfo": "v0.47.0",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a3b5c63af6500800c1410e18ed536ad9d456411ec998e516f0ac71e19b0d816b"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /linux_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:x\\/sys:v0.47.0:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/sys@v0.47.0"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/sys",
+      "SPDXID": "SPDXRef-Package-go-module-golang.org-x-sys-29b5e6f1412b862c",
+      "versionInfo": "v0.47.0",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a3b5c63af6500800c1410e18ed536ad9d456411ec998e516f0ac71e19b0d816b"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /windows_amd64/ai-cli-gateway.exe",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:x\\/sys:v0.47.0:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/sys@v0.47.0"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/text",
+      "SPDXID": "SPDXRef-Package-go-module-golang.org-x-text-ddb0a53733f3f5d6",
+      "versionInfo": "v0.14.0",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "49c5f9c357936b742a4fca22ebece23fb7535754b6f802d4d1b23ed335ca5a24"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /darwin_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:text:v0.14.0:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/text@v0.14.0"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/text",
+      "SPDXID": "SPDXRef-Package-go-module-golang.org-x-text-3ab9a0c4de728cd3",
+      "versionInfo": "v0.14.0",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "49c5f9c357936b742a4fca22ebece23fb7535754b6f802d4d1b23ed335ca5a24"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /darwin_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:text:v0.14.0:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/text@v0.14.0"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/text",
+      "SPDXID": "SPDXRef-Package-go-module-golang.org-x-text-9e6e122ef541b4d4",
+      "versionInfo": "v0.14.0",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "49c5f9c357936b742a4fca22ebece23fb7535754b6f802d4d1b23ed335ca5a24"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /linux_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:text:v0.14.0:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/text@v0.14.0"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/text",
+      "SPDXID": "SPDXRef-Package-go-module-golang.org-x-text-53c73946c8467a97",
+      "versionInfo": "v0.14.0",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "49c5f9c357936b742a4fca22ebece23fb7535754b6f802d4d1b23ed335ca5a24"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /linux_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:text:v0.14.0:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/text@v0.14.0"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/text",
+      "SPDXID": "SPDXRef-Package-go-module-golang.org-x-text-39037c33e60eb544",
+      "versionInfo": "v0.14.0",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "49c5f9c357936b742a4fca22ebece23fb7535754b6f802d4d1b23ed335ca5a24"
+        }
+      ],
+      "sourceInfo": "acquired package info from go module information: /windows_amd64/ai-cli-gateway.exe",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:text:v0.14.0:*:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/text@v0.14.0"
+        }
+      ]
+    },
+    {
+      "name": "stdlib",
+      "SPDXID": "SPDXRef-Package-go-module-stdlib-0ed4d59393304cd3",
+      "versionInfo": "go1.26.5",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "sourceInfo": "acquired package info from go module information: /darwin_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:go:1.26.5:-:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/stdlib@1.26.5"
+        }
+      ]
+    },
+    {
+      "name": "stdlib",
+      "SPDXID": "SPDXRef-Package-go-module-stdlib-2533e42bff39fb40",
+      "versionInfo": "go1.26.5",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "sourceInfo": "acquired package info from go module information: /darwin_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:go:1.26.5:-:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/stdlib@1.26.5"
+        }
+      ]
+    },
+    {
+      "name": "stdlib",
+      "SPDXID": "SPDXRef-Package-go-module-stdlib-ee892199ef84c201",
+      "versionInfo": "go1.26.5",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "sourceInfo": "acquired package info from go module information: /linux_amd64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:go:1.26.5:-:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/stdlib@1.26.5"
+        }
+      ]
+    },
+    {
+      "name": "stdlib",
+      "SPDXID": "SPDXRef-Package-go-module-stdlib-81a081d9c5203e73",
+      "versionInfo": "go1.26.5",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "sourceInfo": "acquired package info from go module information: /linux_arm64/ai-cli-gateway",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:go:1.26.5:-:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/stdlib@1.26.5"
+        }
+      ]
+    },
+    {
+      "name": "stdlib",
+      "SPDXID": "SPDXRef-Package-go-module-stdlib-19df4b1c4d9691a0",
+      "versionInfo": "go1.26.5",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "sourceInfo": "acquired package info from go module information: /windows_amd64/ai-cli-gateway.exe",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "SECURITY",
+          "referenceType": "cpe23Type",
+          "referenceLocator": "cpe:2.3:a:golang:go:1.26.5:-:*:*:*:*:*:*"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/stdlib@1.26.5"
+        }
+      ]
+    },
+    {
+      "name": "fixture-root-marker",
+      "SPDXID": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "supplier": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "primaryPackagePurpose": "FILE"
+    }
+  ],
+  "files": [
+    {
+      "fileName": "darwin_amd64/ai-cli-gateway",
+      "SPDXID": "SPDXRef-File-darwin-amd64-ai-cli-gateway-fe4b5f1ef8dea09f",
+      "fileTypes": [
+        "APPLICATION",
+        "BINARY"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": [
+        "NOASSERTION"
+      ],
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "darwin_arm64/ai-cli-gateway",
+      "SPDXID": "SPDXRef-File-darwin-arm64-ai-cli-gateway-cec67fa63ecc96ce",
+      "fileTypes": [
+        "APPLICATION",
+        "BINARY"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": [
+        "NOASSERTION"
+      ],
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "linux_amd64/ai-cli-gateway",
+      "SPDXID": "SPDXRef-File-linux-amd64-ai-cli-gateway-5d057430b261f152",
+      "fileTypes": [
+        "APPLICATION",
+        "BINARY"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": [
+        "NOASSERTION"
+      ],
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "linux_arm64/ai-cli-gateway",
+      "SPDXID": "SPDXRef-File-linux-arm64-ai-cli-gateway-f5cc4a9e06bdb70b",
+      "fileTypes": [
+        "APPLICATION",
+        "BINARY"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": [
+        "NOASSERTION"
+      ],
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "windows_amd64/ai-cli-gateway.exe",
+      "SPDXID": "SPDXRef-File-windows-amd64-ai-cli-gateway.exe-be4c5e4ba7a13a37",
+      "fileTypes": [
+        "APPLICATION",
+        "BINARY"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": [
+        "NOASSERTION"
+      ],
+      "copyrightText": "NOASSERTION"
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-00b9f58bb7dd1a59",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-ae0e36fb6380f5b8",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-sys-0b7a61ac18246414",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-2381d5f9a8b02440",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-0c33860e9b18f710",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-2381d5f9a8b02440",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-stdlib-0ed4d59393304cd3",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-b826e3eace8bdbc4",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-15e797da54a49e74",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-ae0e36fb6380f5b8",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-stdlib-19df4b1c4d9691a0",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-053f972b2f57e3f9",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-stdlib-2533e42bff39fb40",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-29cbf5643bf7606b",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-2779cfb751dd4a9c",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-29cbf5643bf7606b",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-sys-29b5e6f1412b862c",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-053f972b2f57e3f9",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-2d3e93fda66717dd",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-29cbf5643bf7606b",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-text-39037c33e60eb544",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-053f972b2f57e3f9",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-text-3ab9a0c4de728cd3",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-29cbf5643bf7606b",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-4b61367ad4555474",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-053f972b2f57e3f9",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-text-53c73946c8467a97",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-ae0e36fb6380f5b8",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-stdlib-81a081d9c5203e73",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-ae0e36fb6380f5b8",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-918b26447acaff2f",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-053f972b2f57e3f9",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-sys-96452ea8e7b072b7",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-b826e3eace8bdbc4",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-sys-96a5b64194b8235e",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-ae0e36fb6380f5b8",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-text-9e6e122ef541b4d4",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-2381d5f9a8b02440",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-d5b8bc43f45637a9",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-b826e3eace8bdbc4",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-dc33e5dcbc817a6f",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-b826e3eace8bdbc4",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-text-ddb0a53733f3f5d6",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-b826e3eace8bdbc4",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-ebc7d8233b7767de",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-2381d5f9a8b02440",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-stdlib-ee892199ef84c201",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-2381d5f9a8b02440",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-sys-f606b0ad35641501",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-29cbf5643bf7606b",
+      "relationshipType": "DEPENDENCY_OF"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-00b9f58bb7dd1a59",
+      "relatedSpdxElement": "SPDXRef-File-linux-arm64-ai-cli-gateway-f5cc4a9e06bdb70b",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-053f972b2f57e3f9",
+      "relatedSpdxElement": "SPDXRef-File-windows-amd64-ai-cli-gateway.exe-be4c5e4ba7a13a37",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-sys-0b7a61ac18246414",
+      "relatedSpdxElement": "SPDXRef-File-linux-amd64-ai-cli-gateway-5d057430b261f152",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-0c33860e9b18f710",
+      "relatedSpdxElement": "SPDXRef-File-linux-amd64-ai-cli-gateway-5d057430b261f152",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-stdlib-0ed4d59393304cd3",
+      "relatedSpdxElement": "SPDXRef-File-darwin-amd64-ai-cli-gateway-fe4b5f1ef8dea09f",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-15e797da54a49e74",
+      "relatedSpdxElement": "SPDXRef-File-linux-arm64-ai-cli-gateway-f5cc4a9e06bdb70b",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-stdlib-19df4b1c4d9691a0",
+      "relatedSpdxElement": "SPDXRef-File-windows-amd64-ai-cli-gateway.exe-be4c5e4ba7a13a37",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-2381d5f9a8b02440",
+      "relatedSpdxElement": "SPDXRef-File-linux-amd64-ai-cli-gateway-5d057430b261f152",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-stdlib-2533e42bff39fb40",
+      "relatedSpdxElement": "SPDXRef-File-darwin-arm64-ai-cli-gateway-cec67fa63ecc96ce",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-2779cfb751dd4a9c",
+      "relatedSpdxElement": "SPDXRef-File-darwin-arm64-ai-cli-gateway-cec67fa63ecc96ce",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-sys-29b5e6f1412b862c",
+      "relatedSpdxElement": "SPDXRef-File-windows-amd64-ai-cli-gateway.exe-be4c5e4ba7a13a37",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-29cbf5643bf7606b",
+      "relatedSpdxElement": "SPDXRef-File-darwin-arm64-ai-cli-gateway-cec67fa63ecc96ce",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-2d3e93fda66717dd",
+      "relatedSpdxElement": "SPDXRef-File-darwin-arm64-ai-cli-gateway-cec67fa63ecc96ce",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-text-39037c33e60eb544",
+      "relatedSpdxElement": "SPDXRef-File-windows-amd64-ai-cli-gateway.exe-be4c5e4ba7a13a37",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-text-3ab9a0c4de728cd3",
+      "relatedSpdxElement": "SPDXRef-File-darwin-arm64-ai-cli-gateway-cec67fa63ecc96ce",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-4b61367ad4555474",
+      "relatedSpdxElement": "SPDXRef-File-windows-amd64-ai-cli-gateway.exe-be4c5e4ba7a13a37",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-text-53c73946c8467a97",
+      "relatedSpdxElement": "SPDXRef-File-linux-arm64-ai-cli-gateway-f5cc4a9e06bdb70b",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-stdlib-81a081d9c5203e73",
+      "relatedSpdxElement": "SPDXRef-File-linux-arm64-ai-cli-gateway-f5cc4a9e06bdb70b",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-918b26447acaff2f",
+      "relatedSpdxElement": "SPDXRef-File-windows-amd64-ai-cli-gateway.exe-be4c5e4ba7a13a37",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-sys-96452ea8e7b072b7",
+      "relatedSpdxElement": "SPDXRef-File-darwin-amd64-ai-cli-gateway-fe4b5f1ef8dea09f",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-sys-96a5b64194b8235e",
+      "relatedSpdxElement": "SPDXRef-File-linux-arm64-ai-cli-gateway-f5cc4a9e06bdb70b",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-text-9e6e122ef541b4d4",
+      "relatedSpdxElement": "SPDXRef-File-linux-amd64-ai-cli-gateway-5d057430b261f152",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-ae0e36fb6380f5b8",
+      "relatedSpdxElement": "SPDXRef-File-linux-arm64-ai-cli-gateway-f5cc4a9e06bdb70b",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-b826e3eace8bdbc4",
+      "relatedSpdxElement": "SPDXRef-File-darwin-amd64-ai-cli-gateway-fe4b5f1ef8dea09f",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-d5b8bc43f45637a9",
+      "relatedSpdxElement": "SPDXRef-File-darwin-amd64-ai-cli-gateway-fe4b5f1ef8dea09f",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-dc33e5dcbc817a6f",
+      "relatedSpdxElement": "SPDXRef-File-darwin-amd64-ai-cli-gateway-fe4b5f1ef8dea09f",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-text-ddb0a53733f3f5d6",
+      "relatedSpdxElement": "SPDXRef-File-darwin-amd64-ai-cli-gateway-fe4b5f1ef8dea09f",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-ebc7d8233b7767de",
+      "relatedSpdxElement": "SPDXRef-File-linux-amd64-ai-cli-gateway-5d057430b261f152",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-binary-ai-cli-gateway-ecb15ff648ebb48f",
+      "relatedSpdxElement": "SPDXRef-File-windows-amd64-ai-cli-gateway.exe-be4c5e4ba7a13a37",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-stdlib-ee892199ef84c201",
+      "relatedSpdxElement": "SPDXRef-File-linux-amd64-ai-cli-gateway-5d057430b261f152",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-go-module-golang.org-x-sys-f606b0ad35641501",
+      "relatedSpdxElement": "SPDXRef-File-darwin-arm64-ai-cli-gateway-cec67fa63ecc96ce",
+      "relationshipType": "OTHER",
+      "comment": "evident-by: indicates the package's existence is evident by the given file"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-binary-ai-cli-gateway-ecb15ff648ebb48f",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-b826e3eace8bdbc4",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-29cbf5643bf7606b",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-2381d5f9a8b02440",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-ae0e36fb6380f5b8",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-krkarma777-ai-cli-gateway-053f972b2f57e3f9",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-dc33e5dcbc817a6f",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-2d3e93fda66717dd",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-ebc7d8233b7767de",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-00b9f58bb7dd1a59",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-pelletier-go-toml-v2-918b26447acaff2f",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-d5b8bc43f45637a9",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-2779cfb751dd4a9c",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-0c33860e9b18f710",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-15e797da54a49e74",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-github.com-santhosh-tekuri-jsonschema-v6-4b61367ad4555474",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-golang.org-x-sys-96452ea8e7b072b7",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-golang.org-x-sys-f606b0ad35641501",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-golang.org-x-sys-0b7a61ac18246414",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-golang.org-x-sys-96a5b64194b8235e",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-golang.org-x-sys-29b5e6f1412b862c",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-golang.org-x-text-ddb0a53733f3f5d6",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-golang.org-x-text-3ab9a0c4de728cd3",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-golang.org-x-text-9e6e122ef541b4d4",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-golang.org-x-text-53c73946c8467a97",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-golang.org-x-text-39037c33e60eb544",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-stdlib-0ed4d59393304cd3",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-stdlib-2533e42bff39fb40",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-stdlib-ee892199ef84c201",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-stdlib-81a081d9c5203e73",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relatedSpdxElement": "SPDXRef-Package-go-module-stdlib-19df4b1c4d9691a0",
+      "relationshipType": "CONTAINS"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relatedSpdxElement": "SPDXRef-DocumentRoot-Directory-fixture-root-marker",
+      "relationshipType": "DESCRIBES"
+    }
+  ]
+}
