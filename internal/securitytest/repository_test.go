@@ -2216,6 +2216,48 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 				`            ${RUNNER_TEMP}/sdk-python/bin/python \`,
 			),
 		},
+		{
+			name: "action hidden after top-level comment boundary",
+			mutate: func(document string) string {
+				return strings.TrimRight(document, "\n") +
+					"\n# parser boundary\n      - uses: attacker/action@deadbeef\n"
+			},
+		},
+		{
+			name: "job permissions hidden after top-level comment boundary",
+			mutate: func(document string) string {
+				return strings.TrimRight(document, "\n") +
+					"\n# parser boundary\n    permissions: { contents: write }\n"
+			},
+		},
+		{
+			name: "document start marker after top-level comment boundary",
+			mutate: func(document string) string {
+				return strings.TrimRight(document, "\n") +
+					"\n# parser boundary\n---\n"
+			},
+		},
+		{
+			name: "document end marker after top-level comment boundary",
+			mutate: func(document string) string {
+				return strings.TrimRight(document, "\n") +
+					"\n# parser boundary\n...\n"
+			},
+		},
+		{
+			name: "anchor and merge hidden after top-level comment boundary",
+			mutate: func(document string) string {
+				return strings.TrimRight(document, "\n") +
+					"\n# parser boundary\n    env: &hidden_env\n      ESCAPE: yes\n    <<: *hidden_env\n"
+			},
+		},
+		{
+			name: "flow-style job hidden after top-level comment boundary",
+			mutate: func(document string) string {
+				return strings.TrimRight(document, "\n") +
+					"\n# parser boundary\n  shadow: { runs-on: ubuntu-latest, timeout-minutes: 1, steps: [{ uses: attacker/action@deadbeef }] }\n"
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -2542,7 +2584,10 @@ func parseYAMLJobBlocks(workflow string) (map[string]string, error) {
 		trimmed := strings.TrimSpace(line)
 		indentation := leadingSpaces(line)
 		if trimmed != "" && indentation == 0 {
-			break
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			return nil, fmt.Errorf("unexpected top-level content after jobs mapping %q", line)
 		}
 		if trimmed != "" && indentation == 2 {
 			match := jobHeader.FindStringSubmatch(line)
