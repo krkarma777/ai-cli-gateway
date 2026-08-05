@@ -155,6 +155,14 @@ jobs:
           test "$(stat -c '%a' -- "${tools_root}/config/syft.yaml")" = 600
 
           effective_uid="$(id -u)"
+          test -d "${tools_root}"
+          test ! -L "${tools_root}"
+          test "$(stat -c '%u' -- "${tools_root}")" = "${effective_uid}"
+          test -f "${tools_root}/config/syft.yaml"
+          test ! -L "${tools_root}/config/syft.yaml"
+          test "$(stat -c '%u' -- "${tools_root}/config/syft.yaml")" = "${effective_uid}"
+          TOOLS_ROOT_IDENTITY="$(stat -c '%d:%i' -- "${tools_root}")"
+          SYFT_CONFIG_IDENTITY="$(stat -c '%d:%i' -- "${tools_root}/config/syft.yaml")"
           validate_authority() {
             local current="$1" owner mode permissions
             while :; do
@@ -198,6 +206,8 @@ jobs:
           }
           validate_roots() {
             local directory path
+            test -d "${tools_root}"; test ! -L "${tools_root}"
+            test "$(stat -c '%d:%i' -- "${tools_root}")" = "${TOOLS_ROOT_IDENTITY}"
             for directory in "${tools_root}" bin home xdg gopath gomodcache gocache tmp config; do
               path="${directory}"
               if test "${directory}" != "${tools_root}"; then path="${tools_root}/${directory}"; fi
@@ -207,6 +217,8 @@ jobs:
             done
             test -f "${tools_root}/config/syft.yaml"; test ! -L "${tools_root}/config/syft.yaml"
             test "$(stat -c '%a' -- "${tools_root}/config/syft.yaml")" = 600
+            test "$(stat -c '%u' -- "${tools_root}/config/syft.yaml")" = "${effective_uid}"
+            test "$(stat -c '%d:%i' -- "${tools_root}/config/syft.yaml")" = "${SYFT_CONFIG_IDENTITY}"
           }
 
           GO_BIN="$(resolve_binary go)"
@@ -243,7 +255,8 @@ jobs:
           revalidate_go
           build_info="$(run_clean_go version -m "${SYFT_BIN}")"
           grep -F $'path\tgithub.com/anchore/syft/cmd/syft' <<<"${build_info}" >/dev/null
-          grep -E $'mod\tgithub.com/anchore/syft\tv1\.50\.0\th1:' <<<"${build_info}" >/dev/null
+          test "$(grep -Ec $'^\tmod\tgithub[.]com/anchore/syft\t' <<<"${build_info}")" = 1
+          test "$(grep -Ec $'^\tmod\tgithub[.]com/anchore/syft\tv1[.]50[.]0\th1:[A-Za-z0-9+/]{42}[AQgw]=$' <<<"${build_info}")" = 1
           grep -F -- '-X main.version=1.50.0' <<<"${build_info}" >/dev/null
           run_clean_syft() {
             "${ENV_BIN}" -i \
@@ -264,6 +277,7 @@ jobs:
             SYFT_CHECK_FOR_APP_UPDATE=false SYFT_COMPLIANCE_MISSING_NAME=drop SYFT_COMPLIANCE_MISSING_VERSION=stub \
             "${SYFT_BIN}" scan "dir:${RUNNER_TEMP}/release-staging" \
             -c "${tools_root}/config/syft.yaml" -o "spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json"
+          revalidate_syft
           "${RUNNER_TEMP}/releasepack" sbom \
             --repository-root "${GITHUB_WORKSPACE}" \
             --staging-root "${RUNNER_TEMP}/release-staging" \
@@ -363,7 +377,7 @@ jobs:
             gh attestation verify "${asset}" \
               --repo krkarma777/ai-cli-gateway \
               --predicate-type https://slsa.dev/provenance/v1 \
-              --signer-workflow krkarma777/ai-cli-gateway/.github/workflows/release.yml \
+              --signer-workflow github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml \
               --source-digest "${TAG_COMMIT}" \
               --source-ref "refs/tags/${TAG}"
           done <<ASSETS

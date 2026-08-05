@@ -2039,6 +2039,22 @@ func validateCIActionlintStep(lintJob string) error {
 	if strings.Count(actionlintStep, `"${ENV_BIN}" -i`) != 2 {
 		return errors.New("actionlint step must define exactly two env -i helpers")
 	}
+	lines := trimmedShellLines(actionlintStep)
+	if shellLineCount(lines, `run_clean_go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`) != 1 ||
+		shellLinePrefixCount(lines, "run_clean_go install ") != 1 {
+		return errors.New("actionlint install invocation is not the one exact executable line")
+	}
+	wantLint := []string{
+		`run_clean_actionlint \`,
+		`-config-file "${ACTIONLINT_ROOT}/config/actionlint.yaml" \`,
+		`-shellcheck= -pyflakes= -no-color \`,
+		`.github/workflows/ci.yml .github/workflows/release.yml`,
+	}
+	if shellLineSequenceCount(lines, wantLint) != 1 || shellLinePrefixCount(lines, "run_clean_actionlint ") != 1 ||
+		shellLineCount(lines, `test "$(run_clean_actionlint -version | sed -n '1p')" = v1.7.12`) != 1 ||
+		shellLineCount(lines, `actionlint_help="$(run_clean_actionlint -help 2>&1)"`) != 1 {
+		return errors.New("actionlint invocations do not contain the exact version, help, and lint commands")
+	}
 	for _, exact := range []struct {
 		text  string
 		count int
@@ -2117,6 +2133,20 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		{name: "actionlint uses relative Go", mutate: replaceCIOnce(`              "${GO_BIN}" "$@"`, `              go "$@"`)},
 		{name: "actionlint runtime receives Go variable", mutate: replaceCIOnce("          run_clean_actionlint() {\n            \"${ENV_BIN}\" -i \\\n              HOME=\"${ACTIONLINT_ROOT}/home\" \\\n", "          run_clean_actionlint() {\n            \"${ENV_BIN}\" -i \\\n              GOFLAGS=attacker \\\n              HOME=\"${ACTIONLINT_ROOT}/home\" \\\n")},
 		{name: "actionlint build identity revalidation omitted", mutate: replaceCIOnce("          revalidate_build_tools\n          test \"$(run_clean_go env GOVERSION)\" = go1.26.5\n", "          test \"$(run_clean_go env GOVERSION)\" = go1.26.5\n")},
+		{
+			name: "actionlint pinned install hidden in dead string",
+			mutate: replaceCIOnce(
+				"          run_clean_go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12\n",
+				"          : 'run_clean_go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12'\n          run_clean_go install attacker.invalid/actionlint@v0\n",
+			),
+		},
+		{
+			name: "actionlint targets hidden in dead string",
+			mutate: replaceCIOnce(
+				"          run_clean_actionlint \\\n            -config-file \"${ACTIONLINT_ROOT}/config/actionlint.yaml\" \\\n            -shellcheck= -pyflakes= -no-color \\\n            .github/workflows/ci.yml .github/workflows/release.yml\n",
+				"          : '-config-file \"${ACTIONLINT_ROOT}/config/actionlint.yaml\" .github/workflows/ci.yml .github/workflows/release.yml'\n          run_clean_actionlint /dev/null\n",
+			),
+		},
 		{name: "missing workflow_call trigger", mutate: replaceCIOnce("  workflow_call:\n", "")},
 		{name: "extra trigger", mutate: replaceCIOnce("  workflow_call:\n", "  workflow_call:\n  schedule:\n")},
 		{name: "workflow_call inputs", mutate: replaceCIOnce("  workflow_call:\n", "  workflow_call:\n    inputs:\n")},
@@ -3202,6 +3232,26 @@ func TestReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "Syft update check enabled", mutate: replaceReleaseOnce("SYFT_CHECK_FOR_APP_UPDATE=false", "SYFT_CHECK_FOR_APP_UPDATE=true")},
 		{name: "Syft compliance altered", mutate: replaceReleaseOnce("SYFT_COMPLIANCE_MISSING_NAME=drop", "SYFT_COMPLIANCE_MISSING_NAME=keep")},
 		{name: "Syft second config channel removed", mutate: replaceReleaseOnce(`            -c "${tools_root}/config/syft.yaml" -o`, `            -o`)},
+		{
+			name: "Syft pinned install hidden in dead string",
+			mutate: replaceReleaseOnce(
+				"          run_clean_go install -ldflags '-X main.version=1.50.0' github.com/anchore/syft/cmd/syft@v1.50.0\n",
+				"          : \"run_clean_go install -ldflags '-X main.version=1.50.0' github.com/anchore/syft/cmd/syft@v1.50.0\"\n          run_clean_go install attacker.invalid/syft@v0\n",
+			),
+		},
+		{
+			name: "Syft scan target hidden in dead string",
+			mutate: replaceReleaseOnce(
+				"            \"${SYFT_BIN}\" scan \"dir:${RUNNER_TEMP}/release-staging\" \\\n            -c \"${tools_root}/config/syft.yaml\" -o \"spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json\"\n",
+				"            : '\"${SYFT_BIN}\" scan \"dir:${RUNNER_TEMP}/release-staging\" -c \"${tools_root}/config/syft.yaml\" -o \"spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json\"'\n          \"${SYFT_BIN}\" scan /dev/null\n",
+			),
+		},
+		{name: "Syft root identity revalidation removed", mutate: replaceReleaseOnce("            test \"$(stat -c '%d:%i' -- \"${tools_root}\")\" = \"${TOOLS_ROOT_IDENTITY}\"\n", "")},
+		{name: "Syft config identity revalidation removed", mutate: replaceReleaseOnce("            test \"$(stat -c '%d:%i' -- \"${tools_root}/config/syft.yaml\")\" = \"${SYFT_CONFIG_IDENTITY}\"\n", "")},
+		{name: "Syft runtime root validation removed", mutate: replaceReleaseOnce("          revalidate_syft() {\n            validate_roots\n", "          revalidate_syft() {\n")},
+		{name: "Syft checksum accepts bare prefix", mutate: replaceReleaseOnce("h1:[A-Za-z0-9+/]{42}[AQgw]=$", "h1:")},
+		{name: "Syft checksum accepts noncanonical padding bits", mutate: replaceReleaseOnce("[A-Za-z0-9+/]{42}[AQgw]=", "[A-Za-z0-9+/]{43}=")},
+		{name: "Syft post-scan revalidation removed", mutate: replaceReleaseOnce("            -c \"${tools_root}/config/syft.yaml\" -o \"spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json\"\n          revalidate_syft\n", "            -c \"${tools_root}/config/syft.yaml\" -o \"spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json\"\n")},
 		{name: "moving checkout ref", mutate: replaceReleaseOnce(checkoutAction, "actions/checkout@v7")},
 		{name: "unpeeled golangci tag object", mutate: replaceReleaseOnce(attestAction, "actions/attest@d583c34f0599d37dbac4a198b9c83201be380893")},
 		{name: "prior attest commit", mutate: replaceReleaseOnce(attestAction, "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d")},
@@ -3210,6 +3260,20 @@ func TestReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "wrong package timeout", mutate: replaceReleaseOnce("    timeout-minutes: 25\n", "    timeout-minutes: 26\n")},
 		{name: "transitive artifact id", mutate: replaceReleaseOnce("${{ needs.package.outputs.artifact_id }}", "${{ needs.asset-verification.outputs.artifact_id }}")},
 		{name: "name based download", mutate: replaceReleaseOnce("          artifact-ids: ${{ needs.package.outputs.artifact_id }}\n", "          name: release\n")},
+		{name: "download extra name", mutate: replaceReleaseOnce("          digest-mismatch: error\n", "          digest-mismatch: error\n          name: attacker-controlled\n")},
+		{name: "download extra pattern", mutate: replaceReleaseOnce("          digest-mismatch: error\n", "          digest-mismatch: error\n          pattern: '*'\n")},
+		{name: "download extra merge-multiple", mutate: replaceReleaseOnce("          digest-mismatch: error\n", "          digest-mismatch: error\n          merge-multiple: true\n")},
+		{name: "publish download extra name", mutate: replaceReleaseNth("          digest-mismatch: error\n", "          digest-mismatch: error\n          name: attacker-controlled\n", 2)},
+		{name: "asset verification replaced by true", mutate: replaceReleaseStepRun("Verify checksums and attestations", "          true\n")},
+		{name: "asset verification replaced by decoy", mutate: replaceReleaseStepRun("Verify checksums and attestations", "          : 'sha256sum --check --strict SHA256SUMS gh attestation verify github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml'\n          true\n")},
+		{name: "asset verification relocated into unused function", mutate: replaceReleaseStepRun("Verify checksums and attestations", "          verify_assets() {\n            sha256sum --check --strict SHA256SUMS\n            gh attestation verify SHA256SUMS --repo krkarma777/ai-cli-gateway\n          }\n          true\n")},
+		{name: "asset verification missing asset", mutate: replaceReleaseOnce("          ai-cli-gateway_${VERSION}_linux_arm64.tar.gz\n", "")},
+		{name: "asset verification additional asset", mutate: replaceReleaseOnce("          SHA256SUMS\n          ASSETS\n", "          SHA256SUMS\n          unexpected.bin\n          ASSETS\n")},
+		{name: "asset verification duplicate asset", mutate: replaceReleaseOnce("          ai-cli-gateway_${VERSION}_windows_amd64.zip\n", "          ai-cli-gateway_${VERSION}_linux_amd64.tar.gz\n")},
+		{name: "asset verification missing predicate", mutate: replaceReleaseOnce("              --predicate-type https://slsa.dev/provenance/v1 \\\n", "")},
+		{name: "asset verification wrong repository", mutate: replaceReleaseOnce("              --repo krkarma777/ai-cli-gateway \\\n", "              --repo attacker/ai-cli-gateway \\\n")},
+		{name: "asset verification call removed", mutate: replaceReleaseOnce("            gh attestation verify \"${asset}\" \\\n              --repo krkarma777/ai-cli-gateway \\\n              --predicate-type https://slsa.dev/provenance/v1 \\\n              --signer-workflow github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml \\\n              --source-digest \"${TAG_COMMIT}\" \\\n              --source-ref \"refs/tags/${TAG}\"\n", "            : \"${asset}\"\n")},
+		{name: "asset verification additional call", mutate: replaceReleaseOnce("          SHA256SUMS\n          ASSETS\n", "          SHA256SUMS\n          ASSETS\n          gh attestation verify unexpected.bin\n")},
 		{name: "runner temp shell expression", mutate: replaceReleaseOnce("cd \"${RUNNER_TEMP}/release-assets\"", "cd \"${{ runner.temp }}/release-assets\"")},
 		{name: "GitHub expression in shell", mutate: replaceReleaseOnce("readonly repository=krkarma777/ai-cli-gateway", "readonly repository=${{ github.repository }}")},
 		{name: "publication edit replaced by comment decoy", mutate: replaceReleaseOnce("          gh release edit \"${TAG}\" --repo \"${repository}\" --draft=false", "          # gh release edit \"${TAG}\" --repo \"${repository}\" --draft=false\n          false")},
@@ -3234,6 +3298,51 @@ func TestReleaseWorkflowContractRejectsMutations(t *testing.T) {
 func replaceReleaseOnce(old, replacement string) func(string) string {
 	return func(document string) string {
 		return strings.Replace(document, old, replacement, 1)
+	}
+}
+
+func replaceReleaseNth(old, replacement string, occurrence int) func(string) string {
+	return func(document string) string {
+		if occurrence < 1 {
+			return document
+		}
+		searchStart := 0
+		for current := 1; current <= occurrence; current++ {
+			relative := strings.Index(document[searchStart:], old)
+			if relative < 0 {
+				return document
+			}
+			index := searchStart + relative
+			if current == occurrence {
+				return document[:index] + replacement + document[index+len(old):]
+			}
+			searchStart = index + len(old)
+		}
+		return document
+	}
+}
+
+func replaceReleaseStepRun(stepName, replacement string) func(string) string {
+	return func(document string) string {
+		stepMarker := "      - name: " + stepName + "\n"
+		stepStart := strings.Index(document, stepMarker)
+		if stepStart < 0 {
+			return document
+		}
+		runMarker := "        run: |\n"
+		runRelative := strings.Index(document[stepStart:], runMarker)
+		if runRelative < 0 {
+			return document
+		}
+		runStart := stepStart + runRelative + len(runMarker)
+		remainder := document[runStart:]
+		end := len(remainder)
+		for _, marker := range []string{"\n      - ", "\n\n  "} {
+			if index := strings.Index(remainder, marker); index >= 0 && index < end {
+				end = index + 1
+			}
+		}
+		return document[:runStart] + replacement + document[runStart+end:]
 	}
 }
 
@@ -3343,7 +3452,7 @@ func TestReleasePublicationScript(t *testing.T) {
 				t.Fatalf("chmod fake gh: %v", err)
 			}
 			linkFixtureTool(t, binRoot, "jq", jqPath)
-			shaWrapper := "#!/bin/sh\n{ printf 'sha256sum\\0'; for argument in \"$@\"; do printf '%s\\0' \"${argument}\"; done; printf '\\0'; } >> \"${GH_EVENT_LOG}\"\nexec \"${REAL_SHA256SUM}\" \"$@\"\n"
+			shaWrapper := "#!/bin/sh\n{ printf '%s\\0' \"$(($# + 1))\"; printf 'sha256sum\\0'; for argument in \"$@\"; do printf '%s\\0' \"${argument}\"; done; } >> \"${GH_EVENT_LOG}\"\nexec \"${REAL_SHA256SUM}\" \"$@\"\n"
 			writeFixtureFile(t, binRoot, "sha256sum", []byte(shaWrapper))
 			if err := os.Chmod(filepath.Join(binRoot, "sha256sum"), 0o700); err != nil { //nolint:gosec // Test-only fixture must be executable.
 				t.Fatalf("chmod sha256sum wrapper: %v", err)
@@ -3396,6 +3505,97 @@ func TestReleasePublicationScript(t *testing.T) {
 				assertSuccessfulPublicationTrace(t, root, test.fixture, calls)
 			}
 		})
+	}
+}
+
+func TestReleaseAssetVerificationScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("decoded asset-verification shell fixture requires macOS or Linux")
+	}
+	document := readRepositoryFile(t, ".github/workflows/release.yml")
+	script, err := decodedWorkflowStepRun(document, "asset-verification", "Verify checksums and attestations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBashSyntax(t, "asset verification", script)
+	shaPath, err := exec.LookPath("sha256sum")
+	if err != nil {
+		t.Fatalf("mandatory asset-verification fixture requires sha256sum: %v", err)
+	}
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test binary: %v", err)
+	}
+	root := t.TempDir()
+	binRoot := filepath.Join(root, "bin")
+	assetsRoot := filepath.Join(root, "release-assets")
+	if err := os.MkdirAll(binRoot, 0o700); err != nil {
+		t.Fatalf("create fake bin: %v", err)
+	}
+	if err := os.MkdirAll(assetsRoot, 0o700); err != nil {
+		t.Fatalf("create assets: %v", err)
+	}
+	wrapper := "#!/bin/sh\nexec \"${SPAWNGATE_TEST_BINARY}\" -test.run '^TestReleasePublicationFakeGH$' -- \"$@\"\n"
+	writeFixtureFile(t, binRoot, "gh", []byte(wrapper))
+	if err := os.Chmod(filepath.Join(binRoot, "gh"), 0o700); err != nil { //nolint:gosec // Test-only fixture must be executable.
+		t.Fatalf("chmod fake gh: %v", err)
+	}
+	shaWrapper := "#!/bin/sh\n{ printf '%s\\0' \"$(($# + 1))\"; printf 'sha256sum\\0'; for argument in \"$@\"; do printf '%s\\0' \"${argument}\"; done; } >> \"${GH_EVENT_LOG}\"\nexec \"${REAL_SHA256SUM}\" \"$@\"\n"
+	writeFixtureFile(t, binRoot, "sha256sum", []byte(shaWrapper))
+	if err := os.Chmod(filepath.Join(binRoot, "sha256sum"), 0o700); err != nil { //nolint:gosec // Test-only fixture must be executable.
+		t.Fatalf("chmod sha256sum wrapper: %v", err)
+	}
+	writeReleasePublicationAssets(t, assetsRoot, false)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "/bin/bash", "-c", script) //nolint:gosec // Executes the repository-owned decoded verification script with fixed fake tools.
+	command.Dir = root
+	command.Env = []string{
+		"PATH=" + binRoot + ":/usr/bin:/bin",
+		"GH_TOKEN=fixture-token",
+		"TAG=v0.1.0",
+		"VERSION=0.1.0",
+		"TAG_COMMIT=" + strings.Repeat("a", 40),
+		"RUNNER_TEMP=" + root,
+		"GH_FIXTURE=attestation_success",
+		"GH_LOG=" + filepath.Join(root, "gh.log"),
+		"GH_EVENT_LOG=" + filepath.Join(root, "events.log"),
+		"REAL_SHA256SUM=" + shaPath,
+		"SPAWNGATE_TEST_BINARY=" + testBinary,
+	}
+	if output, runErr := command.CombinedOutput(); runErr != nil {
+		t.Fatalf("asset verification failed: %v: %s", runErr, output)
+	}
+	assets := []string{
+		"ai-cli-gateway_0.1.0_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.1.0_linux_arm64.tar.gz",
+		"ai-cli-gateway_0.1.0_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.1.0_darwin_arm64.tar.gz",
+		"ai-cli-gateway_0.1.0_windows_amd64.zip",
+		"ai-cli-gateway_0.1.0_sbom.spdx.json",
+		"SHA256SUMS",
+	}
+	wantCalls := [][]string{{"--version"}, {"attestation", "verify", "--help"}}
+	for _, asset := range assets {
+		wantCalls = append(wantCalls, []string{
+			"attestation", "verify", asset,
+			"--repo", "krkarma777/ai-cli-gateway",
+			"--predicate-type", "https://slsa.dev/provenance/v1",
+			"--signer-workflow", "github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml",
+			"--source-digest", strings.Repeat("a", 40),
+			"--source-ref", "refs/tags/v0.1.0",
+		})
+	}
+	if calls := readFakeGHCalls(t, filepath.Join(root, "gh.log")); !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("asset-verification calls = %q, want exact %q", calls, wantCalls)
+	}
+	wantEvents := [][]string{{"gh", "--version"}, {"gh", "attestation", "verify", "--help"}, {"sha256sum", "--check", "--strict", "SHA256SUMS"}}
+	for _, call := range wantCalls[2:] {
+		wantEvents = append(wantEvents, append([]string{"gh"}, call...))
+	}
+	if events := readFakeGHCalls(t, filepath.Join(root, "events.log")); !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("asset-verification events = %q, want checksum-before-attestation trace %q", events, wantEvents)
 	}
 }
 
@@ -3458,8 +3658,21 @@ func TestWorkflowActionlintIsolationScript(t *testing.T) {
 	actionlintRoot := filepath.Join(root, "actionlint-tools")
 	wantGo := cleanGoEnvironment(actionlintRoot)
 	assertExactEnvironmentRecords(t, filepath.Join(actionlintRoot, "actionlint-go.env"), 2, wantGo)
+	if calls := readFakeGHCalls(t, filepath.Join(actionlintRoot, "actionlint-go.argv")); !reflect.DeepEqual(calls, [][]string{
+		{"env", "GOVERSION"},
+		{"install", "github.com/rhysd/actionlint/cmd/actionlint@v1.7.12"},
+	}) {
+		t.Fatalf("actionlint Go argv trace = %q", calls)
+	}
 	wantRuntime := cleanActionlintEnvironment(actionlintRoot)
 	assertExactEnvironmentRecords(t, filepath.Join(actionlintRoot, "actionlint.env"), 3, wantRuntime)
+	if calls := readFakeGHCalls(t, filepath.Join(actionlintRoot, "actionlint.argv")); !reflect.DeepEqual(calls, [][]string{
+		{"-version"},
+		{"-help"},
+		{"-config-file", filepath.Join(actionlintRoot, "config", "actionlint.yaml"), "-shellcheck=", "-pyflakes=", "-no-color", ".github/workflows/ci.yml", ".github/workflows/release.yml"},
+	}) {
+		t.Fatalf("actionlint argv trace = %q", calls)
+	}
 }
 
 func TestReleaseSyftIsolationScript(t *testing.T) {
@@ -3489,9 +3702,16 @@ func TestReleaseSyftIsolationScript(t *testing.T) {
 		{name: "wrong command path", mode: "syft-go-wrong-path"},
 		{name: "wrong module version", mode: "syft-go-wrong-module"},
 		{name: "missing module checksum", mode: "syft-go-missing-checksum"},
+		{name: "bare module checksum prefix", mode: "syft-go-bare-checksum"},
+		{name: "noncanonical module checksum padding", mode: "syft-go-invalid-checksum-padding"},
+		{name: "duplicate module record", mode: "syft-go-duplicate-module"},
 		{name: "wrong build setting", mode: "syft-go-wrong-build-setting"},
 		{name: "wrong reported version", mode: "syft-go-wrong-version"},
 		{name: "wrong SPDX creator", mode: "syft-go-wrong-creator"},
+		{name: "same-mode config replacement", mode: "syft-go-replace-config"},
+		{name: "same-mode root replacement", mode: "syft-go-replace-root"},
+		{name: "same-mode config replacement between Syft calls", mode: "syft-go-replace-config-at-syft"},
+		{name: "same-mode root replacement after scan", mode: "syft-go-replace-root-after-scan"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -3531,9 +3751,42 @@ func TestReleaseSyftIsolationScript(t *testing.T) {
 			if _, err := os.Stat(poisonMarker); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("poisoned GOFLAGS helper was observed: %v", err)
 			}
+			toolsRoot := filepath.Join(root, "release-tools")
+			if test.mode == "syft-go-replace-config" || test.mode == "syft-go-replace-root" {
+				if calls := readFakeGHCalls(t, filepath.Join(toolsRoot, "syft-go.argv")); !reflect.DeepEqual(calls, [][]string{{"env", "GOVERSION"}}) {
+					t.Fatalf("identity replacement Go argv = %q, want failure before the second external call", calls)
+				}
+				if calls := readFakeGHCalls(t, filepath.Join(toolsRoot, "syft.argv")); len(calls) != 0 {
+					t.Fatalf("identity replacement reached Syft: %q", calls)
+				}
+				target := "root"
+				mode, kind := "0700", "directory"
+				if test.mode == "syft-go-replace-config" {
+					target, mode, kind = "config", "0600", "regular"
+				}
+				assertSameModeIdentityReplacementEvidence(t, toolsRoot, target, mode, kind)
+			}
+			if test.mode == "syft-go-replace-config-at-syft" || test.mode == "syft-go-replace-root-after-scan" {
+				if calls := readFakeGHCalls(t, filepath.Join(toolsRoot, "syft-go.argv")); !reflect.DeepEqual(calls, expectedSyftGoCalls(toolsRoot)) {
+					t.Fatalf("runtime identity replacement Go argv = %q", calls)
+				}
+				wantSyft := expectedSyftCalls(root, toolsRoot)
+				target, mode, kind := "config", "0600", "regular"
+				if test.mode == "syft-go-replace-config-at-syft" {
+					wantSyft = wantSyft[:1]
+				} else {
+					target, mode, kind = "root", "0700", "directory"
+				}
+				if calls := readFakeGHCalls(t, filepath.Join(toolsRoot, "syft.argv")); !reflect.DeepEqual(calls, wantSyft) {
+					t.Fatalf("runtime identity replacement Syft argv = %q, want %q", calls, wantSyft)
+				}
+				assertSameModeIdentityReplacementEvidence(t, toolsRoot, target, mode, kind)
+			}
 			if test.wantOK {
-				toolsRoot := filepath.Join(root, "release-tools")
 				assertExactEnvironmentRecords(t, filepath.Join(toolsRoot, "syft-go.env"), 3, cleanGoEnvironment(toolsRoot))
+				if calls := readFakeGHCalls(t, filepath.Join(toolsRoot, "syft-go.argv")); !reflect.DeepEqual(calls, expectedSyftGoCalls(toolsRoot)) {
+					t.Fatalf("Syft Go argv trace = %q", calls)
+				}
 				base := cleanSyftEnvironment(toolsRoot, false)
 				scan := cleanSyftEnvironment(toolsRoot, true)
 				records := readEnvironmentRecords(t, filepath.Join(toolsRoot, "syft.env"))
@@ -3548,8 +3801,55 @@ func TestReleaseSyftIsolationScript(t *testing.T) {
 				if !reflect.DeepEqual(records[4], scan) {
 					t.Fatalf("Syft scan env = %v, want %v", records[4], scan)
 				}
+				if calls := readFakeGHCalls(t, filepath.Join(toolsRoot, "syft.argv")); !reflect.DeepEqual(calls, expectedSyftCalls(root, toolsRoot)) {
+					t.Fatalf("Syft argv trace = %q", calls)
+				}
 			}
 		})
+	}
+}
+
+func expectedSyftGoCalls(toolsRoot string) [][]string {
+	return [][]string{
+		{"env", "GOVERSION"},
+		{"install", "-ldflags", "-X main.version=1.50.0", "github.com/anchore/syft/cmd/syft@v1.50.0"},
+		{"version", "-m", filepath.Join(toolsRoot, "bin", "syft")},
+	}
+}
+
+func expectedSyftCalls(runnerRoot, toolsRoot string) [][]string {
+	return [][]string{
+		{"help"},
+		{"scan", "--help"},
+		{"version", "--help"},
+		{"version"},
+		{"scan", "dir:" + filepath.Join(runnerRoot, "release-staging"), "-c", filepath.Join(toolsRoot, "config", "syft.yaml"), "-o", "spdx-json=" + filepath.Join(runnerRoot, "raw-syft.spdx.json")},
+	}
+}
+
+func assertSameModeIdentityReplacementEvidence(t *testing.T, root, target, mode, kind string) {
+	t.Helper()
+	evidencePath := root + ".identity-evidence"
+	if strings.HasPrefix(evidencePath, root+string(os.PathSeparator)) {
+		t.Fatal("identity evidence must be outside the replaced tools root")
+	}
+	records := readFakeGHCalls(t, evidencePath)
+	if len(records) != 1 || len(records[0]) != 10 {
+		t.Fatalf("identity evidence = %#v, want one complete ten-field record", records)
+	}
+	record := records[0]
+	if record[0] != "complete" || record[1] != target {
+		t.Fatalf("identity evidence header = %q, want complete/%s", record[:2], target)
+	}
+	oldDevice, oldInode, oldOK := strings.Cut(record[2], ":")
+	newDevice, newInode, newOK := strings.Cut(record[3], ":")
+	if !oldOK || !newOK || oldDevice != newDevice || oldInode == newInode {
+		t.Fatalf("identity evidence did not prove same-device inode replacement: old=%q new=%q", record[2], record[3])
+	}
+	wantOwner := strconv.Itoa(os.Geteuid())
+	if record[4] != mode || record[5] != mode || record[6] != wantOwner || record[7] != wantOwner ||
+		record[8] != kind || record[9] != kind {
+		t.Fatalf("identity evidence mode/owner/type = %q, want mode=%s owner=%s kind=%s", record[4:], mode, wantOwner, kind)
 	}
 }
 
@@ -3562,21 +3862,73 @@ func TestWorkflowToolFake(_ *testing.T) {
 	os.Exit(runWorkflowToolFake(mode, testBinary, toolArgs))
 }
 
+func TestWorkflowToolFakeRejectsArbitraryInstall(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		args []string
+		tool string
+		log  string
+	}{
+		{name: "actionlint", mode: "actionlint-go", args: []string{"install", "attacker.invalid/actionlint@v0"}, tool: "actionlint", log: "actionlint-go.argv"},
+		{name: "Syft", mode: "syft-go", args: []string{"install", "attacker.invalid/syft@v0"}, tool: "syft", log: "syft-go.argv"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			binRoot := filepath.Join(root, "bin")
+			if err := os.Mkdir(binRoot, 0o700); err != nil {
+				t.Fatalf("create fake GOBIN: %v", err)
+			}
+			t.Setenv("GOPATH", filepath.Join(root, "gopath"))
+			t.Setenv("GOBIN", binRoot)
+			if code := runWorkflowToolFake(test.mode, "unused-test-binary", test.args); code == 0 {
+				t.Fatal("fake Go accepted arbitrary install argv")
+			}
+			if _, err := os.Stat(filepath.Join(binRoot, test.tool)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("arbitrary install created %s: %v", test.tool, err)
+			}
+			if calls := readFakeGHCalls(t, filepath.Join(root, test.log)); !reflect.DeepEqual(calls, [][]string{test.args}) {
+				t.Fatalf("arbitrary install trace = %q, want %q", calls, [][]string{test.args})
+			}
+		})
+	}
+}
+
 func runWorkflowToolFake(mode, testBinary string, args []string) int {
 	if strings.HasPrefix(mode, "actionlint-go") || strings.HasPrefix(mode, "syft-go") {
 		root := filepath.Dir(os.Getenv("GOPATH"))
 		logName := "actionlint-go.env"
+		argvName := "actionlint-go.argv"
 		if strings.HasPrefix(mode, "syft-go") {
 			logName = "syft-go.env"
+			argvName = "syft-go.argv"
 		}
 		if err := appendEnvironmentRecord(filepath.Join(root, logName)); err != nil {
 			return 81
 		}
+		if err := appendFakeGHCall(filepath.Join(root, argvName), args); err != nil {
+			return 81
+		}
 		if reflect.DeepEqual(args, []string{"env", "GOVERSION"}) {
+			var err error
+			switch mode {
+			case "syft-go-replace-config":
+				err = replaceFixtureConfigIdentity(root)
+			case "syft-go-replace-root":
+				err = replaceFixtureRootIdentity(root)
+			}
+			if err != nil {
+				return 86
+			}
 			fmt.Println("go1.26.5")
 			return 0
 		}
-		if len(args) >= 2 && args[0] == "install" {
+		wantInstall := []string{"install", "github.com/rhysd/actionlint/cmd/actionlint@v1.7.12"}
+		if strings.HasPrefix(mode, "syft-go") {
+			wantInstall = []string{"install", "-ldflags", "-X main.version=1.50.0", "github.com/anchore/syft/cmd/syft@v1.50.0"}
+		}
+		if reflect.DeepEqual(args, wantInstall) {
 			tool := "actionlint"
 			installedMode := "actionlint"
 			environment := cleanActionlintEnvironmentNames()
@@ -3591,10 +3943,13 @@ func runWorkflowToolFake(mode, testBinary string, args []string) int {
 			}
 			return 0
 		}
+		if len(args) > 0 && args[0] == "install" {
+			return 2
+		}
 		if len(args) == 3 && args[0] == "version" && args[1] == "-m" && strings.HasPrefix(mode, "syft-go") {
 			path := "github.com/anchore/syft/cmd/syft"
 			moduleVersion := "v1.50.0"
-			checksum := "h1:fixture"
+			checksum := "h1:" + strings.Repeat("A", 43) + "="
 			buildSetting := "-X main.version=1.50.0"
 			switch mode {
 			case "syft-go-wrong-path":
@@ -3603,10 +3958,17 @@ func runWorkflowToolFake(mode, testBinary string, args []string) int {
 				moduleVersion = "v1.49.0"
 			case "syft-go-missing-checksum":
 				checksum = ""
+			case "syft-go-bare-checksum":
+				checksum = "h1:"
+			case "syft-go-invalid-checksum-padding":
+				checksum = "h1:" + strings.Repeat("A", 42) + "B="
 			case "syft-go-wrong-build-setting":
 				buildSetting = "-X main.version=1.49.0"
 			}
 			fmt.Printf("%s: go1.26.5\n\tpath\t%s\n\tmod\tgithub.com/anchore/syft\t%s\t%s\n\tbuild\t-ldflags=\"%s\"\n", args[2], path, moduleVersion, checksum, buildSetting)
+			if mode == "syft-go-duplicate-module" {
+				fmt.Printf("\tmod\tgithub.com/anchore/syft\t%s\t%s\n", moduleVersion, checksum)
+			}
 			return 0
 		}
 		return 2
@@ -3614,6 +3976,9 @@ func runWorkflowToolFake(mode, testBinary string, args []string) int {
 	if mode == "actionlint" {
 		root := filepath.Dir(os.Getenv("HOME"))
 		if err := appendEnvironmentRecord(filepath.Join(root, "actionlint.env")); err != nil {
+			return 83
+		}
+		if err := appendFakeGHCall(filepath.Join(root, "actionlint.argv"), args); err != nil {
 			return 83
 		}
 		if reflect.DeepEqual(args, []string{"-version"}) {
@@ -3629,6 +3994,9 @@ func runWorkflowToolFake(mode, testBinary string, args []string) int {
 	if strings.HasPrefix(mode, "syft") {
 		root := filepath.Dir(os.Getenv("HOME"))
 		if err := appendEnvironmentRecord(filepath.Join(root, "syft.env")); err != nil {
+			return 84
+		}
+		if err := appendFakeGHCall(filepath.Join(root, "syft.argv"), args); err != nil {
 			return 84
 		}
 		if reflect.DeepEqual(args, []string{"version"}) {
@@ -3651,10 +4019,139 @@ func runWorkflowToolFake(mode, testBinary string, args []string) int {
 					}
 				}
 			}
+			if mode == "syft-replace-root-after-scan" {
+				if err := replaceFixtureRootIdentity(root); err != nil {
+					return 86
+				}
+			}
+		}
+		if mode == "syft-replace-config-at-syft" && reflect.DeepEqual(args, []string{"help"}) {
+			if err := replaceFixtureConfigIdentity(root); err != nil {
+				return 86
+			}
 		}
 		return 0
 	}
 	return 2
+}
+
+func replaceFixtureConfigIdentity(root string) error {
+	path := filepath.Join(root, "config", "syft.yaml")
+	replaced := path + ".replaced"
+	before, err := fixtureIdentityMetadata(path)
+	if err != nil {
+		return err
+	}
+	contents, err := os.ReadFile(path) //nolint:gosec // The path is a private fixture selected by the test harness.
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(path, replaced); err != nil { //nolint:gosec // Both paths are fixed children of the private fixture root.
+		return err
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil { //nolint:gosec // Recreates a private same-mode fixture file with a different inode.
+		return err
+	}
+	if err := os.Chmod(path, 0o600); err != nil { //nolint:gosec // Enforces the fixture's original private mode.
+		return err
+	}
+	if err := os.Remove(replaced); err != nil { //nolint:gosec // Removes only the fixed replaced fixture sibling.
+		return err
+	}
+	after, err := fixtureIdentityMetadata(path)
+	if err != nil {
+		return err
+	}
+	return appendFixtureIdentityEvidence(root, "config", before, after)
+}
+
+func replaceFixtureRootIdentity(root string) error {
+	replaced := root + ".replaced"
+	before, err := fixtureIdentityMetadata(root)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(root, replaced); err != nil { //nolint:gosec // The root is the private fixture selected by the harness.
+		return err
+	}
+	if err := os.Mkdir(root, 0o700); err != nil { //nolint:gosec // Recreates only the private fixture root at its retained path.
+		return err
+	}
+	entries, err := os.ReadDir(replaced)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := os.Rename(filepath.Join(replaced, entry.Name()), filepath.Join(root, entry.Name())); err != nil { //nolint:gosec // Entries remain within the two private fixture roots.
+			return err
+		}
+	}
+	if err := os.Remove(replaced); err != nil { //nolint:gosec // Removes only the now-empty replaced fixture root.
+		return err
+	}
+	after, err := fixtureIdentityMetadata(root)
+	if err != nil {
+		return err
+	}
+	return appendFixtureIdentityEvidence(root, "root", before, after)
+}
+
+func fixtureIdentityMetadata(path string) ([]string, error) {
+	info, err := os.Lstat(path) //nolint:gosec // The caller passes only the private fixture root or its fixed config child.
+	if err != nil {
+		return nil, err
+	}
+	kind := ""
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		return nil, errors.New("identity fixture target is a symlink")
+	case info.IsDir():
+		kind = "directory"
+	case info.Mode().IsRegular():
+		kind = "regular"
+	default:
+		return nil, errors.New("identity fixture target has unexpected type")
+	}
+	statValue := reflect.ValueOf(info.Sys())
+	if statValue.Kind() == reflect.Pointer {
+		statValue = statValue.Elem()
+	}
+	device, err := reflectedIntegerField(statValue, "Dev")
+	if err != nil {
+		return nil, err
+	}
+	inode, err := reflectedIntegerField(statValue, "Ino")
+	if err != nil {
+		return nil, err
+	}
+	owner, err := reflectedIntegerField(statValue, "Uid")
+	if err != nil {
+		return nil, err
+	}
+	return []string{device + ":" + inode, fmt.Sprintf("%04o", info.Mode().Perm()), owner, kind}, nil
+}
+
+func reflectedIntegerField(value reflect.Value, name string) (string, error) {
+	if value.Kind() != reflect.Struct {
+		return "", errors.New("fixture stat metadata is not a struct")
+	}
+	field := value.FieldByName(name)
+	switch field.Kind() { //nolint:exhaustive // Only integer stat fields are valid; the default rejects every other kind.
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(field.Int(), 10), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(field.Uint(), 10), nil
+	default:
+		return "", fmt.Errorf("fixture stat metadata has no integer %s field", name)
+	}
+}
+
+func appendFixtureIdentityEvidence(root, target string, before, after []string) error {
+	if len(before) != 4 || len(after) != 4 {
+		return errors.New("invalid identity evidence shape")
+	}
+	record := []string{"complete", target, before[0], after[0], before[1], after[1], before[2], after[2], before[3], after[3]}
+	return appendFakeGHCall(root+".identity-evidence", record)
 }
 
 func decodedWorkflowStepRun(document []byte, jobName, stepName string) (string, error) {
@@ -3985,6 +4482,9 @@ func runReleasePublicationFakeGH(args []string) int {
 		fmt.Println("gh fixture 2.99.0")
 		return 0
 	}
+	if fixture == "attestation_success" && len(args) >= 2 && args[0] == "attestation" && args[1] == "verify" {
+		return 0
+	}
 	if len(args) >= 2 && args[0] == "api" && args[1] == "graphql" {
 		switch fixture {
 		case "graphql_existing":
@@ -4091,19 +4591,43 @@ func slicesContain(values []string, want string) bool {
 	return false
 }
 
+func TestNULArgumentRecordRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "argv.log")
+	want := [][]string{
+		{},
+		{""},
+		{"scan", "", "line one\nline two", "tab\tvalue"},
+	}
+	for _, record := range want {
+		if err := appendFakeGHCall(path, record); err != nil {
+			t.Fatalf("append NUL argument record: %v", err)
+		}
+	}
+	if got := readFakeGHCalls(t, path); !reflect.DeepEqual(got, want) {
+		t.Fatalf("NUL argument round trip = %#v, want %#v", got, want)
+	}
+}
+
 func appendFakeGHCall(path string, args []string) error {
+	for _, arg := range args {
+		if strings.IndexByte(arg, 0) >= 0 {
+			return errors.New("argument record contains NUL")
+		}
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // Caller supplies a private fixture log path.
 	if err != nil {
 		return err
 	}
 	defer func() { _ = file.Close() }()
+	if _, err := file.Write(append([]byte(strconv.Itoa(len(args))), 0)); err != nil {
+		return err
+	}
 	for _, arg := range args {
 		if _, err := file.Write(append([]byte(arg), 0)); err != nil {
 			return err
 		}
 	}
-	_, err = file.Write([]byte{0})
-	return err
+	return nil
 }
 
 func readFakeGHCalls(t *testing.T, path string) [][]string {
@@ -4115,14 +4639,23 @@ func readFakeGHCalls(t *testing.T, path string) [][]string {
 	if err != nil {
 		t.Fatalf("read fake gh log: %v", err)
 	}
-	records := bytes.Split(bytes.TrimSuffix(contents, []byte{0, 0}), []byte{0, 0})
-	result := make([][]string, 0, len(records))
-	for _, record := range records {
-		parts := bytes.Split(record, []byte{0})
-		call := make([]string, 0, len(parts))
-		for _, part := range parts {
-			call = append(call, string(part))
+	parts := bytes.Split(contents, []byte{0})
+	if len(parts) == 0 || len(parts[len(parts)-1]) != 0 {
+		t.Fatal("NUL argument log is missing its final field terminator")
+	}
+	parts = parts[:len(parts)-1]
+	result := make([][]string, 0)
+	for index := 0; index < len(parts); {
+		count, parseErr := strconv.Atoi(string(parts[index]))
+		index++
+		if parseErr != nil || count < 0 || count > len(parts)-index {
+			t.Fatalf("invalid argc-prefixed NUL argument log at field %d", index-1)
 		}
+		call := make([]string, count)
+		for argument := 0; argument < count; argument++ {
+			call[argument] = string(parts[index+argument])
+		}
+		index += count
 		result = append(result, call)
 	}
 	return result
@@ -4712,6 +5245,13 @@ func validateReleaseSteps(packageJob, assetJob, publishJob releaseWorkflowJob) e
 	if err := validateArtifactTransfer(packageJob, assetJob, publishJob); err != nil {
 		return err
 	}
+	assetVerification, err := namedReleaseStep(assetJob.Steps, "Verify checksums and attestations")
+	if err != nil {
+		return err
+	}
+	if err := validateReleaseAssetVerificationStep(assetVerification); err != nil {
+		return fmt.Errorf("asset verification step: %w", err)
+	}
 	publication, err := namedReleaseStep(publishJob.Steps, "Publish verified release")
 	if err != nil {
 		return err
@@ -4743,6 +5283,44 @@ func validateReleaseSteps(packageJob, assetJob, publishJob releaseWorkflowJob) e
 	return nil
 }
 
+func validateReleaseAssetVerificationStep(step releaseWorkflowStep) error {
+	if step.Run != expectedReleaseAssetVerificationRun() {
+		return errors.New("decoded shell differs from the exact checksum and attestation contract")
+	}
+	return nil
+}
+
+func expectedReleaseAssetVerificationRun() string {
+	return `set -euo pipefail
+[[ "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+[[ "${VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+[[ "${TAG_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+command -v gh >/dev/null
+command -v sha256sum >/dev/null
+gh --version >/dev/null
+gh attestation verify --help >/dev/null
+cd "${RUNNER_TEMP}/release-assets"
+sha256sum --check --strict SHA256SUMS
+while IFS= read -r asset; do
+  test -f "${asset}"
+  gh attestation verify "${asset}" \
+    --repo krkarma777/ai-cli-gateway \
+    --predicate-type https://slsa.dev/provenance/v1 \
+    --signer-workflow github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml \
+    --source-digest "${TAG_COMMIT}" \
+    --source-ref "refs/tags/${TAG}"
+done <<ASSETS
+ai-cli-gateway_${VERSION}_linux_amd64.tar.gz
+ai-cli-gateway_${VERSION}_linux_arm64.tar.gz
+ai-cli-gateway_${VERSION}_darwin_amd64.tar.gz
+ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz
+ai-cli-gateway_${VERSION}_windows_amd64.zip
+ai-cli-gateway_${VERSION}_sbom.spdx.json
+SHA256SUMS
+ASSETS
+`
+}
+
 func validateReleaseSyftStep(step releaseWorkflowStep) error {
 	script := shellWithoutCommentOnlyLines(step.Run)
 	for _, required := range []string{
@@ -4754,7 +5332,12 @@ func validateReleaseSyftStep(step releaseWorkflowStep) error {
 		`run_clean_go install -ldflags '-X main.version=1.50.0' github.com/anchore/syft/cmd/syft@v1.50.0`,
 		`run_clean_go version -m "${SYFT_BIN}"`,
 		`github.com/anchore/syft/cmd/syft`,
-		`github.com/anchore/syft\tv1\.50\.0\th1:`,
+		`TOOLS_ROOT_IDENTITY="$(stat -c '%d:%i' -- "${tools_root}")"`,
+		`SYFT_CONFIG_IDENTITY="$(stat -c '%d:%i' -- "${tools_root}/config/syft.yaml")"`,
+		`test "$(stat -c '%d:%i' -- "${tools_root}")" = "${TOOLS_ROOT_IDENTITY}"`,
+		`test "$(stat -c '%d:%i' -- "${tools_root}/config/syft.yaml")" = "${SYFT_CONFIG_IDENTITY}"`,
+		`^\tmod\tgithub[.]com/anchore/syft\t`,
+		`^\tmod\tgithub[.]com/anchore/syft\tv1[.]50[.]0\th1:[A-Za-z0-9+/]{42}[AQgw]=$`,
 		`run_clean_syft help`,
 		`run_clean_syft scan --help`,
 		`run_clean_syft version --help`,
@@ -4767,9 +5350,75 @@ func validateReleaseSyftStep(step releaseWorkflowStep) error {
 		`"${SYFT_BIN}" scan "dir:${RUNNER_TEMP}/release-staging"`,
 		`-c "${tools_root}/config/syft.yaml" -o "spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json"`,
 		`test "$(stat -c '%a' -- "${tools_root}/config/syft.yaml")" = 600`,
+		`test "$(stat -c '%u' -- "${tools_root}/config/syft.yaml")" = "${effective_uid}"`,
 	} {
 		if !strings.Contains(script, required) {
 			return fmt.Errorf("decoded shell is missing %q", required)
+		}
+	}
+	lines := trimmedShellLines(script)
+	if shellLineCount(lines, `run_clean_go install -ldflags '-X main.version=1.50.0' github.com/anchore/syft/cmd/syft@v1.50.0`) != 1 ||
+		shellLinePrefixCount(lines, "run_clean_go install ") != 1 {
+		return errors.New("Syft install invocation is not the one exact executable line")
+	}
+	for _, sequence := range [][]string{
+		{`revalidate_go`, `test "$(run_clean_go env GOVERSION)" = go1.26.5`},
+		{`revalidate_go`, `run_clean_go install -ldflags '-X main.version=1.50.0' github.com/anchore/syft/cmd/syft@v1.50.0`},
+		{`revalidate_go`, `build_info="$(run_clean_go version -m "${SYFT_BIN}")"`},
+	} {
+		if shellLineSequenceCount(lines, sequence) != 1 {
+			return fmt.Errorf("Syft Go invocation is not immediately preceded by revalidation: %q", sequence)
+		}
+	}
+	if shellLineCount(lines, "revalidate_go") != 3 {
+		return errors.New("Syft build must revalidate roots and binaries before exactly three Go calls")
+	}
+	wantScanInvocation := []string{
+		`"${SYFT_BIN}" scan "dir:${RUNNER_TEMP}/release-staging" \`,
+		`-c "${tools_root}/config/syft.yaml" -o "spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json"`,
+	}
+	if shellLineSequenceCount(lines, wantScanInvocation) != 1 || shellLinePrefixCount(lines, `"${SYFT_BIN}" scan `) != 1 {
+		return errors.New("Syft scan invocation is not the one exact executable sequence")
+	}
+	for _, line := range []string{
+		`revalidate_syft; run_clean_syft help >/dev/null`,
+		`revalidate_syft; run_clean_syft scan --help >/dev/null`,
+		`revalidate_syft; run_clean_syft version --help >/dev/null`,
+	} {
+		if shellLineCount(lines, line) != 1 {
+			return fmt.Errorf("Syft preflight is not exact: %q", line)
+		}
+	}
+	for _, sequence := range [][]string{
+		{`revalidate_syft`, `syft_version="$(run_clean_syft version)"`},
+		{`revalidate_syft`, `"${ENV_BIN}" -i \`},
+		{`-c "${tools_root}/config/syft.yaml" -o "spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json"`, `revalidate_syft`, `"${RUNNER_TEMP}/releasepack" sbom \`},
+	} {
+		if shellLineSequenceCount(lines, sequence) != 1 {
+			return fmt.Errorf("Syft invocation or post-scan transition lacks exact revalidation: %q", sequence)
+		}
+	}
+	if shellLineCount(lines, "revalidate_syft") != 3 {
+		return errors.New("Syft runtime must have exact standalone pre-use and post-scan revalidations")
+	}
+	wantRevalidateSyft := []string{
+		`revalidate_syft() {`,
+		`validate_roots`,
+		`test "$(validate_binary "${ENV_BIN}" "${ENV_IDENTITY}")" = "${ENV_IDENTITY}"`,
+		`test "$(validate_binary "${SYFT_BIN}" "${SYFT_IDENTITY}")" = "${SYFT_IDENTITY}"`,
+		`}`,
+	}
+	if shellLineSequenceCount(lines, wantRevalidateSyft) != 1 {
+		return errors.New("Syft runtime revalidation body is not exactly bound to roots, env, and binary identities")
+	}
+	for _, line := range []string{
+		`TOOLS_ROOT_IDENTITY="$(stat -c '%d:%i' -- "${tools_root}")"`,
+		`SYFT_CONFIG_IDENTITY="$(stat -c '%d:%i' -- "${tools_root}/config/syft.yaml")"`,
+		`test "$(stat -c '%d:%i' -- "${tools_root}")" = "${TOOLS_ROOT_IDENTITY}"`,
+		`test "$(stat -c '%d:%i' -- "${tools_root}/config/syft.yaml")" = "${SYFT_CONFIG_IDENTITY}"`,
+	} {
+		if shellLineCount(lines, line) != 1 {
+			return fmt.Errorf("Syft root/config identity line is not exact: %q", line)
 		}
 	}
 	if regexp.MustCompile(`(?m)(^|[[:space:]])PATH=`).MatchString(script) || strings.Contains(script, "${PATH}") {
@@ -4918,6 +5567,47 @@ func shellWithoutCommentOnlyLines(script string) string {
 	return strings.Join(lines, "\n")
 }
 
+func trimmedShellLines(script string) []string {
+	result := make([]string, 0)
+	for _, line := range strings.Split(shellWithoutCommentOnlyLines(script), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func shellLineCount(lines []string, want string) int {
+	count := 0
+	for _, line := range lines {
+		if line == want {
+			count++
+		}
+	}
+	return count
+}
+
+func shellLinePrefixCount(lines []string, prefix string) int {
+	count := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			count++
+		}
+	}
+	return count
+}
+
+func shellLineSequenceCount(lines, want []string) int {
+	count := 0
+	for index := 0; index+len(want) <= len(lines); index++ {
+		if reflect.DeepEqual(lines[index:index+len(want)], want) {
+			count++
+		}
+	}
+	return count
+}
+
 func namedReleaseStep(steps []releaseWorkflowStep, name string) (releaseWorkflowStep, error) {
 	var result releaseWorkflowStep
 	count := 0
@@ -4947,7 +5637,8 @@ func validateArtifactTransfer(packageJob, assetJob, publishJob releaseWorkflowJo
 	wantID := "${{ needs.package.outputs.artifact_id }}"
 	for _, job := range []releaseWorkflowJob{assetJob, publishJob} {
 		if len(job.Steps) == 0 || job.Steps[0].Uses != downloadArtifactAction || job.Steps[0].With["artifact-ids"] != wantID ||
-			job.Steps[0].With["path"] != "${{ runner.temp }}/release-assets" || job.Steps[0].With["digest-mismatch"] != "error" {
+			job.Steps[0].With["path"] != "${{ runner.temp }}/release-assets" || job.Steps[0].With["digest-mismatch"] != "error" ||
+			!exactStringMapKeys(job.Steps[0].With, "artifact-ids", "path", "digest-mismatch") {
 			return errors.New("downstream artifact download is not direct-ID fail-closed")
 		}
 	}
