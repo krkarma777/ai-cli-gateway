@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,9 +29,21 @@ import (
 	"github.com/krkarma777/ai-cli-gateway/internal/config"
 	"github.com/krkarma777/ai-cli-gateway/internal/testutil"
 	"github.com/pelletier/go-toml/v2"
+	"go.yaml.in/yaml/v3"
 )
 
 const expectedModule = "github.com/krkarma777/ai-cli-gateway"
+
+const (
+	checkoutAction         = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"              // v7.0.1
+	setupGoAction          = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"              // v7.0.0
+	golangciAction         = "golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a" // v9.3.0, peeled
+	setupPythonAction      = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"          // v7.0.0
+	setupNodeAction        = "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020"            // v7.0.0
+	attestAction           = "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6"                // v4.2.2
+	uploadArtifactAction   = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"       // v7.0.1
+	downloadArtifactAction = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"     // v8.0.1
+)
 
 var scanRootFlag = flag.String("scan-root", "", "scan an explicit absolute materialized repository root")
 
@@ -1894,7 +1907,7 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 			t.Fatalf("CI job %q has no bounded timeout-minutes", name)
 		}
 		requireContainsAll(t, "CI job "+name, block,
-			"actions/checkout@v7", "actions/setup-go@v7",
+			checkoutAction, setupGoAction,
 			"go-version-file: .go-version", "cache: true")
 	}
 
@@ -1910,7 +1923,10 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	}
 	requireContainsAll(t, "lint job", jobs["lint"],
 		"runs-on: ubuntu-latest", "gofmt -l .", "go vet ./...",
-		"golangci/golangci-lint-action@v9", "version: v2.12.2")
+		golangciAction, "version: v2.12.2")
+	if err := validateCIActionlintStep(jobs["lint"]); err != nil {
+		t.Fatalf("CI actionlint contract: %v", err)
+	}
 	requireContainsAll(t, "Linux job", jobs["linux"],
 		"runs-on: ubuntu-latest", "go mod verify", "go test -count=1 ./...",
 		"go test -race -count=1 ./...", "go test -tags=integration -count=1 ./...",
@@ -1944,8 +1960,7 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	}
 	requireContainsAll(t, "SDK contract job", jobs["sdk-contract"],
 		"runs-on: ubuntu-latest", "timeout-minutes: 12",
-		"actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
-		"actions/setup-node@820762786026740c76f36085b0efc47a31fe5020")
+		setupPythonAction, setupNodeAction)
 
 	if strings.Count(workflow, "-tags=live") != 1 ||
 		!strings.Contains(workflow, "go test -tags=live -run '^$' ./internal/provider/...") {
@@ -1955,6 +1970,8 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 		"secrets.", "upload-artifact", "download-artifact", "AI_CLI_GATEWAY_LIVE_",
 		"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
 		"continue-on-error: true", "allow-failure", "actions/checkout@v6", "actions/setup-go@v6",
+		"actions/checkout@v7", "actions/setup-go@v7", "golangci/golangci-lint-action@v9",
+		"d583c34f0599d37dbac4a198b9c83201be380893",
 	} {
 		if strings.Contains(workflow, forbidden) {
 			t.Fatalf("CI contains forbidden secret, upload, bypass, or stale contract %q", forbidden)
@@ -1968,6 +1985,121 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	}
 }
 
+func validateCIActionlintStep(lintJob string) error {
+	steps, err := parseYAMLSteps(lintJob)
+	if err != nil {
+		return err
+	}
+	var actionlintStep string
+	for _, step := range steps {
+		if strings.HasPrefix(step, "- name: Validate workflow syntax\n") {
+			if actionlintStep != "" {
+				return errors.New("multiple actionlint validation steps")
+			}
+			actionlintStep = step
+		}
+	}
+	if actionlintStep == "" {
+		return errors.New("missing parsed Validate workflow syntax step")
+	}
+	for _, required := range []string{
+		"  shell: bash",
+		"set -euo pipefail",
+		"umask 077",
+		`ACTIONLINT_ROOT="${RUNNER_TEMP}/actionlint-tools"`,
+		`ENV_BIN=/usr/bin/env`,
+		`"${ENV_BIN}" -i`,
+		`GOTOOLCHAIN=local`,
+		`GOPROXY=https://proxy.golang.org`,
+		`GOSUMDB=sum.golang.org`,
+		`GOPRIVATE=`,
+		`GONOPROXY=`,
+		`GONOSUMDB=`,
+		`GOINSECURE=`,
+		`GOENV=off`,
+		`GOFLAGS=`,
+		`GOWORK=off`,
+		`CGO_ENABLED=0`,
+		`install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`,
+		`run_clean_actionlint -version`,
+		`run_clean_actionlint -help`,
+		`-config-file "${ACTIONLINT_ROOT}/config/actionlint.yaml"`,
+		`.github/workflows/ci.yml .github/workflows/release.yml`,
+	} {
+		if !strings.Contains(actionlintStep, required) {
+			return fmt.Errorf("parsed actionlint step is missing %q", required)
+		}
+	}
+	if strings.Contains(actionlintStep, "curl ") || strings.Contains(actionlintStep, "wget ") {
+		return errors.New("actionlint step uses a mutable downloader")
+	}
+	if regexp.MustCompile(`(?m)(^|[[:space:]])PATH=`).MatchString(actionlintStep) || strings.Contains(actionlintStep, "${PATH}") {
+		return errors.New("actionlint isolated children receive PATH")
+	}
+	if strings.Count(actionlintStep, `"${ENV_BIN}" -i`) != 2 {
+		return errors.New("actionlint step must define exactly two env -i helpers")
+	}
+	for _, exact := range []struct {
+		text  string
+		count int
+	}{
+		{`run_clean_go env GOVERSION`, 1},
+		{`run_clean_go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`, 1},
+		{`run_clean_actionlint -version`, 1},
+		{`run_clean_actionlint -help`, 1},
+		{`revalidate_build_tools`, 3},
+		{`revalidate_actionlint`, 4},
+	} {
+		if strings.Count(actionlintStep, exact.text) != exact.count {
+			return fmt.Errorf("actionlint step %q count = %d, want %d", exact.text, strings.Count(actionlintStep, exact.text), exact.count)
+		}
+	}
+	goHelperStart := strings.Index(actionlintStep, "run_clean_go() {")
+	actionlintHelperStart := strings.Index(actionlintStep, "run_clean_actionlint() {")
+	if goHelperStart < 0 || actionlintHelperStart < 0 || actionlintHelperStart <= goHelperStart {
+		return errors.New("actionlint clean helper boundaries are missing")
+	}
+	goHelper := actionlintStep[goHelperStart:actionlintHelperStart]
+	goNames, err := isolatedInvocationEnvironmentNames(goHelper, `"${GO_BIN}" "$@"`)
+	if err != nil {
+		return fmt.Errorf("clean Go helper: %w", err)
+	}
+	wantGoNames := []string{"CGO_ENABLED", "GOBIN", "GOCACHE", "GOENV", "GOFLAGS", "GOINSECURE", "GOMODCACHE", "GONOPROXY", "GONOSUMDB", "GOPATH", "GOPRIVATE", "GOPROXY", "GOSUMDB", "GOTOOLCHAIN", "GOWORK", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ", "XDG_CONFIG_HOME"}
+	if !reflect.DeepEqual(goNames, wantGoNames) {
+		return fmt.Errorf("clean Go environment names = %v, want %v", goNames, wantGoNames)
+	}
+	actionlintHelper := actionlintStep[actionlintHelperStart:]
+	runtimeNames, err := isolatedInvocationEnvironmentNames(actionlintHelper, `"${ACTIONLINT_BIN}" "$@"`)
+	if err != nil {
+		return fmt.Errorf("clean actionlint helper: %w", err)
+	}
+	wantRuntimeNames := []string{"HOME", "LANG", "LC_ALL", "TMPDIR", "TZ", "XDG_CONFIG_HOME"}
+	if !reflect.DeepEqual(runtimeNames, wantRuntimeNames) {
+		return fmt.Errorf("clean actionlint environment names = %v, want %v", runtimeNames, wantRuntimeNames)
+	}
+	return nil
+}
+
+func isolatedInvocationEnvironmentNames(helper, executableLine string) ([]string, error) {
+	start := strings.Index(helper, `"${ENV_BIN}" -i`)
+	end := strings.Index(helper, executableLine)
+	if start < 0 || end < 0 || end <= start {
+		return nil, errors.New("missing absolute env -i or executable boundary")
+	}
+	matches := regexp.MustCompile(`\b([A-Z][A-Z0-9_]*)=`).FindAllStringSubmatch(helper[start:end], -1)
+	names := make([]string, 0, len(matches))
+	seen := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		if _, duplicate := seen[match[1]]; duplicate {
+			return nil, fmt.Errorf("duplicate environment name %s", match[1])
+		}
+		seen[match[1]] = struct{}{}
+		names = append(names, match[1])
+	}
+	slices.Sort(names)
+	return names, nil
+}
+
 func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 	workflow := string(readRepositoryFile(t, ".github/workflows/ci.yml"))
 	if err := validateSDKCIWorkflowContract(workflow); err != nil {
@@ -1978,6 +2110,13 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		name   string
 		mutate func(string) string
 	}{
+		{name: "actionlint missing env isolation", mutate: replaceCIOnce(`            "${ENV_BIN}" -i \`, `            "${ENV_BIN}" \`)},
+		{name: "actionlint Go child receives PATH", mutate: replaceCIOnce(`              HOME="${ACTIONLINT_ROOT}/home" \`, "              PATH=/usr/bin \\\n"+`              HOME="${ACTIONLINT_ROOT}/home" \`)},
+		{name: "actionlint Go policy omitted", mutate: replaceCIOnce(" GOINSECURE= GOENV=off GOFLAGS= GOWORK=off CGO_ENABLED=0 \\\n", " GOINSECURE= GOFLAGS= GOWORK=off CGO_ENABLED=0 \\\n")},
+		{name: "actionlint Go child extra environment", mutate: replaceCIOnce(" GOINSECURE= GOENV=off GOFLAGS= GOWORK=off CGO_ENABLED=0 \\\n", " GOINSECURE= GOENV=off GOFLAGS= GOWORK=off CGO_ENABLED=0 ATTACKER=value \\\n")},
+		{name: "actionlint uses relative Go", mutate: replaceCIOnce(`              "${GO_BIN}" "$@"`, `              go "$@"`)},
+		{name: "actionlint runtime receives Go variable", mutate: replaceCIOnce("          run_clean_actionlint() {\n            \"${ENV_BIN}\" -i \\\n              HOME=\"${ACTIONLINT_ROOT}/home\" \\\n", "          run_clean_actionlint() {\n            \"${ENV_BIN}\" -i \\\n              GOFLAGS=attacker \\\n              HOME=\"${ACTIONLINT_ROOT}/home\" \\\n")},
+		{name: "actionlint build identity revalidation omitted", mutate: replaceCIOnce("          revalidate_build_tools\n          test \"$(run_clean_go env GOVERSION)\" = go1.26.5\n", "          test \"$(run_clean_go env GOVERSION)\" = go1.26.5\n")},
 		{name: "missing workflow_call trigger", mutate: replaceCIOnce("  workflow_call:\n", "")},
 		{name: "extra trigger", mutate: replaceCIOnce("  workflow_call:\n", "  workflow_call:\n  schedule:\n")},
 		{name: "workflow_call inputs", mutate: replaceCIOnce("  workflow_call:\n", "  workflow_call:\n    inputs:\n")},
@@ -2035,8 +2174,8 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		{
 			name: "duplicate step uses field",
 			mutate: replaceCIOnce(
-				"      - uses: actions/checkout@v7\n",
-				"      - uses: actions/checkout@v7\n        uses: attacker/action@deadbeef\n",
+				"      - uses: "+checkoutAction+"\n",
+				"      - uses: "+checkoutAction+"\n        uses: attacker/action@deadbeef\n",
 			),
 		},
 		{
@@ -2064,7 +2203,7 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			name: "setup-go moved out of Linux with decoys",
 			mutate: func(document string) string {
 				linuxSetup := strings.Join([]string{
-					"      - uses: actions/setup-go@v7",
+					"      - uses: " + setupGoAction,
 					"        with:",
 					"          go-version-file: .go-version",
 					"          cache: true",
@@ -2072,7 +2211,7 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 				linuxDecoy := strings.Join([]string{
 					"      - name: No Go setup",
 					"        run: |",
-					"          # actions/setup-go@v7",
+					"          # " + setupGoAction,
 					"          # go-version-file: .go-version",
 					"          # cache: true",
 					"          true",
@@ -2114,14 +2253,14 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		{
 			name: "wrong setup-python action",
 			mutate: replaceCIOnce(
-				"actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+				setupPythonAction,
 				"actions/setup-python@v6",
 			),
 		},
 		{
 			name: "wrong setup-node action",
 			mutate: replaceCIOnce(
-				"actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+				setupNodeAction,
 				"actions/setup-node@v6",
 			),
 		},
@@ -2317,8 +2456,8 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		{
 			name: "step field after step-indented comment",
 			mutate: replaceCIOnce(
-				"      - uses: actions/checkout@v7\n",
-				"      - uses: actions/checkout@v7\n        # parser boundary\n        continue-on-error: true\n",
+				"      - uses: "+checkoutAction+"\n",
+				"      - uses: "+checkoutAction+"\n        # parser boundary\n        continue-on-error: true\n",
 			),
 		},
 		{
@@ -2393,6 +2532,18 @@ func validateSDKCIWorkflowContract(workflow string) error {
 		if parseErr != nil {
 			return fmt.Errorf("job %s steps: %w", name, parseErr)
 		}
+		if name == "lint" {
+			if parseErr = validateCIActionlintStep(job); parseErr != nil {
+				return fmt.Errorf("job %s actionlint: %w", name, parseErr)
+			}
+			filtered := make([]string, 0, len(steps)-1)
+			for _, step := range steps {
+				if !strings.HasPrefix(step, "- name: Validate workflow syntax\n") {
+					filtered = append(filtered, step)
+				}
+			}
+			steps = filtered
+		}
 		if !reflect.DeepEqual(steps, contract.steps) {
 			return fmt.Errorf("job %s steps differ from the closed execution contract", name)
 		}
@@ -2423,9 +2574,9 @@ type ciWorkflowJobContract struct {
 }
 
 func expectedCIJobContracts() map[string]ciWorkflowJobContract {
-	checkout := "- uses: actions/checkout@v7"
+	checkout := "- uses: " + checkoutAction
 	setupGo := yamlContractLines(
-		"- uses: actions/setup-go@v7",
+		"- uses: "+setupGoAction,
 		"  with:",
 		"    go-version-file: .go-version",
 		"    cache: true",
@@ -2452,7 +2603,7 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 				),
 				yamlContractLines("- name: Vet", "  run: go vet ./..."),
 				yamlContractLines(
-					"- uses: golangci/golangci-lint-action@v9",
+					"- uses: "+golangciAction,
 					"  with:",
 					"    version: v2.12.2",
 				),
@@ -2550,12 +2701,12 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 				checkout,
 				setupGo,
 				yamlContractLines(
-					"- uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+					"- uses: "+setupPythonAction,
 					"  with:",
 					`    python-version: "3.12"`,
 				),
 				yamlContractLines(
-					"- uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+					"- uses: "+setupNodeAction,
 					"  with:",
 					`    node-version: "24"`,
 				),
@@ -2590,17 +2741,17 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 func expectedCIJobActions() map[string][]string {
 	return map[string][]string{
 		"lint": {
-			"actions/checkout@v7", "actions/setup-go@v7", "golangci/golangci-lint-action@v9",
+			checkoutAction, setupGoAction, golangciAction,
 		},
-		"linux":       {"actions/checkout@v7", "actions/setup-go@v7"},
-		"macos":       {"actions/checkout@v7", "actions/setup-go@v7"},
-		"windows":     {"actions/checkout@v7", "actions/setup-go@v7"},
-		"cross-build": {"actions/checkout@v7", "actions/setup-go@v7"},
+		"linux":       {checkoutAction, setupGoAction},
+		"macos":       {checkoutAction, setupGoAction},
+		"windows":     {checkoutAction, setupGoAction},
+		"cross-build": {checkoutAction, setupGoAction},
 		"sdk-contract": {
-			"actions/checkout@v7",
-			"actions/setup-go@v7",
-			"actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
-			"actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+			checkoutAction,
+			setupGoAction,
+			setupPythonAction,
+			setupNodeAction,
 		},
 	}
 }
@@ -2983,6 +3134,1855 @@ func requireYAMLMatrixTuple(t *testing.T, block, goos, goarch string) {
 		search = start + len(needle)
 	}
 	t.Fatalf("cross-build matrix is missing %s/%s", goos, goarch)
+}
+
+type releaseWorkflowStep struct {
+	Name  string
+	ID    string
+	Uses  string
+	Shell string
+	Run   string
+	With  map[string]string
+	Env   map[string]string
+}
+
+type releaseWorkflowJob struct {
+	Uses        string
+	RunsOn      string
+	Timeout     string
+	Needs       []string
+	Permissions map[string]string
+	Outputs     map[string]string
+	Steps       []releaseWorkflowStep
+}
+
+type releaseWorkflowDocument struct {
+	Root *yaml.Node
+	Jobs map[string]releaseWorkflowJob
+}
+
+func TestReleaseWorkflowContract(t *testing.T) {
+	document := readRepositoryFile(t, ".github/workflows/release.yml")
+	workflow, err := parseClosedReleaseWorkflow(document)
+	if err != nil {
+		t.Fatalf("parse closed release workflow: %v", err)
+	}
+	if err := validateReleaseWorkflowContract(workflow); err != nil {
+		t.Fatalf("release workflow contract: %v", err)
+	}
+}
+
+func TestReleaseWorkflowContractRejectsMutations(t *testing.T) {
+	document := string(readRepositoryFile(t, ".github/workflows/release.yml"))
+	tests := []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{name: "duplicate mapping key", mutate: replaceReleaseOnce("name: Release\n", "name: Release\nname: Shadow\n")},
+		{name: "non-string mapping key", mutate: replaceReleaseOnce("name: Release\n", "1: Release\n")},
+		{name: "anchor", mutate: replaceReleaseOnce("name: Release\n", "name: &release Release\n")},
+		{name: "alias", mutate: replaceReleaseOnce("name: Release\n", "name: &release Release\nshadow: *release\n")},
+		{name: "merge key", mutate: replaceReleaseOnce("concurrency:\n", "defaults: &defaults\n  cancel-in-progress: false\nconcurrency:\n  <<: *defaults\n")},
+		{name: "explicit standard tag", mutate: replaceReleaseOnce("name: Release\n", "name: !!str Release\n")},
+		{name: "explicit custom tag", mutate: replaceReleaseOnce("name: Release\n", "name: !custom Release\n")},
+		{name: "flow map", mutate: replaceReleaseOnce("concurrency:\n  group: release-${{ github.repository }}-${{ github.ref_name }}\n  cancel-in-progress: false\n", "concurrency: {group: release-${{ github.repository }}-${{ github.ref_name }}, cancel-in-progress: false}\n")},
+		{name: "flow list", mutate: replaceReleaseOnce("    needs:\n      - package\n      - asset-verification\n", "    needs: [package, asset-verification]\n")},
+		{name: "multiple documents", mutate: func(value string) string { return value + "\n---\nname: shadow\n" }},
+		{name: "unknown top field", mutate: replaceReleaseOnce("name: Release\n", "name: Release\nunexpected: true\n")},
+		{name: "unknown job field", mutate: replaceReleaseOnce("  package:\n    needs: verify\n", "  package:\n    needs: verify\n    if: always()\n")},
+		{name: "step if", mutate: replaceReleaseOnce("      - name: Validate release metadata\n", "      - name: Validate release metadata\n        if: always()\n")},
+		{name: "step continue on error", mutate: replaceReleaseOnce("      - name: Validate release metadata\n", "      - name: Validate release metadata\n        continue-on-error: true\n")},
+		{name: "unexpected checkout input", mutate: replaceReleaseOnce("          fetch-depth: 0\n", "          fetch-depth: 0\n          sparse-checkout: .\n")},
+		{name: "unexpected metadata env", mutate: replaceReleaseOnce("          EVENT_SHA: ${{ github.sha }}\n", "          EVENT_SHA: ${{ github.sha }}\n          ATTACKER: value\n")},
+		{name: "Syft install missing version ldflag", mutate: replaceReleaseOnce("run_clean_go install -ldflags '-X main.version=1.50.0' github.com/anchore/syft/cmd/syft@v1.50.0", "run_clean_go install github.com/anchore/syft/cmd/syft@v1.50.0")},
+		{name: "Syft install moving module", mutate: replaceReleaseOnce("github.com/anchore/syft/cmd/syft@v1.50.0", "github.com/anchore/syft/cmd/syft@latest")},
+		{name: "Syft Go missing env isolation", mutate: replaceReleaseOnce(`            "${ENV_BIN}" -i \`, `            "${ENV_BIN}" \`)},
+		{name: "Syft Go receives PATH", mutate: replaceReleaseOnce(`              HOME="${tools_root}/home" XDG_CONFIG_HOME="${tools_root}/xdg" \`, "              PATH=/usr/bin \\\n"+`              HOME="${tools_root}/home" XDG_CONFIG_HOME="${tools_root}/xdg" \`)},
+		{name: "Syft runtime relative binary", mutate: replaceReleaseOnce(`              SYFT_CHECK_FOR_APP_UPDATE=false "${SYFT_BIN}" "$@"`, `              SYFT_CHECK_FOR_APP_UPDATE=false syft "$@"`)},
+		{name: "Syft update check enabled", mutate: replaceReleaseOnce("SYFT_CHECK_FOR_APP_UPDATE=false", "SYFT_CHECK_FOR_APP_UPDATE=true")},
+		{name: "Syft compliance altered", mutate: replaceReleaseOnce("SYFT_COMPLIANCE_MISSING_NAME=drop", "SYFT_COMPLIANCE_MISSING_NAME=keep")},
+		{name: "Syft second config channel removed", mutate: replaceReleaseOnce(`            -c "${tools_root}/config/syft.yaml" -o`, `            -o`)},
+		{name: "moving checkout ref", mutate: replaceReleaseOnce(checkoutAction, "actions/checkout@v7")},
+		{name: "unpeeled golangci tag object", mutate: replaceReleaseOnce(attestAction, "actions/attest@d583c34f0599d37dbac4a198b9c83201be380893")},
+		{name: "prior attest commit", mutate: replaceReleaseOnce(attestAction, "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d")},
+		{name: "wrong package permission", mutate: replaceReleaseOnce("      attestations: write\n", "      attestations: read\n")},
+		{name: "wrong publish dependency", mutate: replaceReleaseOnce("      - asset-verification\n", "      - verify\n")},
+		{name: "wrong package timeout", mutate: replaceReleaseOnce("    timeout-minutes: 25\n", "    timeout-minutes: 26\n")},
+		{name: "transitive artifact id", mutate: replaceReleaseOnce("${{ needs.package.outputs.artifact_id }}", "${{ needs.asset-verification.outputs.artifact_id }}")},
+		{name: "name based download", mutate: replaceReleaseOnce("          artifact-ids: ${{ needs.package.outputs.artifact_id }}\n", "          name: release\n")},
+		{name: "runner temp shell expression", mutate: replaceReleaseOnce("cd \"${RUNNER_TEMP}/release-assets\"", "cd \"${{ runner.temp }}/release-assets\"")},
+		{name: "GitHub expression in shell", mutate: replaceReleaseOnce("readonly repository=krkarma777/ai-cli-gateway", "readonly repository=${{ github.repository }}")},
+		{name: "publication edit replaced by comment decoy", mutate: replaceReleaseOnce("          gh release edit \"${TAG}\" --repo \"${repository}\" --draft=false", "          # gh release edit \"${TAG}\" --repo \"${repository}\" --draft=false\n          false")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := test.mutate(document)
+			if mutated == document {
+				t.Fatal("mutation did not change release workflow")
+			}
+			workflow, err := parseClosedReleaseWorkflow([]byte(mutated))
+			if err == nil {
+				err = validateReleaseWorkflowContract(workflow)
+			}
+			if err == nil {
+				t.Fatal("closed release contract accepted mutation")
+			}
+		})
+	}
+}
+
+func replaceReleaseOnce(old, replacement string) func(string) string {
+	return func(document string) string {
+		return strings.Replace(document, old, replacement, 1)
+	}
+}
+
+func TestReleasePublicationScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("decoded release shell fixture requires the supported macOS/Linux packaging hosts")
+	}
+	document := readRepositoryFile(t, ".github/workflows/release.yml")
+	workflow, err := parseClosedReleaseWorkflow(document)
+	if err != nil {
+		t.Fatalf("parse closed release workflow: %v", err)
+	}
+	step, err := namedReleaseStep(workflow.Jobs["publish"].Steps, "Publish verified release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step.Run == "" {
+		t.Fatal("decoded publication run value is empty")
+	}
+	assertBashSyntax(t, "publication", step.Run)
+
+	jqPath, err := exec.LookPath("jq")
+	if err != nil {
+		t.Fatalf("mandatory publication fixture requires jq: %v", err)
+	}
+	shaPath, err := exec.LookPath("sha256sum")
+	if err != nil {
+		t.Fatalf("mandatory publication fixture requires sha256sum: %v", err)
+	}
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test binary: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		fixture    string
+		badDigest  bool
+		wantCreate int
+		wantEdit   int
+		wantMarker string
+		wantOK     bool
+	}{
+		{name: "lightweight success", fixture: "lightweight_success", wantCreate: 1, wantEdit: 1, wantOK: true},
+		{name: "annotated success", fixture: "annotated_success", wantCreate: 1, wantEdit: 1, wantOK: true},
+		{name: "existing release", fixture: "graphql_existing", wantMarker: "release_already_exists"},
+		{name: "GraphQL errors", fixture: "graphql_errors", wantMarker: "release_preflight_invalid"},
+		{name: "GraphQL missing release", fixture: "graphql_missing_release", wantMarker: "release_preflight_invalid"},
+		{name: "GraphQL wrong release type", fixture: "graphql_wrong_release_type", wantMarker: "release_preflight_invalid"},
+		{name: "GraphQL empty id", fixture: "graphql_empty_id", wantMarker: "release_preflight_invalid"},
+		{name: "GraphQL malformed JSON", fixture: "graphql_malformed", wantMarker: "release_preflight_invalid"},
+		{name: "GraphQL CLI failure", fixture: "graphql_gh_fail", wantMarker: "release_preflight_invalid"},
+		{name: "checksum mismatch", fixture: "lightweight_success", badDigest: true},
+	}
+	for _, phase := range []int{1, 2} {
+		wantCreate := 0
+		if phase == 2 {
+			wantCreate = 1
+		}
+		for _, failure := range []string{"gh_fail", "malformed", "missing_ref", "wrong_ref", "missing_object", "wrong_object_type", "wrong_object_sha"} {
+			tests = append(tests, struct {
+				name       string
+				fixture    string
+				badDigest  bool
+				wantCreate int
+				wantEdit   int
+				wantMarker string
+				wantOK     bool
+			}{name: fmt.Sprintf("ref phase %d %s", phase, failure), fixture: fmt.Sprintf("ref_p%d_%s", phase, failure), wantCreate: wantCreate})
+		}
+		for _, failure := range []string{"gh_fail", "malformed", "missing_top_sha", "wrong_top_sha", "missing_target", "wrong_target_type", "wrong_target_sha", "requested_sha_mismatch", "nested_tag"} {
+			tests = append(tests, struct {
+				name       string
+				fixture    string
+				badDigest  bool
+				wantCreate int
+				wantEdit   int
+				wantMarker string
+				wantOK     bool
+			}{name: fmt.Sprintf("annotated phase %d %s", phase, failure), fixture: fmt.Sprintf("tag_p%d_%s", phase, failure), wantCreate: wantCreate})
+		}
+		tests = append(tests, struct {
+			name       string
+			fixture    string
+			badDigest  bool
+			wantCreate int
+			wantEdit   int
+			wantMarker string
+			wantOK     bool
+		}{name: fmt.Sprintf("commit mismatch phase %d", phase), fixture: fmt.Sprintf("commit_p%d_mismatch", phase), wantCreate: wantCreate})
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			binRoot := filepath.Join(root, "bin")
+			assetsRoot := filepath.Join(root, "release-assets")
+			if err := os.MkdirAll(binRoot, 0o700); err != nil {
+				t.Fatalf("create fake bin: %v", err)
+			}
+			if err := os.MkdirAll(assetsRoot, 0o700); err != nil {
+				t.Fatalf("create assets: %v", err)
+			}
+			wrapper := "#!/bin/sh\nexec \"${SPAWNGATE_TEST_BINARY}\" -test.run '^TestReleasePublicationFakeGH$' -- \"$@\"\n"
+			writeFixtureFile(t, binRoot, "gh", []byte(wrapper))
+			if err := os.Chmod(filepath.Join(binRoot, "gh"), 0o700); err != nil { //nolint:gosec // Test-only fixture must be executable.
+				t.Fatalf("chmod fake gh: %v", err)
+			}
+			linkFixtureTool(t, binRoot, "jq", jqPath)
+			shaWrapper := "#!/bin/sh\n{ printf 'sha256sum\\0'; for argument in \"$@\"; do printf '%s\\0' \"${argument}\"; done; printf '\\0'; } >> \"${GH_EVENT_LOG}\"\nexec \"${REAL_SHA256SUM}\" \"$@\"\n"
+			writeFixtureFile(t, binRoot, "sha256sum", []byte(shaWrapper))
+			if err := os.Chmod(filepath.Join(binRoot, "sha256sum"), 0o700); err != nil { //nolint:gosec // Test-only fixture must be executable.
+				t.Fatalf("chmod sha256sum wrapper: %v", err)
+			}
+			writeReleasePublicationAssets(t, assetsRoot, test.badDigest)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, "/bin/bash", "-c", step.Run) //nolint:gosec // Executes the repository-owned decoded release script in a closed fake-GitHub fixture.
+			command.Dir = root
+			command.Env = []string{
+				"PATH=" + binRoot + ":/usr/bin:/bin",
+				"GH_TOKEN=fixture-token",
+				"TAG=v0.1.0",
+				"VERSION=0.1.0",
+				"TAG_COMMIT=" + strings.Repeat("a", 40),
+				"RUNNER_TEMP=" + root,
+				"GH_FIXTURE=" + test.fixture,
+				"GH_LOG=" + filepath.Join(root, "gh.log"),
+				"GH_EVENT_LOG=" + filepath.Join(root, "events.log"),
+				"GH_REF_COUNT=" + filepath.Join(root, "ref.count"),
+				"GH_TAG_COUNT=" + filepath.Join(root, "tag.count"),
+				"REAL_SHA256SUM=" + shaPath,
+				"SPAWNGATE_TEST_BINARY=" + testBinary,
+			}
+			output, runErr := command.CombinedOutput()
+			if test.wantOK && runErr != nil {
+				t.Fatalf("publication failed: %v: %s", runErr, output)
+			}
+			if !test.wantOK && runErr == nil {
+				t.Fatalf("publication succeeded unexpectedly: %s", output)
+			}
+			if test.wantMarker != "" && strings.TrimSpace(string(output)) != test.wantMarker {
+				t.Fatalf("output = %q, want only %q", output, test.wantMarker)
+			}
+			calls := readFakeGHCalls(t, filepath.Join(root, "gh.log"))
+			createCount, editCount := 0, 0
+			for _, call := range calls {
+				if len(call) >= 2 && call[0] == "release" && call[1] == "create" && !slicesContain(call, "--help") {
+					createCount++
+				}
+				if len(call) >= 2 && call[0] == "release" && call[1] == "edit" && !slicesContain(call, "--help") {
+					editCount++
+				}
+			}
+			if createCount != test.wantCreate || editCount != test.wantEdit {
+				t.Fatalf("mutations create=%d edit=%d, want create=%d edit=%d; calls=%q", createCount, editCount, test.wantCreate, test.wantEdit, calls)
+			}
+			if test.wantOK {
+				assertSuccessfulPublicationTrace(t, root, test.fixture, calls)
+			}
+		})
+	}
+}
+
+func TestReleasePublicationFakeGH(_ *testing.T) {
+	if os.Getenv("GH_FIXTURE") == "" {
+		return
+	}
+	args := os.Args
+	separator := -1
+	for index, arg := range args {
+		if arg == "--" {
+			separator = index
+			break
+		}
+	}
+	if separator < 0 {
+		os.Exit(90)
+	}
+	os.Exit(runReleasePublicationFakeGH(args[separator+1:]))
+}
+
+func TestWorkflowActionlintIsolationScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("decoded actionlint shell fixture requires macOS or Linux")
+	}
+	document := readRepositoryFile(t, ".github/workflows/ci.yml")
+	script, err := decodedWorkflowStepRun(document, "lint", "Validate workflow syntax")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBashSyntax(t, "actionlint", script)
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test binary: %v", err)
+	}
+	root := secureExternalFixtureRoot(t, "spawngate-actionlint-fixture-")
+	binRoot := filepath.Join(root, "fixture-bin")
+	if err := os.Mkdir(binRoot, 0o700); err != nil {
+		t.Fatalf("create fixture bin: %v", err)
+	}
+	writeCleanToolWrapper(t, filepath.Join(binRoot, "go"), testBinary, "actionlint-go", cleanGoEnvironmentNames())
+	writePortableStatWrapper(t, filepath.Join(binRoot, "stat"))
+	poisonMarker := filepath.Join(root, "poison-ran")
+	poisonHelper := filepath.Join(root, "poison-helper")
+	writeFixtureFile(t, root, "poison-helper", []byte("#!/bin/sh\n: > \""+poisonMarker+"\"\nexit 97\n"))
+	if err := os.Chmod(poisonHelper, 0o700); err != nil { //nolint:gosec // Test-only failing helper must be executable.
+		t.Fatalf("chmod poison helper: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "/bin/bash", "-c", script) //nolint:gosec // Executes the decoded repository-owned CI shell with fixed fake tools.
+	command.Dir = repositoryRootForTest(t)
+	command.Env = poisonedToolParentEnvironment(root, binRoot, poisonHelper)
+	if output, runErr := command.CombinedOutput(); runErr != nil {
+		t.Fatalf("decoded actionlint shell: %v: %s", runErr, output)
+	}
+	if _, err := os.Stat(poisonMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("poisoned GOFLAGS helper was observed: %v", err)
+	}
+	actionlintRoot := filepath.Join(root, "actionlint-tools")
+	wantGo := cleanGoEnvironment(actionlintRoot)
+	assertExactEnvironmentRecords(t, filepath.Join(actionlintRoot, "actionlint-go.env"), 2, wantGo)
+	wantRuntime := cleanActionlintEnvironment(actionlintRoot)
+	assertExactEnvironmentRecords(t, filepath.Join(actionlintRoot, "actionlint.env"), 3, wantRuntime)
+}
+
+func TestReleaseSyftIsolationScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("decoded Syft shell fixture requires the supported macOS/Linux packaging hosts")
+	}
+	document := readRepositoryFile(t, ".github/workflows/release.yml")
+	workflow, err := parseClosedReleaseWorkflow(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := namedReleaseStep(workflow.Jobs["package"].Steps, "Generate SBOM and checksums")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBashSyntax(t, "Syft", step.Run)
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test binary: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mode   string
+		wantOK bool
+	}{
+		{name: "closed environments", mode: "syft-go", wantOK: true},
+		{name: "wrong command path", mode: "syft-go-wrong-path"},
+		{name: "wrong module version", mode: "syft-go-wrong-module"},
+		{name: "missing module checksum", mode: "syft-go-missing-checksum"},
+		{name: "wrong build setting", mode: "syft-go-wrong-build-setting"},
+		{name: "wrong reported version", mode: "syft-go-wrong-version"},
+		{name: "wrong SPDX creator", mode: "syft-go-wrong-creator"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := secureExternalFixtureRoot(t, "spawngate-syft-fixture-")
+			binRoot := filepath.Join(root, "fixture-bin")
+			if err := os.Mkdir(binRoot, 0o700); err != nil {
+				t.Fatalf("create fixture bin: %v", err)
+			}
+			writeCleanToolWrapper(t, filepath.Join(binRoot, "go"), testBinary, test.mode, cleanGoEnvironmentNames())
+			writePortableStatWrapper(t, filepath.Join(binRoot, "stat"))
+			if err := os.Mkdir(filepath.Join(root, "release-staging"), 0o700); err != nil {
+				t.Fatalf("create staging: %v", err)
+			}
+			if err := os.Mkdir(filepath.Join(root, "release-assets"), 0o700); err != nil {
+				t.Fatalf("create assets: %v", err)
+			}
+			writeFakeReleasepack(t, filepath.Join(root, "releasepack"))
+			poisonMarker := filepath.Join(root, "poison-ran")
+			poisonHelper := filepath.Join(root, "poison-helper")
+			writeFixtureFile(t, root, "poison-helper", []byte("#!/bin/sh\n: > \""+poisonMarker+"\"\nexit 97\n"))
+			if err := os.Chmod(poisonHelper, 0o700); err != nil { //nolint:gosec // Test-only failing helper must be executable.
+				t.Fatalf("chmod poison helper: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, "/bin/bash", "-c", step.Run) //nolint:gosec // Executes the decoded repository-owned Syft shell with fixed fake tools.
+			command.Dir = repositoryRootForTest(t)
+			command.Env = append(poisonedToolParentEnvironment(root, binRoot, poisonHelper),
+				"TAG=v0.1.0", "VERSION=0.1.0", "SOURCE_EPOCH=1785805793", "GITHUB_WORKSPACE="+repositoryRootForTest(t))
+			output, runErr := command.CombinedOutput()
+			if test.wantOK && runErr != nil {
+				t.Fatalf("decoded Syft shell: %v: %s", runErr, output)
+			}
+			if !test.wantOK && runErr == nil {
+				t.Fatalf("decoded Syft shell accepted %s", test.mode)
+			}
+			if _, err := os.Stat(poisonMarker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("poisoned GOFLAGS helper was observed: %v", err)
+			}
+			if test.wantOK {
+				toolsRoot := filepath.Join(root, "release-tools")
+				assertExactEnvironmentRecords(t, filepath.Join(toolsRoot, "syft-go.env"), 3, cleanGoEnvironment(toolsRoot))
+				base := cleanSyftEnvironment(toolsRoot, false)
+				scan := cleanSyftEnvironment(toolsRoot, true)
+				records := readEnvironmentRecords(t, filepath.Join(toolsRoot, "syft.env"))
+				if len(records) != 5 {
+					t.Fatalf("Syft environment records = %d, want 5", len(records))
+				}
+				for index := 0; index < 4; index++ {
+					if !reflect.DeepEqual(records[index], base) {
+						t.Fatalf("Syft runtime env %d = %v, want %v", index, records[index], base)
+					}
+				}
+				if !reflect.DeepEqual(records[4], scan) {
+					t.Fatalf("Syft scan env = %v, want %v", records[4], scan)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkflowToolFake(_ *testing.T) {
+	args := argumentsAfterDoubleDash(os.Args)
+	if len(args) < 4 || args[0] != "--mode" || args[2] != "--test-binary" {
+		return
+	}
+	mode, testBinary, toolArgs := args[1], args[3], args[4:]
+	os.Exit(runWorkflowToolFake(mode, testBinary, toolArgs))
+}
+
+func runWorkflowToolFake(mode, testBinary string, args []string) int {
+	if strings.HasPrefix(mode, "actionlint-go") || strings.HasPrefix(mode, "syft-go") {
+		root := filepath.Dir(os.Getenv("GOPATH"))
+		logName := "actionlint-go.env"
+		if strings.HasPrefix(mode, "syft-go") {
+			logName = "syft-go.env"
+		}
+		if err := appendEnvironmentRecord(filepath.Join(root, logName)); err != nil {
+			return 81
+		}
+		if reflect.DeepEqual(args, []string{"env", "GOVERSION"}) {
+			fmt.Println("go1.26.5")
+			return 0
+		}
+		if len(args) >= 2 && args[0] == "install" {
+			tool := "actionlint"
+			installedMode := "actionlint"
+			environment := cleanActionlintEnvironmentNames()
+			if strings.HasPrefix(mode, "syft-go") {
+				tool = "syft"
+				installedMode = strings.TrimPrefix(mode, "syft-go")
+				installedMode = "syft" + installedMode
+				environment = cleanSyftEnvironmentNames()
+			}
+			if err := writeCleanToolWrapperFile(filepath.Join(os.Getenv("GOBIN"), tool), testBinary, installedMode, environment); err != nil {
+				return 82
+			}
+			return 0
+		}
+		if len(args) == 3 && args[0] == "version" && args[1] == "-m" && strings.HasPrefix(mode, "syft-go") {
+			path := "github.com/anchore/syft/cmd/syft"
+			moduleVersion := "v1.50.0"
+			checksum := "h1:fixture"
+			buildSetting := "-X main.version=1.50.0"
+			switch mode {
+			case "syft-go-wrong-path":
+				path = "example.invalid/syft"
+			case "syft-go-wrong-module":
+				moduleVersion = "v1.49.0"
+			case "syft-go-missing-checksum":
+				checksum = ""
+			case "syft-go-wrong-build-setting":
+				buildSetting = "-X main.version=1.49.0"
+			}
+			fmt.Printf("%s: go1.26.5\n\tpath\t%s\n\tmod\tgithub.com/anchore/syft\t%s\t%s\n\tbuild\t-ldflags=\"%s\"\n", args[2], path, moduleVersion, checksum, buildSetting)
+			return 0
+		}
+		return 2
+	}
+	if mode == "actionlint" {
+		root := filepath.Dir(os.Getenv("HOME"))
+		if err := appendEnvironmentRecord(filepath.Join(root, "actionlint.env")); err != nil {
+			return 83
+		}
+		if reflect.DeepEqual(args, []string{"-version"}) {
+			fmt.Println("v1.7.12")
+			return 0
+		}
+		if reflect.DeepEqual(args, []string{"-help"}) {
+			fmt.Println("-config-file -shellcheck -pyflakes -no-color")
+			return 0
+		}
+		return 0
+	}
+	if strings.HasPrefix(mode, "syft") {
+		root := filepath.Dir(os.Getenv("HOME"))
+		if err := appendEnvironmentRecord(filepath.Join(root, "syft.env")); err != nil {
+			return 84
+		}
+		if reflect.DeepEqual(args, []string{"version"}) {
+			version := "1.50.0"
+			if mode == "syft-wrong-version" {
+				version = "1.49.0"
+			}
+			fmt.Println("Version: " + version)
+			return 0
+		}
+		if len(args) > 0 && args[0] == "scan" && !slicesContain(args, "--help") {
+			creator := "syft-1.50.0"
+			if mode == "syft-wrong-creator" {
+				creator = "syft-1.49.0"
+			}
+			for _, argument := range args {
+				if strings.HasPrefix(argument, "spdx-json=") {
+					if err := os.WriteFile(strings.TrimPrefix(argument, "spdx-json="), []byte(`{"creator":"`+creator+`"}`), 0o600); err != nil { //nolint:gosec // Fixed fake-tool argv supplies a private fixture output path.
+						return 85
+					}
+				}
+			}
+		}
+		return 0
+	}
+	return 2
+}
+
+func decodedWorkflowStepRun(document []byte, jobName, stepName string) (string, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(document))
+	var root yaml.Node
+	if err := decoder.Decode(&root); err != nil {
+		return "", err
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return "", errors.New("workflow contains more than one YAML document")
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) != 1 {
+		return "", errors.New("workflow is not one document")
+	}
+	if err := validateClosedYAMLNode(&root); err != nil {
+		return "", err
+	}
+	jobs, err := yamlMappingValue(root.Content[0], "jobs")
+	if err != nil {
+		return "", err
+	}
+	job, err := yamlMappingValue(jobs, jobName)
+	if err != nil {
+		return "", err
+	}
+	steps, err := yamlMappingValue(job, "steps")
+	if err != nil || steps.Kind != yaml.SequenceNode {
+		return "", fmt.Errorf("job %s steps: %w", jobName, err)
+	}
+	matched := ""
+	count := 0
+	for _, step := range steps.Content {
+		nameNode, nameErr := yamlMappingValue(step, "name")
+		if nameErr != nil || nameNode.Value != stepName {
+			continue
+		}
+		runNode, runErr := yamlMappingValue(step, "run")
+		if runErr != nil || runNode.Kind != yaml.ScalarNode {
+			return "", fmt.Errorf("step %s run: %w", stepName, runErr)
+		}
+		matched = runNode.Value
+		count++
+	}
+	if count != 1 {
+		return "", fmt.Errorf("decoded step %q count = %d", stepName, count)
+	}
+	return matched, nil
+}
+
+func yamlMappingValue(node *yaml.Node, key string) (*yaml.Node, error) {
+	if node == nil || node.Kind != yaml.MappingNode || len(node.Content)%2 != 0 {
+		return nil, errors.New("expected mapping")
+	}
+	for index := 0; index < len(node.Content); index += 2 {
+		if node.Content[index].Value == key {
+			return node.Content[index+1], nil
+		}
+	}
+	return nil, fmt.Errorf("missing key %q", key)
+}
+
+func assertBashSyntax(t *testing.T, name, script string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "/bin/bash", "-n") //nolint:gosec // Fixed shell validates decoded repository-owned source.
+	command.Stdin = strings.NewReader(script)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("%s bash -n: %v: %s", name, err, output)
+	}
+}
+
+func secureExternalFixtureRoot(t *testing.T, prefix string) string {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize external fixture base: %v", err)
+	}
+	root, err := os.MkdirTemp(base, prefix)
+	if err != nil {
+		t.Fatalf("create external fixture root: %v", err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil { //nolint:gosec // This is a private fixture directory, not a data file.
+		t.Fatalf("chmod external fixture root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove external fixture root: %v", err)
+		}
+	})
+	return root
+}
+
+func repositoryRootForTest(t *testing.T) string {
+	t.Helper()
+	root, err := repositoryScanRoot("")
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
+	return root
+}
+
+func poisonedToolParentEnvironment(root, binRoot, poisonHelper string) []string {
+	return []string{
+		"PATH=" + binRoot + ":/usr/bin:/bin",
+		"RUNNER_TEMP=" + root,
+		"HOME=" + filepath.Join(root, "attacker-home"),
+		"XDG_CONFIG_HOME=" + filepath.Join(root, "attacker-xdg"),
+		"TMPDIR=" + filepath.Join(root, "attacker-tmp"),
+		"GOBIN=" + filepath.Join(root, "attacker-bin"),
+		"GOPATH=" + filepath.Join(root, "attacker-gopath"),
+		"GOMODCACHE=" + filepath.Join(root, "attacker-modcache"),
+		"GOCACHE=" + filepath.Join(root, "attacker-gocache"),
+		"GOTOOLCHAIN=auto",
+		"GOPROXY=https://attacker.invalid",
+		"GOSUMDB=off",
+		"GOPRIVATE=*",
+		"GONOPROXY=*",
+		"GONOSUMDB=*",
+		"GOINSECURE=*",
+		"GOENV=" + filepath.Join(root, "attacker-goenv"),
+		"GOFLAGS=-toolexec=" + poisonHelper,
+		"GOWORK=" + filepath.Join(root, "attacker.work"),
+		"CGO_ENABLED=1",
+		"LANG=attacker",
+		"LC_ALL=attacker",
+		"TZ=Pacific/Honolulu",
+		"SYFT_CONFIG=" + filepath.Join(root, "attacker-syft.yaml"),
+		"SYFT_CHECK_FOR_APP_UPDATE=true",
+		"SYFT_SCOPE=all-layers",
+	}
+}
+
+func cleanGoEnvironmentNames() []string {
+	return []string{"HOME", "XDG_CONFIG_HOME", "GOBIN", "GOPATH", "GOMODCACHE", "GOCACHE", "TMPDIR", "GOTOOLCHAIN", "GOPROXY", "GOSUMDB", "GOPRIVATE", "GONOPROXY", "GONOSUMDB", "GOINSECURE", "GOENV", "GOFLAGS", "GOWORK", "CGO_ENABLED", "LANG", "LC_ALL", "TZ"}
+}
+
+func cleanActionlintEnvironmentNames() []string {
+	return []string{"HOME", "XDG_CONFIG_HOME", "TMPDIR", "LANG", "LC_ALL", "TZ"}
+}
+
+func cleanSyftEnvironmentNames() []string {
+	return []string{"HOME", "XDG_CONFIG_HOME", "TMPDIR", "LANG", "LC_ALL", "TZ", "SYFT_CONFIG", "SYFT_CHECK_FOR_APP_UPDATE"}
+}
+
+func writeCleanToolWrapper(t *testing.T, path, testBinary, mode string, environment []string) {
+	t.Helper()
+	if err := writeCleanToolWrapperFile(path, testBinary, mode, environment); err != nil {
+		t.Fatalf("write %s wrapper: %v", mode, err)
+	}
+}
+
+func writeCleanToolWrapperFile(path, testBinary, mode string, environment []string) error {
+	buildExec := func(names []string) string {
+		var builder strings.Builder
+		builder.WriteString("exec /usr/bin/env -i \\\n")
+		for _, name := range names {
+			fmt.Fprintf(&builder, "  %s=\"${%s}\" \\\n", name, name)
+		}
+		fmt.Fprintf(&builder, "  %s -test.run '^TestWorkflowToolFake$' -- --mode %s --test-binary %s \"$@\"\n", shellSingleQuote(testBinary), shellSingleQuote(mode), shellSingleQuote(testBinary))
+		return builder.String()
+	}
+	var script strings.Builder
+	script.WriteString("#!/bin/sh\nset -eu\n")
+	if strings.HasPrefix(mode, "syft") && !strings.HasPrefix(mode, "syft-go") {
+		script.WriteString("if test \"${SYFT_COMPLIANCE_MISSING_NAME+x}\" = x || test \"${SYFT_COMPLIANCE_MISSING_VERSION+x}\" = x; then\n")
+		names := append(append([]string{}, environment...), "SYFT_COMPLIANCE_MISSING_NAME", "SYFT_COMPLIANCE_MISSING_VERSION")
+		script.WriteString(buildExec(names))
+		script.WriteString("fi\n")
+	}
+	script.WriteString(buildExec(environment))
+	if err := os.WriteFile(path, []byte(script.String()), 0o600); err != nil { //nolint:gosec // Caller supplies a private fixture path beneath a retained root.
+		return err
+	}
+	return os.Chmod(path, 0o700) //nolint:gosec // Test-only fixture must be executable.
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func writePortableStatWrapper(t *testing.T, path string) {
+	t.Helper()
+	script := `#!/bin/sh
+set -eu
+if test "$(uname -s)" = Darwin; then
+  test "$1" = -c
+  format="$2"
+  shift 2
+  if test "${1:-}" = --; then shift; fi
+  case "${format}" in
+    %u) exec /usr/bin/stat -f '%u' "$1" ;;
+    %a) exec /usr/bin/stat -f '%Lp' "$1" ;;
+    %d:%i) exec /usr/bin/stat -f '%d:%i' "$1" ;;
+    *) exit 2 ;;
+  esac
+fi
+exec /usr/bin/stat "$@"
+`
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil { //nolint:gosec // Caller supplies a private fixture path beneath a retained root.
+		t.Fatalf("write portable stat: %v", err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil { //nolint:gosec // Test-only fixture must be executable.
+		t.Fatalf("chmod portable stat: %v", err)
+	}
+}
+
+func writeFakeReleasepack(t *testing.T, path string) {
+	t.Helper()
+	script := `#!/bin/sh
+set -eu
+case "${1:-}" in
+  sbom)
+    shift
+    raw=
+    while test "$#" -gt 0; do
+      if test "$1" = --raw-sbom; then raw="$2"; shift 2; continue; fi
+      shift
+    done
+    test -n "${raw}"
+    grep -F '"creator":"syft-1.50.0"' "${raw}" >/dev/null
+    ;;
+  checksums) ;;
+  *) exit 2 ;;
+esac
+`
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil { //nolint:gosec // Caller supplies a private fixture path beneath a retained root.
+		t.Fatalf("write fake releasepack: %v", err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil { //nolint:gosec // Test-only fixture must be executable.
+		t.Fatalf("chmod fake releasepack: %v", err)
+	}
+}
+
+func argumentsAfterDoubleDash(args []string) []string {
+	for index, arg := range args {
+		if arg == "--" {
+			return args[index+1:]
+		}
+	}
+	return nil
+}
+
+func appendEnvironmentRecord(path string) error {
+	environment := append([]string(nil), os.Environ()...)
+	slices.Sort(environment)
+	return appendFakeGHCall(path, environment)
+}
+
+func readEnvironmentRecords(t *testing.T, path string) []map[string]string {
+	t.Helper()
+	records := readFakeGHCalls(t, path)
+	result := make([]map[string]string, 0, len(records))
+	for _, record := range records {
+		values := make(map[string]string, len(record))
+		for _, entry := range record {
+			separator := strings.IndexByte(entry, '=')
+			if separator < 1 {
+				t.Fatalf("invalid environment entry %q", entry)
+			}
+			values[entry[:separator]] = entry[separator+1:]
+		}
+		result = append(result, values)
+	}
+	return result
+}
+
+func assertExactEnvironmentRecords(t *testing.T, path string, count int, want map[string]string) {
+	t.Helper()
+	records := readEnvironmentRecords(t, path)
+	if len(records) != count {
+		t.Fatalf("environment records in %s = %d, want %d", filepath.Base(path), len(records), count)
+	}
+	for index, got := range records {
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("environment record %d = %v, want %v", index, got, want)
+		}
+	}
+}
+
+func cleanGoEnvironment(root string) map[string]string {
+	return map[string]string{
+		"HOME": filepath.Join(root, "home"), "XDG_CONFIG_HOME": filepath.Join(root, "xdg"),
+		"GOBIN": filepath.Join(root, "bin"), "GOPATH": filepath.Join(root, "gopath"),
+		"GOMODCACHE": filepath.Join(root, "gomodcache"), "GOCACHE": filepath.Join(root, "gocache"),
+		"TMPDIR": filepath.Join(root, "tmp"), "GOTOOLCHAIN": "local", "GOPROXY": "https://proxy.golang.org",
+		"GOSUMDB": "sum.golang.org", "GOPRIVATE": "", "GONOPROXY": "", "GONOSUMDB": "", "GOINSECURE": "",
+		"GOENV": "off", "GOFLAGS": "", "GOWORK": "off", "CGO_ENABLED": "0", "LANG": "C", "LC_ALL": "C", "TZ": "UTC",
+	}
+}
+
+func cleanActionlintEnvironment(root string) map[string]string {
+	return map[string]string{
+		"HOME": filepath.Join(root, "home"), "XDG_CONFIG_HOME": filepath.Join(root, "xdg"),
+		"TMPDIR": filepath.Join(root, "tmp"), "LANG": "C", "LC_ALL": "C", "TZ": "UTC",
+	}
+}
+
+func cleanSyftEnvironment(root string, scan bool) map[string]string {
+	result := map[string]string{
+		"HOME": filepath.Join(root, "home"), "XDG_CONFIG_HOME": filepath.Join(root, "xdg"),
+		"TMPDIR": filepath.Join(root, "tmp"), "LANG": "C", "LC_ALL": "C", "TZ": "UTC",
+		"SYFT_CONFIG": filepath.Join(root, "config", "syft.yaml"), "SYFT_CHECK_FOR_APP_UPDATE": "false",
+	}
+	if scan {
+		result["SYFT_COMPLIANCE_MISSING_NAME"] = "drop"
+		result["SYFT_COMPLIANCE_MISSING_VERSION"] = "stub"
+	}
+	return result
+}
+
+func runReleasePublicationFakeGH(args []string) int {
+	if err := appendFakeGHCall(os.Getenv("GH_LOG"), args); err != nil {
+		return 91
+	}
+	if eventLog := os.Getenv("GH_EVENT_LOG"); eventLog != "" {
+		event := append([]string{"gh"}, args...)
+		if err := appendFakeGHCall(eventLog, event); err != nil {
+			return 91
+		}
+	}
+	if len(args) == 0 {
+		return 2
+	}
+	fixture := os.Getenv("GH_FIXTURE")
+	if args[0] == "--version" || slicesContain(args, "--help") {
+		fmt.Println("gh fixture 2.99.0")
+		return 0
+	}
+	if len(args) >= 2 && args[0] == "api" && args[1] == "graphql" {
+		switch fixture {
+		case "graphql_existing":
+			fmt.Print(`{"data":{"repository":{"release":{"id":"R_1"}}}}`)
+		case "graphql_errors":
+			fmt.Print(`{"errors":[{"message":"fixture"}],"data":{"repository":{"release":null}}}`)
+		case "graphql_missing_release":
+			fmt.Print(`{"data":{"repository":{}}}`)
+		case "graphql_wrong_release_type":
+			fmt.Print(`{"data":{"repository":{"release":[]}}}`)
+		case "graphql_empty_id":
+			fmt.Print(`{"data":{"repository":{"release":{"id":""}}}}`)
+		case "graphql_malformed":
+			fmt.Print(`{"data":`)
+		case "graphql_gh_fail":
+			return 1
+		default:
+			fmt.Print(`{"data":{"repository":{"release":null}}}`)
+		}
+		return 0
+	}
+	if args[0] == "api" {
+		endpoint := args[len(args)-1]
+		if strings.Contains(endpoint, "/git/ref/tags/") {
+			phase, err := incrementFixtureCounter(os.Getenv("GH_REF_COUNT"))
+			if err != nil {
+				return 92
+			}
+			failure := fixtureFailureForPhase(fixture, "ref", phase)
+			switch failure {
+			case "gh_fail":
+				return 1
+			case "malformed":
+				fmt.Print(`{"ref":`)
+			case "missing_ref":
+				fmt.Print(`{"object":{"type":"commit","sha":"` + strings.Repeat("a", 40) + `"}}`)
+			case "wrong_ref":
+				fmt.Print(`{"ref":"refs/tags/v9.9.9","object":{"type":"commit","sha":"` + strings.Repeat("a", 40) + `"}}`)
+			case "missing_object":
+				fmt.Print(`{"ref":"refs/tags/v0.1.0"}`)
+			case "wrong_object_type":
+				fmt.Print(`{"ref":"refs/tags/v0.1.0","object":{"type":"tree","sha":"` + strings.Repeat("a", 40) + `"}}`)
+			case "wrong_object_sha":
+				fmt.Print(`{"ref":"refs/tags/v0.1.0","object":{"type":"commit","sha":"BAD"}}`)
+			default:
+				commit := strings.Repeat("a", 40)
+				if fixture == fmt.Sprintf("commit_p%d_mismatch", phase) {
+					commit = strings.Repeat("c", 40)
+				}
+				if strings.HasPrefix(fixture, "tag_") || fixture == "annotated_success" {
+					fmt.Print(`{"ref":"refs/tags/v0.1.0","object":{"type":"tag","sha":"` + strings.Repeat("b", 40) + `"}}`)
+				} else {
+					fmt.Print(`{"ref":"refs/tags/v0.1.0","object":{"type":"commit","sha":"` + commit + `"}}`)
+				}
+			}
+			return 0
+		}
+		if strings.Contains(endpoint, "/git/tags/") {
+			phase, err := incrementFixtureCounter(os.Getenv("GH_TAG_COUNT"))
+			if err != nil {
+				return 93
+			}
+			failure := fixtureFailureForPhase(fixture, "tag", phase)
+			tagSHA := strings.Repeat("b", 40)
+			commitSHA := strings.Repeat("a", 40)
+			switch failure {
+			case "gh_fail":
+				return 1
+			case "malformed":
+				fmt.Print(`{"sha":`)
+			case "missing_top_sha":
+				fmt.Print(`{"object":{"type":"commit","sha":"` + commitSHA + `"}}`)
+			case "wrong_top_sha", "requested_sha_mismatch":
+				fmt.Print(`{"sha":"` + strings.Repeat("d", 40) + `","object":{"type":"commit","sha":"` + commitSHA + `"}}`)
+			case "missing_target":
+				fmt.Print(`{"sha":"` + tagSHA + `"}`)
+			case "wrong_target_type", "nested_tag":
+				fmt.Print(`{"sha":"` + tagSHA + `","object":{"type":"tag","sha":"` + commitSHA + `"}}`)
+			case "wrong_target_sha":
+				fmt.Print(`{"sha":"` + tagSHA + `","object":{"type":"commit","sha":"BAD"}}`)
+			default:
+				fmt.Print(`{"sha":"` + tagSHA + `","object":{"type":"commit","sha":"` + commitSHA + `"}}`)
+			}
+			return 0
+		}
+	}
+	if len(args) >= 2 && args[0] == "release" && (args[1] == "create" || args[1] == "edit") {
+		return 0
+	}
+	return 2
+}
+
+func fixtureFailureForPhase(fixture, endpoint string, phase int) string {
+	prefix := fmt.Sprintf("%s_p%d_", endpoint, phase)
+	return strings.TrimPrefix(strings.TrimPrefix(fixture, prefix), fixture)
+}
+
+func slicesContain(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func appendFakeGHCall(path string, args []string) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // Caller supplies a private fixture log path.
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	for _, arg := range args {
+		if _, err := file.Write(append([]byte(arg), 0)); err != nil {
+			return err
+		}
+	}
+	_, err = file.Write([]byte{0})
+	return err
+}
+
+func readFakeGHCalls(t *testing.T, path string) [][]string {
+	t.Helper()
+	contents, err := os.ReadFile(path) //nolint:gosec // Caller supplies a private fixture log path.
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read fake gh log: %v", err)
+	}
+	records := bytes.Split(bytes.TrimSuffix(contents, []byte{0, 0}), []byte{0, 0})
+	result := make([][]string, 0, len(records))
+	for _, record := range records {
+		parts := bytes.Split(record, []byte{0})
+		call := make([]string, 0, len(parts))
+		for _, part := range parts {
+			call = append(call, string(part))
+		}
+		result = append(result, call)
+	}
+	return result
+}
+
+func assertSuccessfulPublicationTrace(t *testing.T, root, fixture string, calls [][]string) {
+	t.Helper()
+	wantQuery := "query($owner:String!,$name:String!,$tag:String!){\n  repository(owner:$owner,name:$name){\n    release(tagName:$tag){id}\n  }\n}"
+	wantPrefix := [][]string{
+		{"--version"},
+		{"api", "--help"},
+		{"release", "create", "--help"},
+		{"release", "edit", "--help"},
+		{"api", "graphql", "-f", "query=" + wantQuery, "-F", "owner=krkarma777", "-F", "name=ai-cli-gateway", "-F", "tag=v0.1.0"},
+	}
+	if len(calls) < len(wantPrefix) || !reflect.DeepEqual(calls[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("publication preflight/GraphQL calls = %q, want exact prefix %q", calls, wantPrefix)
+	}
+	refCall := func() []string {
+		return []string{"api", "-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2026-03-10", "repos/krkarma777/ai-cli-gateway/git/ref/tags/v0.1.0"}
+	}
+	tagCall := func() []string {
+		return []string{"api", "-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2026-03-10", "repos/krkarma777/ai-cli-gateway/git/tags/" + strings.Repeat("b", 40)}
+	}
+	assetRoot := filepath.Join(root, "release-assets")
+	create := []string{
+		"release", "create", "v0.1.0", "--repo", "krkarma777/ai-cli-gateway", "--title", "v0.1.0", "--verify-tag", "--draft", "--generate-notes",
+		filepath.Join(assetRoot, "ai-cli-gateway_0.1.0_linux_amd64.tar.gz"),
+		filepath.Join(assetRoot, "ai-cli-gateway_0.1.0_linux_arm64.tar.gz"),
+		filepath.Join(assetRoot, "ai-cli-gateway_0.1.0_darwin_amd64.tar.gz"),
+		filepath.Join(assetRoot, "ai-cli-gateway_0.1.0_darwin_arm64.tar.gz"),
+		filepath.Join(assetRoot, "ai-cli-gateway_0.1.0_windows_amd64.zip"),
+		filepath.Join(assetRoot, "ai-cli-gateway_0.1.0_sbom.spdx.json"),
+		filepath.Join(assetRoot, "SHA256SUMS"),
+	}
+	edit := []string{"release", "edit", "v0.1.0", "--repo", "krkarma777/ai-cli-gateway", "--draft=false"}
+	wantTail := [][]string{refCall(), create, refCall(), edit}
+	if fixture == "annotated_success" {
+		wantTail = [][]string{refCall(), tagCall(), create, refCall(), tagCall(), edit}
+	}
+	wantCalls := append(append([][]string{}, wantPrefix...), wantTail...)
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("successful publication call order = %q, want exact %q", calls, wantCalls)
+	}
+	events := readFakeGHCalls(t, filepath.Join(root, "events.log"))
+	checksumIndex, createIndex, editIndex := -1, -1, -1
+	for index, event := range events {
+		if reflect.DeepEqual(event, []string{"sha256sum", "--check", "--strict", "SHA256SUMS"}) {
+			checksumIndex = index
+		}
+		if len(event) >= 3 && event[0] == "gh" && event[1] == "release" && event[2] == "create" && !slicesContain(event, "--help") {
+			createIndex = index
+		}
+		if len(event) >= 3 && event[0] == "gh" && event[1] == "release" && event[2] == "edit" && !slicesContain(event, "--help") {
+			editIndex = index
+		}
+	}
+	if checksumIndex < 0 || createIndex <= checksumIndex || editIndex <= createIndex {
+		t.Fatalf("publication events do not prove checksum -> draft -> public order: %q", events)
+	}
+}
+
+func incrementFixtureCounter(path string) (int, error) {
+	value := 0
+	contents, err := os.ReadFile(path) //nolint:gosec // Caller supplies a private fixture counter path.
+	if err == nil {
+		value, err = strconv.Atoi(strings.TrimSpace(string(contents)))
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return 0, err
+	}
+	value++
+	if err := os.WriteFile(path, []byte(strconv.Itoa(value)), 0o600); err != nil { //nolint:gosec // Caller supplies a private fixture counter path.
+		return 0, err
+	}
+	return value, nil
+}
+
+func linkFixtureTool(t *testing.T, root, name, target string) {
+	t.Helper()
+	if err := os.Symlink(target, filepath.Join(root, name)); err != nil {
+		t.Fatalf("link %s fixture: %v", name, err)
+	}
+}
+
+func writeReleasePublicationAssets(t *testing.T, root string, badDigest bool) {
+	t.Helper()
+	assets := []string{
+		"ai-cli-gateway_0.1.0_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.1.0_linux_arm64.tar.gz",
+		"ai-cli-gateway_0.1.0_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.1.0_darwin_arm64.tar.gz",
+		"ai-cli-gateway_0.1.0_windows_amd64.zip",
+		"ai-cli-gateway_0.1.0_sbom.spdx.json",
+	}
+	manifest := strings.Builder{}
+	for index, name := range assets {
+		contents := []byte(fmt.Sprintf("fixture-%d\n", index))
+		writeFixtureFile(t, root, name, contents)
+		sum := sha256.Sum256(contents)
+		if badDigest && index == 0 {
+			sum = sha256.Sum256([]byte("wrong"))
+		}
+		fmt.Fprintf(&manifest, "%x  %s\n", sum, name)
+	}
+	writeFixtureFile(t, root, "SHA256SUMS", []byte(manifest.String()))
+}
+
+func parseClosedReleaseWorkflow(document []byte) (releaseWorkflowDocument, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(document))
+	var root yaml.Node
+	if err := decoder.Decode(&root); err != nil {
+		return releaseWorkflowDocument{}, fmt.Errorf("decode document: %w", err)
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return releaseWorkflowDocument{}, errors.New("multiple YAML documents")
+		}
+		return releaseWorkflowDocument{}, fmt.Errorf("decode trailing document: %w", err)
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) != 1 {
+		return releaseWorkflowDocument{}, errors.New("workflow must be one document node")
+	}
+	if root.Content[0].Kind != yaml.MappingNode || root.Content[0].Style&yaml.FlowStyle != 0 {
+		return releaseWorkflowDocument{}, errors.New("workflow root must be one block mapping")
+	}
+	if err := validateClosedYAMLNode(&root); err != nil {
+		return releaseWorkflowDocument{}, err
+	}
+	top, err := closedYAMLMapping(root.Content[0], "name", "on", "concurrency", "jobs")
+	if err != nil {
+		return releaseWorkflowDocument{}, fmt.Errorf("top level: %w", err)
+	}
+	if value, scalarErr := closedYAMLScalar(top["name"]); scalarErr != nil || value != "Release" {
+		return releaseWorkflowDocument{}, fmt.Errorf("name must be Release: %w", scalarErr)
+	}
+	if err := validateReleaseTrigger(top["on"]); err != nil {
+		return releaseWorkflowDocument{}, err
+	}
+	if err := validateReleaseConcurrency(top["concurrency"]); err != nil {
+		return releaseWorkflowDocument{}, err
+	}
+	jobNodes, err := closedYAMLMapping(top["jobs"], "verify", "package", "asset-verification", "publish")
+	if err != nil {
+		return releaseWorkflowDocument{}, fmt.Errorf("jobs: %w", err)
+	}
+	jobs := make(map[string]releaseWorkflowJob, len(jobNodes))
+	for name, node := range jobNodes {
+		job, parseErr := parseReleaseWorkflowJob(name, node)
+		if parseErr != nil {
+			return releaseWorkflowDocument{}, fmt.Errorf("job %s: %w", name, parseErr)
+		}
+		jobs[name] = job
+	}
+	return releaseWorkflowDocument{Root: &root, Jobs: jobs}, nil
+}
+
+func validateClosedYAMLNode(node *yaml.Node) error {
+	if node == nil {
+		return errors.New("nil YAML node")
+	}
+	if node.Anchor != "" || node.Alias != nil || node.Kind == yaml.AliasNode {
+		return errors.New("anchors and aliases are forbidden")
+	}
+	if node.Style&yaml.TaggedStyle != 0 {
+		return errors.New("explicit YAML tags are forbidden")
+	}
+	if (node.Kind == yaml.MappingNode || node.Kind == yaml.SequenceNode) && node.Style&yaml.FlowStyle != 0 {
+		return errors.New("flow-style collections are forbidden")
+	}
+	switch node.Kind {
+	case yaml.DocumentNode:
+		if node.ShortTag() != "!!null" && node.Tag != "" {
+			return fmt.Errorf("unsupported document tag %q", node.Tag)
+		}
+	case yaml.MappingNode:
+		if node.ShortTag() != "!!map" {
+			return fmt.Errorf("mapping tag = %q", node.ShortTag())
+		}
+		if len(node.Content)%2 != 0 {
+			return errors.New("mapping has an odd child count")
+		}
+		seen := make(map[string]struct{}, len(node.Content)/2)
+		for index := 0; index < len(node.Content); index += 2 {
+			key := node.Content[index]
+			if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" || key.Style&yaml.TaggedStyle != 0 {
+				return errors.New("mapping key must be an implicitly tagged string scalar")
+			}
+			if key.Value == "<<" {
+				return errors.New("merge keys are forbidden")
+			}
+			if _, duplicate := seen[key.Value]; duplicate {
+				return fmt.Errorf("duplicate mapping key %q", key.Value)
+			}
+			seen[key.Value] = struct{}{}
+		}
+	case yaml.SequenceNode:
+		if node.ShortTag() != "!!seq" {
+			return fmt.Errorf("sequence tag = %q", node.ShortTag())
+		}
+	case yaml.ScalarNode:
+		switch node.ShortTag() {
+		case "!!str", "!!int", "!!bool", "!!null", "!!float":
+		default:
+			return fmt.Errorf("unsupported implicit scalar tag %q", node.ShortTag())
+		}
+	case yaml.AliasNode:
+		return errors.New("YAML aliases are forbidden")
+	default:
+		return fmt.Errorf("unsupported YAML node kind %d", node.Kind)
+	}
+	for _, child := range node.Content {
+		if err := validateClosedYAMLNode(child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func closedYAMLMapping(node *yaml.Node, allowed ...string) (map[string]*yaml.Node, error) {
+	if node == nil || node.Kind != yaml.MappingNode || len(node.Content)%2 != 0 {
+		return nil, errors.New("expected block mapping")
+	}
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, key := range allowed {
+		allowedSet[key] = struct{}{}
+	}
+	result := make(map[string]*yaml.Node, len(node.Content)/2)
+	for index := 0; index < len(node.Content); index += 2 {
+		key := node.Content[index].Value
+		if _, ok := allowedSet[key]; !ok {
+			return nil, fmt.Errorf("unknown field %q", key)
+		}
+		result[key] = node.Content[index+1]
+	}
+	if len(result) != len(allowedSet) {
+		missing := make([]string, 0)
+		for _, key := range allowed {
+			if _, ok := result[key]; !ok {
+				missing = append(missing, key)
+			}
+		}
+		return nil, fmt.Errorf("missing fields %v", missing)
+	}
+	return result, nil
+}
+
+func closedYAMLScalar(node *yaml.Node) (string, error) {
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return "", errors.New("expected scalar")
+	}
+	return node.Value, nil
+}
+
+func closedYAMLScalarMap(node *yaml.Node, allowed ...string) (map[string]string, error) {
+	mapping, err := closedYAMLMapping(node, allowed...)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(mapping))
+	for key, valueNode := range mapping {
+		value, scalarErr := closedYAMLScalar(valueNode)
+		if scalarErr != nil {
+			return nil, fmt.Errorf("%s: %w", key, scalarErr)
+		}
+		result[key] = value
+	}
+	return result, nil
+}
+
+func validateReleaseTrigger(node *yaml.Node) error {
+	trigger, err := closedYAMLMapping(node, "push")
+	if err != nil {
+		return fmt.Errorf("trigger: %w", err)
+	}
+	push, err := closedYAMLMapping(trigger["push"], "tags")
+	if err != nil {
+		return fmt.Errorf("push trigger: %w", err)
+	}
+	tags := push["tags"]
+	if tags.Kind != yaml.SequenceNode || len(tags.Content) != 1 {
+		return errors.New("release trigger must have one tag pattern")
+	}
+	value, err := closedYAMLScalar(tags.Content[0])
+	if err != nil || value != "v*.*.*" {
+		return errors.New("release trigger must be v*.*.*")
+	}
+	return nil
+}
+
+func validateReleaseConcurrency(node *yaml.Node) error {
+	concurrency, err := closedYAMLScalarMap(node, "group", "cancel-in-progress")
+	if err != nil {
+		return fmt.Errorf("concurrency: %w", err)
+	}
+	want := map[string]string{
+		"group":              "release-${{ github.repository }}-${{ github.ref_name }}",
+		"cancel-in-progress": "false",
+	}
+	if !reflect.DeepEqual(concurrency, want) {
+		return fmt.Errorf("concurrency = %v, want %v", concurrency, want)
+	}
+	return nil
+}
+
+func parseReleaseWorkflowJob(name string, node *yaml.Node) (releaseWorkflowJob, error) {
+	var allowed []string
+	switch name {
+	case "verify":
+		allowed = []string{"uses", "permissions"}
+	case "package", "asset-verification", "publish":
+		allowed = []string{"needs", "runs-on", "timeout-minutes", "permissions", "steps"}
+		if name == "package" {
+			allowed = append(allowed, "outputs")
+		}
+	default:
+		return releaseWorkflowJob{}, fmt.Errorf("unexpected job %q", name)
+	}
+	fields, err := closedYAMLMapping(node, allowed...)
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	job := releaseWorkflowJob{}
+	if name == "verify" {
+		job.Uses, err = closedYAMLScalar(fields["uses"])
+		if err != nil {
+			return releaseWorkflowJob{}, err
+		}
+		job.Permissions, err = closedYAMLScalarMap(fields["permissions"], "contents")
+		return job, err
+	}
+	job.RunsOn, err = closedYAMLScalar(fields["runs-on"])
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	job.Timeout, err = closedYAMLScalar(fields["timeout-minutes"])
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	job.Needs, err = closedYAMLStringOrSequence(fields["needs"])
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	permissionKeys := map[string][]string{
+		"package":            {"contents", "id-token", "attestations"},
+		"asset-verification": {"contents", "attestations"},
+		"publish":            {"contents"},
+	}
+	job.Permissions, err = closedYAMLScalarMap(fields["permissions"], permissionKeys[name]...)
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	if name == "package" {
+		job.Outputs, err = closedYAMLScalarMap(fields["outputs"], "tag", "version", "tag_commit", "source_epoch", "artifact_id", "artifact_digest")
+		if err != nil {
+			return releaseWorkflowJob{}, err
+		}
+	}
+	job.Steps, err = parseReleaseWorkflowSteps(fields["steps"])
+	return job, err
+}
+
+func closedYAMLStringOrSequence(node *yaml.Node) ([]string, error) {
+	if node.Kind == yaml.ScalarNode {
+		value, err := closedYAMLScalar(node)
+		return []string{value}, err
+	}
+	if node.Kind != yaml.SequenceNode || len(node.Content) == 0 {
+		return nil, errors.New("needs must be a nonempty scalar or block sequence")
+	}
+	result := make([]string, 0, len(node.Content))
+	for _, item := range node.Content {
+		value, err := closedYAMLScalar(item)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, value)
+	}
+	return result, nil
+}
+
+func parseReleaseWorkflowSteps(node *yaml.Node) ([]releaseWorkflowStep, error) {
+	if node.Kind != yaml.SequenceNode || len(node.Content) == 0 {
+		return nil, errors.New("steps must be a nonempty block sequence")
+	}
+	steps := make([]releaseWorkflowStep, 0, len(node.Content))
+	for index, stepNode := range node.Content {
+		fields, err := closedYAMLMappingSubset(stepNode, "name", "id", "uses", "with", "env", "shell", "run")
+		if err != nil {
+			return nil, fmt.Errorf("step %d: %w", index, err)
+		}
+		step := releaseWorkflowStep{}
+		for key, target := range map[string]*string{"name": &step.Name, "id": &step.ID, "uses": &step.Uses, "shell": &step.Shell, "run": &step.Run} {
+			if valueNode, ok := fields[key]; ok {
+				value, scalarErr := closedYAMLScalar(valueNode)
+				if scalarErr != nil {
+					return nil, fmt.Errorf("step %d %s: %w", index, key, scalarErr)
+				}
+				*target = value
+			}
+		}
+		if (step.Uses == "") == (step.Run == "") {
+			return nil, fmt.Errorf("step %d must have exactly one of uses or run", index)
+		}
+		if node, ok := fields["with"]; ok {
+			step.With, err = closedYAMLScalarMapSubset(node)
+			if err != nil {
+				return nil, fmt.Errorf("step %d with: %w", index, err)
+			}
+		}
+		if node, ok := fields["env"]; ok {
+			step.Env, err = closedYAMLScalarMapSubset(node)
+			if err != nil {
+				return nil, fmt.Errorf("step %d env: %w", index, err)
+			}
+		}
+		steps = append(steps, step)
+	}
+	return steps, nil
+}
+
+func closedYAMLMappingSubset(node *yaml.Node, allowed ...string) (map[string]*yaml.Node, error) {
+	if node == nil || node.Kind != yaml.MappingNode || len(node.Content)%2 != 0 {
+		return nil, errors.New("expected block mapping")
+	}
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, key := range allowed {
+		allowedSet[key] = struct{}{}
+	}
+	result := make(map[string]*yaml.Node, len(node.Content)/2)
+	for index := 0; index < len(node.Content); index += 2 {
+		key := node.Content[index].Value
+		if _, ok := allowedSet[key]; !ok {
+			return nil, fmt.Errorf("unknown field %q", key)
+		}
+		result[key] = node.Content[index+1]
+	}
+	return result, nil
+}
+
+func closedYAMLScalarMapSubset(node *yaml.Node) (map[string]string, error) {
+	if node == nil || node.Kind != yaml.MappingNode || len(node.Content)%2 != 0 {
+		return nil, errors.New("expected block mapping")
+	}
+	result := make(map[string]string, len(node.Content)/2)
+	for index := 0; index < len(node.Content); index += 2 {
+		value, err := closedYAMLScalar(node.Content[index+1])
+		if err != nil {
+			return nil, err
+		}
+		result[node.Content[index].Value] = value
+	}
+	return result, nil
+}
+
+func validateReleaseWorkflowContract(workflow releaseWorkflowDocument) error {
+	verify := workflow.Jobs["verify"]
+	if verify.Uses != "./.github/workflows/ci.yml" || !reflect.DeepEqual(verify.Permissions, map[string]string{"contents": "read"}) {
+		return fmt.Errorf("verify job is not the read-only reusable CI call: %+v", verify)
+	}
+	packageJob := workflow.Jobs["package"]
+	assetJob := workflow.Jobs["asset-verification"]
+	publishJob := workflow.Jobs["publish"]
+	if !reflect.DeepEqual(packageJob.Needs, []string{"verify"}) || !reflect.DeepEqual(assetJob.Needs, []string{"package"}) || !reflect.DeepEqual(publishJob.Needs, []string{"package", "asset-verification"}) {
+		return fmt.Errorf("job dependency graph is not exact: package=%v asset=%v publish=%v", packageJob.Needs, assetJob.Needs, publishJob.Needs)
+	}
+	if packageJob.RunsOn != "ubuntu-24.04" || packageJob.Timeout != "25" ||
+		assetJob.RunsOn != "ubuntu-24.04" || assetJob.Timeout != "10" ||
+		publishJob.RunsOn != "ubuntu-24.04" || publishJob.Timeout != "10" {
+		return errors.New("release runners or timeouts differ from the closed contract")
+	}
+	if !reflect.DeepEqual(packageJob.Permissions, map[string]string{"contents": "read", "id-token": "write", "attestations": "write"}) ||
+		!reflect.DeepEqual(assetJob.Permissions, map[string]string{"contents": "read", "attestations": "read"}) ||
+		!reflect.DeepEqual(publishJob.Permissions, map[string]string{"contents": "write"}) {
+		return errors.New("release split-authority permissions differ from the closed contract")
+	}
+	wantOutputs := map[string]string{
+		"tag":             "${{ steps.metadata.outputs.tag }}",
+		"version":         "${{ steps.metadata.outputs.version }}",
+		"tag_commit":      "${{ steps.metadata.outputs.tag_commit }}",
+		"source_epoch":    "${{ steps.metadata.outputs.source_epoch }}",
+		"artifact_id":     "${{ steps.artifact-metadata.outputs.artifact_id }}",
+		"artifact_digest": "${{ steps.artifact-metadata.outputs.artifact_digest }}",
+	}
+	if !reflect.DeepEqual(packageJob.Outputs, wantOutputs) {
+		return fmt.Errorf("package outputs = %v, want validated outputs %v", packageJob.Outputs, wantOutputs)
+	}
+	if err := validateReleaseActions(workflow.Jobs); err != nil {
+		return err
+	}
+	if err := validateReleaseSteps(packageJob, assetJob, publishJob); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateReleaseActions(jobs map[string]releaseWorkflowJob) error {
+	allowed := map[string]int{
+		checkoutAction: 1, setupGoAction: 1, attestAction: 1, uploadArtifactAction: 1, downloadArtifactAction: 2,
+	}
+	got := make(map[string]int)
+	for name, job := range jobs {
+		for _, step := range job.Steps {
+			if step.Uses == "" {
+				continue
+			}
+			if _, ok := allowed[step.Uses]; !ok {
+				return fmt.Errorf("job %s uses unlisted action %q", name, step.Uses)
+			}
+			got[step.Uses]++
+		}
+	}
+	if !reflect.DeepEqual(got, allowed) {
+		return fmt.Errorf("release actions = %v, want exact %v", got, allowed)
+	}
+	packageSteps := jobs["package"].Steps
+	if !reflect.DeepEqual(packageSteps[0].With, map[string]string{"persist-credentials": "false", "fetch-depth": "0"}) {
+		return fmt.Errorf("checkout inputs = %v", packageSteps[0].With)
+	}
+	if !reflect.DeepEqual(packageSteps[1].With, map[string]string{"go-version": "1.26.5", "cache": "true"}) {
+		return fmt.Errorf("setup-go inputs = %v", packageSteps[1].With)
+	}
+	if !exactStringMapKeys(packageSteps[6].With, "subject-path") {
+		return fmt.Errorf("attest inputs = %v", packageSteps[6].With)
+	}
+	if !exactStringMapKeys(packageSteps[7].With, "name", "path", "overwrite", "if-no-files-found", "include-hidden-files", "compression-level", "retention-days") {
+		return fmt.Errorf("upload inputs = %v", packageSteps[7].With)
+	}
+	return nil
+}
+
+func validateReleaseSteps(packageJob, assetJob, publishJob releaseWorkflowJob) error {
+	if len(packageJob.Steps) != 9 || len(assetJob.Steps) != 2 || len(publishJob.Steps) != 3 {
+		return fmt.Errorf("step counts package=%d asset=%d publish=%d", len(packageJob.Steps), len(assetJob.Steps), len(publishJob.Steps))
+	}
+	if err := validateExactReleaseStepShapes(packageJob, assetJob, publishJob); err != nil {
+		return err
+	}
+	metadata, err := namedReleaseStep(packageJob.Steps, "Validate release metadata")
+	if err != nil {
+		return err
+	}
+	if metadata.ID != "metadata" || metadata.Shell != "bash" || !reflect.DeepEqual(metadata.Env, map[string]string{
+		"EVENT_REF": "${{ github.ref }}", "EVENT_TAG": "${{ github.ref_name }}", "EVENT_SHA": "${{ github.sha }}",
+	}) {
+		return errors.New("package metadata step fields are not exact")
+	}
+	for _, token := range []string{
+		`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`,
+		`refs/tags/${EVENT_TAG}`, `git rev-parse "${EVENT_TAG}^{commit}"`,
+		`+refs/heads/main:refs/remotes/origin/main`, `git merge-base --is-ancestor`,
+		`^[0-9a-f]{40}$`, `^[0-9]+$`, `tag_commit=`, `source_epoch=`,
+	} {
+		if !strings.Contains(shellWithoutCommentOnlyLines(metadata.Run), token) {
+			return fmt.Errorf("metadata run is missing %q", token)
+		}
+	}
+	artifact, err := namedReleaseStep(packageJob.Steps, "Validate artifact outputs")
+	if err != nil {
+		return err
+	}
+	if artifact.ID != "artifact-metadata" || !reflect.DeepEqual(artifact.Env, map[string]string{
+		"RAW_ARTIFACT_ID": "${{ steps.upload.outputs.artifact-id }}", "RAW_ARTIFACT_DIGEST": "${{ steps.upload.outputs.artifact-digest }}",
+	}) || !strings.Contains(artifact.Run, `^[0-9]+$`) || !strings.Contains(artifact.Run, `^[0-9a-f]{64}$`) {
+		return errors.New("artifact output validator is not exact")
+	}
+	syftStep, err := namedReleaseStep(packageJob.Steps, "Generate SBOM and checksums")
+	if err != nil {
+		return err
+	}
+	if err := validateReleaseSyftStep(syftStep); err != nil {
+		return fmt.Errorf("Syft step: %w", err)
+	}
+	for _, job := range []releaseWorkflowJob{packageJob, assetJob, publishJob} {
+		for _, step := range job.Steps {
+			if strings.Contains(step.Run, "${{ github.") || strings.Contains(step.Run, "${{ needs.") || strings.Contains(step.Run, "${{ runner.temp }}") {
+				return fmt.Errorf("step %q embeds a GitHub expression in decoded shell", step.Name)
+			}
+			for _, forbidden := range []string{"curl ", "wget ", "--clobber", "--overwrite", "--resume", "release delete"} {
+				if strings.Contains(strings.ToLower(step.Run), forbidden) {
+					return fmt.Errorf("step %q contains forbidden behavior %q", step.Name, forbidden)
+				}
+			}
+		}
+	}
+	if err := validateArtifactTransfer(packageJob, assetJob, publishJob); err != nil {
+		return err
+	}
+	publication, err := namedReleaseStep(publishJob.Steps, "Publish verified release")
+	if err != nil {
+		return err
+	}
+	if publication.Shell != "bash" || publication.Env["GH_TOKEN"] != "${{ github.token }}" ||
+		publication.Env["TAG"] != "${{ needs.package.outputs.tag }}" ||
+		publication.Env["TAG_COMMIT"] != "${{ needs.package.outputs.tag_commit }}" {
+		return errors.New("publication environment is not exact")
+	}
+	for _, token := range []string{
+		`query($owner:String!,$name:String!,$tag:String!){`,
+		`repository(owner:$owner,name:$name){`,
+		`release(tagName:$tag){id}`,
+		`resolve_live_tag()`,
+		`repos/krkarma777/ai-cli-gateway/git/ref/tags/${TAG}`,
+		`repos/krkarma777/ai-cli-gateway/git/tags/${object_sha}`,
+		`Accept: application/vnd.github+json`,
+		`X-GitHub-Api-Version: 2026-03-10`,
+		`gh release create`, `--verify-tag`, `--draft`, `--generate-notes`,
+		`gh release edit`, `--draft=false`, `release_already_exists`, `release_preflight_invalid`,
+	} {
+		if !strings.Contains(shellWithoutCommentOnlyLines(publication.Run), token) {
+			return fmt.Errorf("publication run is missing %q", token)
+		}
+	}
+	if strings.Count(publication.Run, "resolve_live_tag") != 3 {
+		return errors.New("publication must define one resolver and call it exactly twice")
+	}
+	return nil
+}
+
+func validateReleaseSyftStep(step releaseWorkflowStep) error {
+	script := shellWithoutCommentOnlyLines(step.Run)
+	for _, required := range []string{
+		`tools_root="${RUNNER_TEMP}/release-tools"`,
+		`ENV_BIN=/usr/bin/env`,
+		`GO_BIN="$(resolve_binary go)"`,
+		`SYFT_BIN="${tools_root}/bin/syft"`,
+		`run_clean_go env GOVERSION`,
+		`run_clean_go install -ldflags '-X main.version=1.50.0' github.com/anchore/syft/cmd/syft@v1.50.0`,
+		`run_clean_go version -m "${SYFT_BIN}"`,
+		`github.com/anchore/syft/cmd/syft`,
+		`github.com/anchore/syft\tv1\.50\.0\th1:`,
+		`run_clean_syft help`,
+		`run_clean_syft scan --help`,
+		`run_clean_syft version --help`,
+		`run_clean_syft version`,
+		`^Version: 1\.50\.0$`,
+		`SYFT_CONFIG="${tools_root}/config/syft.yaml"`,
+		`SYFT_CHECK_FOR_APP_UPDATE=false`,
+		`SYFT_COMPLIANCE_MISSING_NAME=drop`,
+		`SYFT_COMPLIANCE_MISSING_VERSION=stub`,
+		`"${SYFT_BIN}" scan "dir:${RUNNER_TEMP}/release-staging"`,
+		`-c "${tools_root}/config/syft.yaml" -o "spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json"`,
+		`test "$(stat -c '%a' -- "${tools_root}/config/syft.yaml")" = 600`,
+	} {
+		if !strings.Contains(script, required) {
+			return fmt.Errorf("decoded shell is missing %q", required)
+		}
+	}
+	if regexp.MustCompile(`(?m)(^|[[:space:]])PATH=`).MatchString(script) || strings.Contains(script, "${PATH}") {
+		return errors.New("isolated Syft shell receives PATH")
+	}
+	if strings.Count(script, `"${ENV_BIN}" -i`) != 3 {
+		return errors.New("Syft shell must define exactly three env -i vectors")
+	}
+	for _, exact := range []struct {
+		text  string
+		count int
+	}{
+		{`SYFT_CONFIG="${tools_root}/config/syft.yaml"`, 2},
+		{"SYFT_CHECK_FOR_APP_UPDATE=false", 2},
+		{"SYFT_COMPLIANCE_MISSING_NAME=drop", 1},
+		{"SYFT_COMPLIANCE_MISSING_VERSION=stub", 1},
+	} {
+		if strings.Count(script, exact.text) != exact.count {
+			return fmt.Errorf("%q count = %d, want %d", exact.text, strings.Count(script, exact.text), exact.count)
+		}
+	}
+	goStart := strings.Index(script, "run_clean_go() {")
+	syftStart := strings.Index(script, "run_clean_syft() {")
+	if goStart < 0 || syftStart <= goStart {
+		return errors.New("clean Go/Syft helper boundaries are missing")
+	}
+	goNames, err := isolatedInvocationEnvironmentNames(script[goStart:syftStart], `"${GO_BIN}" "$@"`)
+	if err != nil {
+		return err
+	}
+	wantGo := []string{"CGO_ENABLED", "GOBIN", "GOCACHE", "GOENV", "GOFLAGS", "GOINSECURE", "GOMODCACHE", "GONOPROXY", "GONOSUMDB", "GOPATH", "GOPRIVATE", "GOPROXY", "GOSUMDB", "GOTOOLCHAIN", "GOWORK", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ", "XDG_CONFIG_HOME"}
+	if !reflect.DeepEqual(goNames, wantGo) {
+		return fmt.Errorf("Go environment names = %v", goNames)
+	}
+	syftNames, err := isolatedInvocationEnvironmentNames(script[syftStart:], `"${SYFT_BIN}" "$@"`)
+	if err != nil {
+		return err
+	}
+	wantSyft := []string{"HOME", "LANG", "LC_ALL", "SYFT_CHECK_FOR_APP_UPDATE", "SYFT_CONFIG", "TMPDIR", "TZ", "XDG_CONFIG_HOME"}
+	if !reflect.DeepEqual(syftNames, wantSyft) {
+		return fmt.Errorf("Syft runtime environment names = %v", syftNames)
+	}
+	scanStart := strings.LastIndex(script, `"${ENV_BIN}" -i`)
+	if scanStart < 0 {
+		return errors.New("isolated Syft scan vector is missing")
+	}
+	scanEnd := strings.Index(script[scanStart:], `"${SYFT_BIN}" scan`)
+	if scanEnd < 0 {
+		return errors.New("isolated Syft scan vector is missing")
+	}
+	scanSlice := script[scanStart : scanStart+scanEnd]
+	matches := regexp.MustCompile(`\b([A-Z][A-Z0-9_]*)=`).FindAllStringSubmatch(scanSlice, -1)
+	scanNames := make([]string, 0, len(matches))
+	for _, match := range matches {
+		scanNames = append(scanNames, match[1])
+	}
+	slices.Sort(scanNames)
+	wantScan := []string{"HOME", "LANG", "LC_ALL", "SYFT_CHECK_FOR_APP_UPDATE", "SYFT_COMPLIANCE_MISSING_NAME", "SYFT_COMPLIANCE_MISSING_VERSION", "SYFT_CONFIG", "TMPDIR", "TZ", "XDG_CONFIG_HOME"}
+	if !reflect.DeepEqual(scanNames, wantScan) {
+		return fmt.Errorf("Syft scan environment names = %v", scanNames)
+	}
+	return nil
+}
+
+func validateExactReleaseStepShapes(packageJob, assetJob, publishJob releaseWorkflowJob) error {
+	type shape struct {
+		name string
+		id   string
+		uses string
+		env  map[string]string
+	}
+	wantPackage := []shape{
+		{uses: checkoutAction},
+		{uses: setupGoAction},
+		{name: "Validate release metadata", id: "metadata", env: map[string]string{"EVENT_REF": "${{ github.ref }}", "EVENT_TAG": "${{ github.ref_name }}", "EVENT_SHA": "${{ github.sha }}"}},
+		{name: "Build and archive release assets", env: map[string]string{"TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}", "SOURCE_EPOCH": "${{ steps.metadata.outputs.source_epoch }}"}},
+		{name: "Generate SBOM and checksums", env: map[string]string{"TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "SOURCE_EPOCH": "${{ steps.metadata.outputs.source_epoch }}"}},
+		{name: "Verify package checksums"},
+		{name: "Attest release assets", uses: attestAction},
+		{name: "Upload verified release assets", id: "upload", uses: uploadArtifactAction},
+		{name: "Validate artifact outputs", id: "artifact-metadata", env: map[string]string{"RAW_ARTIFACT_ID": "${{ steps.upload.outputs.artifact-id }}", "RAW_ARTIFACT_DIGEST": "${{ steps.upload.outputs.artifact-digest }}"}},
+	}
+	wantAsset := []shape{
+		{name: "Download immutable release assets", uses: downloadArtifactAction},
+		{name: "Verify checksums and attestations", env: map[string]string{"GH_TOKEN": "${{ github.token }}", "TAG": "${{ needs.package.outputs.tag }}", "VERSION": "${{ needs.package.outputs.version }}", "TAG_COMMIT": "${{ needs.package.outputs.tag_commit }}"}}, //nolint:gosec // This is GitHub's documented expression, not a credential.
+	}
+	wantPublish := []shape{
+		{name: "Download immutable release assets", uses: downloadArtifactAction},
+		{name: "Reverify package checksums"},
+		{name: "Publish verified release", env: map[string]string{"GH_TOKEN": "${{ github.token }}", "TAG": "${{ needs.package.outputs.tag }}", "VERSION": "${{ needs.package.outputs.version }}", "TAG_COMMIT": "${{ needs.package.outputs.tag_commit }}"}}, //nolint:gosec // This is GitHub's documented expression, not a credential.
+	}
+	for jobName, pair := range map[string]struct {
+		got  []releaseWorkflowStep
+		want []shape
+	}{
+		"package":            {packageJob.Steps, wantPackage},
+		"asset-verification": {assetJob.Steps, wantAsset},
+		"publish":            {publishJob.Steps, wantPublish},
+	} {
+		for index, want := range pair.want {
+			got := pair.got[index]
+			if got.Name != want.name || got.ID != want.id || got.Uses != want.uses || !reflect.DeepEqual(got.Env, want.env) {
+				return fmt.Errorf("%s step %d shape = name:%q id:%q uses:%q env:%v", jobName, index, got.Name, got.ID, got.Uses, got.Env)
+			}
+			if got.Run != "" && got.Shell != "bash" {
+				return fmt.Errorf("%s run step %d shell = %q", jobName, index, got.Shell)
+			}
+			if got.Uses != "" && got.Shell != "" {
+				return fmt.Errorf("%s action step %d has shell", jobName, index)
+			}
+		}
+	}
+	for _, job := range []releaseWorkflowJob{assetJob, publishJob} {
+		for _, step := range job.Steps {
+			lower := strings.ToLower(shellWithoutCommentOnlyLines(step.Run))
+			for _, forbidden := range []string{"git ", "go ", "source ", "actions/checkout", "github_workspace"} {
+				if strings.Contains(lower, forbidden) {
+					return fmt.Errorf("downstream step %q contains repository-source behavior %q", step.Name, forbidden)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func exactStringMapKeys(values map[string]string, keys ...string) bool {
+	if len(values) != len(keys) {
+		return false
+	}
+	for _, key := range keys {
+		if _, ok := values[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func shellWithoutCommentOnlyLines(script string) string {
+	lines := make([]string, 0)
+	for _, line := range strings.Split(script, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func namedReleaseStep(steps []releaseWorkflowStep, name string) (releaseWorkflowStep, error) {
+	var result releaseWorkflowStep
+	count := 0
+	for _, step := range steps {
+		if step.Name == name {
+			result = step
+			count++
+		}
+	}
+	if count != 1 {
+		return releaseWorkflowStep{}, fmt.Errorf("step %q count = %d, want one", name, count)
+	}
+	return result, nil
+}
+
+func validateArtifactTransfer(packageJob, assetJob, publishJob releaseWorkflowJob) error {
+	upload := releaseWorkflowStep{}
+	for _, step := range packageJob.Steps {
+		if step.Uses == uploadArtifactAction {
+			upload = step
+		}
+	}
+	if upload.ID != "upload" || upload.With["overwrite"] != "false" || upload.With["if-no-files-found"] != "error" ||
+		upload.With["include-hidden-files"] != "false" || upload.With["compression-level"] != "0" || upload.With["retention-days"] != "1" {
+		return errors.New("artifact upload controls are not exact")
+	}
+	wantID := "${{ needs.package.outputs.artifact_id }}"
+	for _, job := range []releaseWorkflowJob{assetJob, publishJob} {
+		if len(job.Steps) == 0 || job.Steps[0].Uses != downloadArtifactAction || job.Steps[0].With["artifact-ids"] != wantID ||
+			job.Steps[0].With["path"] != "${{ runner.temp }}/release-assets" || job.Steps[0].With["digest-mismatch"] != "error" {
+			return errors.New("downstream artifact download is not direct-ID fail-closed")
+		}
+	}
+	assets := []string{
+		"ai-cli-gateway_${{ steps.metadata.outputs.version }}_linux_amd64.tar.gz",
+		"ai-cli-gateway_${{ steps.metadata.outputs.version }}_linux_arm64.tar.gz",
+		"ai-cli-gateway_${{ steps.metadata.outputs.version }}_darwin_amd64.tar.gz",
+		"ai-cli-gateway_${{ steps.metadata.outputs.version }}_darwin_arm64.tar.gz",
+		"ai-cli-gateway_${{ steps.metadata.outputs.version }}_windows_amd64.zip",
+		"ai-cli-gateway_${{ steps.metadata.outputs.version }}_sbom.spdx.json",
+		"SHA256SUMS",
+	}
+	for _, action := range []string{attestAction, uploadArtifactAction} {
+		var pathValue string
+		for _, step := range packageJob.Steps {
+			if step.Uses == action {
+				if action == attestAction {
+					pathValue = step.With["subject-path"]
+				} else {
+					pathValue = step.With["path"]
+				}
+			}
+		}
+		lines := strings.Split(strings.TrimSpace(pathValue), "\n")
+		if len(lines) != len(assets) {
+			return fmt.Errorf("%s path count = %d", action, len(lines))
+		}
+		for index, asset := range assets {
+			want := "${{ runner.temp }}/release-assets/" + asset
+			if lines[index] != want {
+				return fmt.Errorf("%s path %d = %q, want %q", action, index, lines[index], want)
+			}
+		}
+	}
+	return nil
 }
 
 func TestMakefileExactVerificationChain(t *testing.T) {

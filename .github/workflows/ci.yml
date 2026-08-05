@@ -16,11 +16,162 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: .go-version
           cache: true
+      - name: Validate workflow syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          ACTIONLINT_ROOT="${RUNNER_TEMP}/actionlint-tools"
+          test ! -e "${ACTIONLINT_ROOT}"
+          install -d -m 0700 "${ACTIONLINT_ROOT}"
+          for directory in bin home xdg gopath gomodcache gocache tmp config; do
+            install -d -m 0700 "${ACTIONLINT_ROOT}/${directory}"
+          done
+          : > "${ACTIONLINT_ROOT}/config/actionlint.yaml"
+          chmod 0600 "${ACTIONLINT_ROOT}/config/actionlint.yaml"
+
+          effective_uid="$(id -u)"
+
+          validate_authority() {
+            local current="$1" owner mode permissions
+            case "${current}" in /*) ;; *) return 1 ;; esac
+            while :; do
+              test -d "${current}"
+              test ! -L "${current}"
+              owner="$(stat -c '%u' -- "${current}")"
+              mode="$(stat -c '%a' -- "${current}")"
+              test "${owner}" = 0 || test "${owner}" = "${effective_uid}"
+              permissions=$((8#${mode}))
+              if (( (permissions & 0022) != 0 )); then
+                (( (permissions & 01000) != 0 ))
+              fi
+              test "${current}" != / || break
+              current="${current%/*}"
+              test -n "${current}" || current=/
+            done
+          }
+
+          resolve_binary() {
+            local candidate link directory count=0
+            candidate="$(command -v -- "$1")"
+            case "${candidate}" in /*) ;; *) return 1 ;; esac
+            while test -L "${candidate}"; do
+              count=$((count + 1))
+              test "${count}" -le 32
+              link="$(readlink -- "${candidate}")"
+              case "${link}" in
+                /*) candidate="${link}" ;;
+                *) candidate="${candidate%/*}/${link}" ;;
+              esac
+            done
+            directory="$(CDPATH=; cd -P -- "${candidate%/*}" && pwd -P)"
+            candidate="${directory}/${candidate##*/}"
+            case "${candidate}" in /*) ;; *) return 1 ;; esac
+            printf '%s\n' "${candidate}"
+          }
+
+          validate_binary() {
+            local binary="$1" expected_identity="${2:-}" owner mode permissions identity
+            case "${binary}" in /*) ;; *) return 1 ;; esac
+            test -f "${binary}"
+            test ! -L "${binary}"
+            test -x "${binary}"
+            owner="$(stat -c '%u' -- "${binary}")"
+            mode="$(stat -c '%a' -- "${binary}")"
+            test "${owner}" = 0 || test "${owner}" = "${effective_uid}"
+            permissions=$((8#${mode}))
+            (( (permissions & 0022) == 0 ))
+            validate_authority "${binary%/*}"
+            identity="$(stat -c '%d:%i' -- "${binary}")"
+            test -z "${expected_identity}" || test "${identity}" = "${expected_identity}"
+            printf '%s\n' "${identity}"
+          }
+
+          validate_roots() {
+            local path
+            test "$(stat -c '%a' -- "${ACTIONLINT_ROOT}")" = 700
+            test "$(stat -c '%u' -- "${ACTIONLINT_ROOT}")" = "${effective_uid}"
+            for directory in bin home xdg gopath gomodcache gocache tmp config; do
+              path="${ACTIONLINT_ROOT}/${directory}"
+              test -d "${path}"
+              test ! -L "${path}"
+              test "$(stat -c '%a' -- "${path}")" = 700
+              test "$(stat -c '%u' -- "${path}")" = "${effective_uid}"
+            done
+            test -f "${ACTIONLINT_ROOT}/config/actionlint.yaml"
+            test ! -L "${ACTIONLINT_ROOT}/config/actionlint.yaml"
+            test "$(stat -c '%a' -- "${ACTIONLINT_ROOT}/config/actionlint.yaml")" = 600
+            test "$(stat -c '%u' -- "${ACTIONLINT_ROOT}/config/actionlint.yaml")" = "${effective_uid}"
+          }
+
+          GO_BIN="$(resolve_binary go)"
+          GO_IDENTITY="$(validate_binary "${GO_BIN}")"
+          ENV_BIN=/usr/bin/env
+          ENV_IDENTITY="$(validate_binary "${ENV_BIN}")"
+
+          revalidate_build_tools() {
+            validate_roots
+            test "$(validate_binary "${GO_BIN}" "${GO_IDENTITY}")" = "${GO_IDENTITY}"
+            test "$(validate_binary "${ENV_BIN}" "${ENV_IDENTITY}")" = "${ENV_IDENTITY}"
+          }
+
+          run_clean_go() {
+            "${ENV_BIN}" -i \
+              HOME="${ACTIONLINT_ROOT}/home" \
+              XDG_CONFIG_HOME="${ACTIONLINT_ROOT}/xdg" \
+              GOBIN="${ACTIONLINT_ROOT}/bin" \
+              GOPATH="${ACTIONLINT_ROOT}/gopath" \
+              GOMODCACHE="${ACTIONLINT_ROOT}/gomodcache" \
+              GOCACHE="${ACTIONLINT_ROOT}/gocache" \
+              TMPDIR="${ACTIONLINT_ROOT}/tmp" \
+              GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org \
+              GOSUMDB=sum.golang.org GOPRIVATE= GONOPROXY= GONOSUMDB= \
+              GOINSECURE= GOENV=off GOFLAGS= GOWORK=off CGO_ENABLED=0 \
+              LANG=C LC_ALL=C TZ=UTC \
+              "${GO_BIN}" "$@"
+          }
+
+          revalidate_build_tools
+          test "$(run_clean_go env GOVERSION)" = go1.26.5
+          revalidate_build_tools
+          run_clean_go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+          ACTIONLINT_BIN="${ACTIONLINT_ROOT}/bin/actionlint"
+          ACTIONLINT_IDENTITY="$(validate_binary "${ACTIONLINT_BIN}")"
+
+          revalidate_actionlint() {
+            validate_roots
+            test "$(validate_binary "${ENV_BIN}" "${ENV_IDENTITY}")" = "${ENV_IDENTITY}"
+            test "$(validate_binary "${ACTIONLINT_BIN}" "${ACTIONLINT_IDENTITY}")" = "${ACTIONLINT_IDENTITY}"
+          }
+
+          run_clean_actionlint() {
+            "${ENV_BIN}" -i \
+              HOME="${ACTIONLINT_ROOT}/home" \
+              XDG_CONFIG_HOME="${ACTIONLINT_ROOT}/xdg" \
+              TMPDIR="${ACTIONLINT_ROOT}/tmp" \
+              LANG=C LC_ALL=C TZ=UTC \
+              "${ACTIONLINT_BIN}" "$@"
+          }
+
+          revalidate_actionlint
+          test "$(run_clean_actionlint -version | sed -n '1p')" = v1.7.12
+          revalidate_actionlint
+          actionlint_help="$(run_clean_actionlint -help 2>&1)"
+          for flag in -config-file -shellcheck -pyflakes -no-color; do
+            grep -F -- "${flag}" <<<"${actionlint_help}" >/dev/null
+          done
+          revalidate_actionlint
+          run_clean_actionlint \
+            -config-file "${ACTIONLINT_ROOT}/config/actionlint.yaml" \
+            -shellcheck= -pyflakes= -no-color \
+            .github/workflows/ci.yml .github/workflows/release.yml
       - name: Check formatting
         shell: bash
         run: |
@@ -28,7 +179,7 @@ jobs:
           test -z "$unformatted_files"
       - name: Vet
         run: go vet ./...
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a
         with:
           version: v2.12.2
 
@@ -36,8 +187,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: .go-version
           cache: true
@@ -64,8 +215,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: .go-version
           cache: true
@@ -86,8 +237,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: .go-version
           cache: true
@@ -125,8 +276,8 @@ jobs:
             goarch: amd64
             extension: .exe
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: .go-version
           cache: true
@@ -144,8 +295,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: .go-version
           cache: true
