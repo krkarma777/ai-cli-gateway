@@ -1457,6 +1457,101 @@ func TestREADMEQuickStartSemanticHelpersRejectBypasses(t *testing.T) {
 	})
 }
 
+func TestREADMEQuickStartWholeDocumentBoundaries(t *testing.T) {
+	readme := string(readRepositoryFile(t, "README.md"))
+	if err := validateREADMEReleaseQuickStartSemantics(readme); err != nil {
+		t.Fatalf("baseline README semantic contract: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(string) (string, error)
+	}{
+		{
+			name: "Quick Start inside HTML comment",
+			mutate: func(document string) (string, error) {
+				mutated, err := replaceREADMEOnce("\n## Quick Start\n", "\n<!--\n## Quick Start\n")(document)
+				if err != nil {
+					return "", err
+				}
+				return replaceREADMEOnce("\n## Architecture and scope\n", "\n## Architecture and scope\n-->\n")(mutated)
+			},
+		},
+		{
+			name: "Quick Start inside HTML details",
+			mutate: func(document string) (string, error) {
+				mutated, err := replaceREADMEOnce("\n## Quick Start\n", "\n<details><summary>Hidden</summary>\n## Quick Start\n")(document)
+				if err != nil {
+					return "", err
+				}
+				return replaceREADMEOnce("\n## Architecture and scope\n", "\n## Architecture and scope\n</details>\n")(mutated)
+			},
+		},
+		{
+			name: "Quick Start inside outer tilde fence",
+			mutate: func(document string) (string, error) {
+				mutated, err := replaceREADMEOnce("\n## Quick Start\n", "\n~~~~text\n## Quick Start\n")(document)
+				if err != nil {
+					return "", err
+				}
+				return replaceREADMEOnce("\n## Architecture and scope\n", "\n## Architecture and scope\n~~~~\n")(mutated)
+			},
+		},
+		{
+			name: "Quick Start inside longer tilde fence",
+			mutate: func(document string) (string, error) {
+				mutated, err := replaceREADMEOnce("\n## Quick Start\n", "\n~~~~~text\n## Quick Start\n")(document)
+				if err != nil {
+					return "", err
+				}
+				return replaceREADMEOnce("\n## Architecture and scope\n", "\n## Architecture and scope\n~~~~~\n")(mutated)
+			},
+		},
+		{
+			name: "Quick Start inside outer backtick fence",
+			mutate: func(document string) (string, error) {
+				mutated, err := replaceREADMEOnce("\n## Quick Start\n", "\n````text\n## Quick Start\n")(document)
+				if err != nil {
+					return "", err
+				}
+				return replaceREADMEOnce("\n## Architecture and scope\n", "\n## Architecture and scope\n````\n")(mutated)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated, err := test.mutate(readme)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateREADMEReleaseQuickStartSemantics(mutated); err == nil {
+				t.Fatal("README semantic validator accepted a non-rendered Quick Start boundary")
+			}
+		})
+	}
+
+	t.Run("later fenced literals do not affect boundaries", func(t *testing.T) {
+		mutated := readme + "\n~~~~text\n<!-- literal fenced HTML -->\n## Quick Start\n## Architecture and scope\n<?literal?>\n~~~~\n"
+		if err := validateREADMEReleaseQuickStartSemantics(mutated); err != nil {
+			t.Fatalf("semantic validator rejected inert later fenced literals: %v", err)
+		}
+	})
+
+	t.Run("HTML outside Quick Start is rejected", func(t *testing.T) {
+		mutated := readme + "\n<details>\n</details>\n"
+		if err := validateREADMEReleaseQuickStartSemantics(mutated); err == nil {
+			t.Fatal("semantic validator accepted raw HTML outside Quick Start")
+		}
+	})
+
+	t.Run("CRLF README preserves boundaries and source seals", func(t *testing.T) {
+		mutated := strings.ReplaceAll(readme, "\n", "\r\n")
+		if err := validateREADMEReleaseQuickStart(mutated); err != nil {
+			t.Fatalf("validator rejected CRLF README: %v", err)
+		}
+	})
+}
+
 func replaceREADMEOnce(old, replacement string) func(string) (string, error) {
 	return func(document string) (string, error) {
 		if count := strings.Count(document, old); count != 1 {
@@ -1783,17 +1878,10 @@ func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) er
 
 func parseREADMEQuickStart(readme string) (readmeQuickStartDocument, error) {
 	normalized := strings.ReplaceAll(readme, "\r\n", "\n")
-	const quickStartMarker = "\n## Quick Start\n"
-	const architectureMarker = "\n## Architecture and scope\n"
-	if strings.Count(normalized, quickStartMarker) != 1 || strings.Count(normalized, architectureMarker) != 1 {
-		return readmeQuickStartDocument{}, errors.New("Quick Start and Architecture headings must each occur exactly once")
+	quickStartSource, err := extractREADMEQuickStartSource(normalized)
+	if err != nil {
+		return readmeQuickStartDocument{}, err
 	}
-	start := strings.Index(normalized, quickStartMarker)
-	end := strings.Index(normalized, architectureMarker)
-	if start < 0 || end < 0 || start >= end {
-		return readmeQuickStartDocument{}, errors.New("Quick Start must precede Architecture and scope")
-	}
-	quickStartSource := normalized[start+len(quickStartMarker) : end]
 	if strings.Contains(quickStartSource, "<!--") || strings.Contains(quickStartSource, "-->") {
 		return readmeQuickStartDocument{}, errors.New("Quick Start must not contain HTML comments")
 	}
@@ -1876,6 +1964,65 @@ func parseREADMEQuickStart(readme string) (readmeQuickStartDocument, error) {
 		prose[name] = rendered
 	}
 	return readmeQuickStartDocument{prose: prose, fences: fences}, nil
+}
+
+func extractREADMEQuickStartSource(readme string) (string, error) {
+	lines := strings.Split(readme, "\n")
+	quickStartLine := -1
+	architectureLine := -1
+	var fenceMarker byte
+	fenceLength := 0
+	for index, line := range lines {
+		if fenceLength > 0 {
+			if isGFMFenceClosing(line, fenceMarker, fenceLength) {
+				fenceMarker = 0
+				fenceLength = 0
+			}
+			continue
+		}
+		marker, length, _, opening, err := parseGFMFenceOpening(line)
+		if err != nil {
+			return "", err
+		}
+		if opening {
+			fenceMarker = marker
+			fenceLength = length
+			continue
+		}
+		if containsREADMERawHTMLConstruct(line) {
+			return "", errors.New("README contains raw HTML outside a GFM code fence")
+		}
+		switch line {
+		case "## Quick Start":
+			if quickStartLine >= 0 {
+				return "", errors.New("README contains more than one top-level Quick Start heading")
+			}
+			quickStartLine = index
+		case "## Architecture and scope":
+			if architectureLine >= 0 {
+				return "", errors.New("README contains more than one top-level Architecture and scope heading")
+			}
+			architectureLine = index
+		}
+	}
+	if fenceLength > 0 {
+		return "", errors.New("README contains an unterminated GFM code fence")
+	}
+	if quickStartLine < 0 || architectureLine < 0 {
+		return "", errors.New("Quick Start and Architecture headings must each occur exactly once at top level")
+	}
+	if quickStartLine >= architectureLine {
+		return "", errors.New("Quick Start must precede Architecture and scope")
+	}
+	return strings.Join(lines[quickStartLine+1:architectureLine], "\n"), nil
+}
+
+func containsREADMERawHTMLConstruct(line string) bool {
+	if strings.Contains(line, "<!") || strings.Contains(line, "-->") ||
+		strings.Contains(line, "<?") || strings.Contains(line, "?>") {
+		return true
+	}
+	return regexp.MustCompile(`(?i)<[ \t]*/?[ \t]*[a-z][a-z0-9-]*(?:[ \t/>]|$)`).MatchString(line)
 }
 
 func validateREADMEQuickStartProseLine(line string) error {
