@@ -3,6 +3,8 @@
 import os
 import sys
 
+os.environ.pop("OPENAI_LOG", None)
+
 import openai
 from openai import OpenAI
 
@@ -27,6 +29,8 @@ def timeout_seconds() -> float:
     value = os.environ.get("AI_CLI_GATEWAY_TIMEOUT_SECONDS")
     if value is None:
         return 300.0
+    if len(value) > 3:
+        raise InvalidTimeoutError
     if not value.isascii() or not value.isdecimal():
         raise InvalidTimeoutError
     seconds = int(value)

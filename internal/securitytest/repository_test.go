@@ -2,6 +2,7 @@ package securitytest
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -475,10 +477,8 @@ func TestOfficialSDKExamplesContract(t *testing.T) {
 	if !packageManifest.Private || len(packageManifest.Engines) != 1 || len(packageManifest.Dependencies) != 1 {
 		t.Fatal("package.json must be private and contain only the declared engine and dependency")
 	}
-	for name := range packageManifest.Scripts {
-		if isNPMLifecycleScript(name) {
-			t.Fatalf("package.json declares forbidden lifecycle script %q", name)
-		}
+	if len(packageManifest.Scripts) != 0 {
+		t.Fatal("package.json root scripts must be empty")
 	}
 
 	var packageLock struct {
@@ -497,10 +497,8 @@ func TestOfficialSDKExamplesContract(t *testing.T) {
 	if packageLock.LockfileVersion != 3 || !ok || rootPackage.Dependencies["openai"] != "6.48.0" {
 		t.Fatal("package-lock.json does not lock the required root package and OpenAI SDK")
 	}
-	for name := range rootPackage.Scripts {
-		if isNPMLifecycleScript(name) {
-			t.Fatalf("package-lock.json root declares forbidden lifecycle script %q", name)
-		}
+	if len(rootPackage.Scripts) != 0 {
+		t.Fatal("package-lock.json root scripts must be empty")
 	}
 	for path, dependency := range packageLock.Packages {
 		if path != "" && dependency.Integrity == "" {
@@ -511,66 +509,408 @@ func TestOfficialSDKExamplesContract(t *testing.T) {
 	for _, source := range []struct {
 		name     string
 		contents string
-		markers  []string
 	}{
 		{
 			name:     "Python",
 			contents: string(readRepositoryFile(t, "examples/openai-sdk/python/main.py")),
-			markers: []string{
-				`"max_retries": 0`, `.models.list(`, `.responses.create(`, `stream=False`, `tools=[]`,
-				`AI_CLI_GATEWAY_TIMEOUT_SECONDS`, `300.0`, `value.isascii()`, `value.isdecimal()`,
-			},
 		},
 		{
 			name:     "JavaScript",
 			contents: string(readRepositoryFile(t, "examples/openai-sdk/javascript/main.mjs")),
-			markers: []string{
-				`maxRetries: 0`, `.models.list(`, `.responses.create(`, `stream: false`, `tools: []`,
-				`AI_CLI_GATEWAY_TIMEOUT_SECONDS`, `300_000`, `/^[0-9]+$/`,
-			},
 		},
 	} {
-		requireContainsAll(t, source.name+" SDK source", source.contents, source.markers...)
-		variables := regexp.MustCompile(`AI_CLI_GATEWAY_[A-Z0-9_]+`).FindAllString(source.contents, -1)
-		gotVariables := make(map[string]struct{})
-		for _, variable := range variables {
-			gotVariables[variable] = struct{}{}
-		}
-		wantVariables := map[string]struct{}{
-			"AI_CLI_GATEWAY_BASE_URL": {}, "AI_CLI_GATEWAY_API_KEY": {},
-			"AI_CLI_GATEWAY_MODEL": {}, "AI_CLI_GATEWAY_TIMEOUT_SECONDS": {},
-		}
-		if !reflect.DeepEqual(gotVariables, wantVariables) {
-			t.Fatalf("%s SDK source gateway variables = %v, want exactly %v", source.name, gotVariables, wantVariables)
-		}
-		lower := strings.ToLower(source.contents)
-		for _, forbidden := range []string{
-			"stream=true", "stream: true", "submit_tool_outputs", "function_call_output",
-			`"type": "function"`, `type: "function"`,
-			"openai_log", "loglevel", "debug=true", "debug: true",
-		} {
-			if strings.Contains(lower, forbidden) {
-				t.Fatalf("%s SDK source contains forbidden behavior marker %q", source.name, forbidden)
-			}
-		}
-		for _, line := range strings.Split(source.contents, "\n") {
-			trimmed := strings.ReplaceAll(strings.TrimSpace(line), " ", "")
-			if strings.HasPrefix(trimmed, "tools=") && trimmed != "tools=[]," ||
-				strings.HasPrefix(trimmed, "tools:") && trimmed != "tools:[]," {
-				t.Fatalf("%s SDK source contains a nonempty or indirect tools request", source.name)
-			}
+		if err := validateOfficialSDKSource(source.name, source.contents); err != nil {
+			t.Fatalf("%s SDK source contract: %v", source.name, err)
 		}
 	}
 }
 
-func isNPMLifecycleScript(name string) bool {
-	switch name {
-	case "preinstall", "install", "postinstall", "prepublish", "prepublishOnly", "prepare":
-		return true
-	default:
-		return false
+func validateOfficialSDKSource(language, contents string) error {
+	rawRequired := map[string][]string{
+		"Python": {
+			`os.environ.pop("OPENAI_LOG", None)`, `"max_retries": 0`, `models = client.models.list()`,
+			`return 300.0`, `if len(value) > 3:`, `if not value.isascii() or not value.isdecimal():`,
+			`if seconds < 1 or seconds > 300:`, `assert len(models.data) == 1`,
+			`assert_fields(model, {"id", "object", "created", "owned_by"})`, `assert model.id == "codex-sdk-test"`,
+			`assert model.object == "model"`, `assert model.created == 0`, `assert model.owned_by == "local"`,
+			`assert isinstance(response._request_id, str)`, `assert response._request_id.startswith("req_")`,
+			`assert isinstance(response.id, str) and response.id.startswith("resp_")`,
+			`assert response.object == "response"`,
+			`assert isinstance(response.created_at, int) and not isinstance(response.created_at, bool)`,
+			`assert isinstance(response.completed_at, int) and not isinstance(response.completed_at, bool)`,
+			`assert response.completed_at >= response.created_at`, `assert response.status == "completed"`,
+			`assert response.background is False`, `assert response.error is None`,
+			`assert response.incomplete_details is None`, `assert response.instructions == "SDK contract instruction."`,
+			`assert response.model == model_name`, `assert response.parallel_tool_calls is False`,
+			`assert response.previous_response_id is None`, `assert response.store is False`,
+			`assert response.tools == []`, `assert response.tool_choice == "none"`,
+			`assert_fields(response.text, {"format"})`, `assert_fields(response.text.format, {"type"})`,
+			`assert response.text.format.type == "text"`, `assert len(response.output) == 1`,
+			`assert isinstance(message.id, str) and message.id.startswith("msg_")`,
+			`assert message.type == "message"`, `assert message.status == "completed"`,
+			`assert message.role == "assistant"`, `assert len(message.content) == 1`, `assert content.type == "output_text"`,
+			`assert content.annotations == []`, `assert content.text == "SDK_GATEWAY_OK\n"`,
+			`print(f"sdk_contract_error: missing {error.name}", file=sys.stderr)`,
+			`print("sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS", file=sys.stderr)`,
+			`print(f"sdk_contract_error: python_api {api_status(error)}", file=sys.stderr)`,
+			`print("sdk_contract_error: python_assertion", file=sys.stderr)`, `print("python_sdk_contract_ok")`,
+		},
+		"JavaScript": {
+			`logLevel: "off"`, `maxRetries: 0`, `const models = await client.models.list()`,
+			`return 300_000`, `if (!/^[0-9]+$/.test(value))`,
+			`if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 300)`,
+			`assert.equal(models.data.length, 1)`, `assertFields(model, ["id", "object", "created", "owned_by"])`,
+			`assert.equal(model.id, "codex-sdk-test")`, `assert.equal(model.object, "model")`,
+			`assert.equal(model.created, 0)`, `assert.equal(model.owned_by, "local")`,
+			`assert.equal(typeof response._request_id, "string")`, `assert.match(response._request_id, /^req_/)`,
+			`assert.equal(typeof response.id, "string")`, `assert.match(response.id, /^resp_/)`,
+			`assert.equal(response.object, "response")`, `assert.equal(Number.isSafeInteger(response.created_at), true)`,
+			`assert.equal(Number.isSafeInteger(response.completed_at), true)`,
+			`assert.equal(response.completed_at >= response.created_at, true)`,
+			`assert.equal(response.status, "completed")`, `assert.equal(response.background, false)`,
+			`assert.equal(response.error, null)`, `assert.equal(response.incomplete_details, null)`,
+			`assert.equal(response.instructions, "SDK contract instruction.")`, `assert.equal(response.model, modelName)`,
+			`assert.equal(response.parallel_tool_calls, false)`, `assert.equal(response.previous_response_id, null)`,
+			`assert.equal(response.store, false)`, `assert.deepEqual(response.tools, [])`,
+			`assert.equal(response.tool_choice, "none")`, `assertFields(response.text, ["format"])`,
+			`assertFields(response.text.format, ["type"])`, `assert.equal(response.text.format.type, "text")`,
+			`assert.equal(response.output.length, 1)`, `assert.equal(typeof message.id, "string")`,
+			`assert.match(message.id, /^msg_/)`, `assert.equal(message.type, "message")`,
+			`assert.equal(message.status, "completed")`, `assert.equal(message.role, "assistant")`,
+			`assert.equal(message.content.length, 1)`, `assert.equal(content.type, "output_text")`,
+			`assert.deepEqual(content.annotations, [])`,
+			`assert.equal(content.text, "SDK_GATEWAY_OK\n")`,
+			"console.error(`sdk_contract_error: missing ${error.name}`)",
+			`console.error("sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS")`,
+			"console.error(`sdk_contract_error: javascript_api ${apiStatus(error)}`)",
+			`console.error("sdk_contract_error: javascript_assertion")`, `console.log("javascript_sdk_contract_ok")`,
+		},
+	}
+	normalizedRequired := map[string][]string{
+		"Python": {
+			`response = client.responses.create( model=model_name, instructions="SDK contract instruction.", input="SDK contract input.", text={"format": {"type": "text"}}, stream=False, store=False, tools=[], tool_choice="none", )`,
+			`assert_fields( response, { "id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "instructions", "model", "output", "parallel_tool_calls", "previous_response_id", "store", "text", "tools", "tool_choice", }, )`,
+			`assert_fields(message, {"id", "type", "status", "role", "content"})`,
+			`assert_fields(content, {"type", "annotations", "text"})`,
+		},
+		"JavaScript": {
+			`const response = await client.responses.create({ model: modelName, instructions: "SDK contract instruction.", input: "SDK contract input.", text: { format: { type: "text" } }, stream: false, store: false, tools: [], tool_choice: "none", });`,
+			`assertFields(response, [ "id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "instructions", "model", "output", "parallel_tool_calls", "previous_response_id", "store", "text", "tools", "tool_choice", ]);`,
+			`assertFields(message, ["id", "type", "status", "role", "content"]);`,
+			`assertFields(content, ["type", "annotations", "text"]);`,
+		},
+	}
+	markers, ok := rawRequired[language]
+	if !ok {
+		return errors.New("unknown SDK language")
+	}
+	for _, marker := range markers {
+		if !strings.Contains(contents, marker) {
+			return errors.New("missing required contract marker")
+		}
+	}
+	normalized := collapseWhitespace(contents)
+	for _, marker := range normalizedRequired[language] {
+		if !strings.Contains(normalized, marker) {
+			return errors.New("missing required normalized contract marker")
+		}
+	}
+	if language == "Python" && strings.Index(contents, `os.environ.pop("OPENAI_LOG", None)`) > strings.Index(contents, "import openai") {
+		return errors.New("Python logging suppression occurs after SDK import")
+	}
+	variables := regexp.MustCompile(`AI_CLI_GATEWAY_[A-Z0-9_]+`).FindAllString(contents, -1)
+	gotVariables := make(map[string]struct{})
+	for _, variable := range variables {
+		gotVariables[variable] = struct{}{}
+	}
+	wantVariables := map[string]struct{}{
+		"AI_CLI_GATEWAY_BASE_URL": {}, "AI_CLI_GATEWAY_API_KEY": {},
+		"AI_CLI_GATEWAY_MODEL": {}, "AI_CLI_GATEWAY_TIMEOUT_SECONDS": {},
+	}
+	if !reflect.DeepEqual(gotVariables, wantVariables) {
+		return errors.New("gateway environment variable set is not closed")
+	}
+	lower := strings.ToLower(contents)
+	for _, forbidden := range []string{
+		"stream=true", "stream: true", "submit_tool_outputs", "function_call_output",
+		`"type": "function"`, `type: "function"`, "debug=true", "debug: true",
+	} {
+		if strings.Contains(lower, forbidden) {
+			return errors.New("source contains forbidden behavior")
+		}
+	}
+	for _, line := range strings.Split(contents, "\n") {
+		trimmed := strings.ReplaceAll(strings.TrimSpace(line), " ", "")
+		if strings.HasPrefix(trimmed, "tools=") && trimmed != "tools=[]," ||
+			strings.HasPrefix(trimmed, "tools:") && trimmed != "tools:[]," {
+			return errors.New("source contains a nonempty or indirect tools request")
+		}
+	}
+	return nil
+}
+
+func TestOfficialSDKExamplesContractRejectsMutations(t *testing.T) {
+	tests := []struct {
+		name        string
+		language    string
+		path        string
+		original    string
+		replacement string
+	}{
+		{"python logging suppression", "Python", "examples/openai-sdk/python/main.py", `os.environ.pop("OPENAI_LOG", None)`, `os.environ.get("OPENAI_LOG")`},
+		{"python timeout length", "Python", "examples/openai-sdk/python/main.py", `if len(value) > 3:`, `if len(value) > 4:`},
+		{"python timeout maximum", "Python", "examples/openai-sdk/python/main.py", `seconds > 300`, `seconds > 301`},
+		{"python retries", "Python", "examples/openai-sdk/python/main.py", `"max_retries": 0`, `"max_retries": 1`},
+		{"python request instruction", "Python", "examples/openai-sdk/python/main.py", `instructions="SDK contract instruction."`, `instructions="changed"`},
+		{"python request store", "Python", "examples/openai-sdk/python/main.py", `store=False`, `store=True`},
+		{"python response role", "Python", "examples/openai-sdk/python/main.py", `assert message.role == "assistant"`, `assert message.role == "user"`},
+		{"python response text", "Python", "examples/openai-sdk/python/main.py", `assert content.text == "SDK_GATEWAY_OK\n"`, `assert content.text == "changed\n"`},
+		{"python fixed error", "Python", "examples/openai-sdk/python/main.py", `sdk_contract_error: python_assertion`, `sdk_contract_error: changed`},
+		{"python fixed success", "Python", "examples/openai-sdk/python/main.py", `python_sdk_contract_ok`, `python_contract_changed`},
+		{"javascript logging suppression", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `logLevel: "off"`, `logLevel: "warn"`},
+		{"javascript timeout maximum", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `seconds > 300`, `seconds > 301`},
+		{"javascript retries", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `maxRetries: 0`, `maxRetries: 1`},
+		{"javascript request input", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `input: "SDK contract input."`, `input: "changed"`},
+		{"javascript request tools", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `tools: []`, `tools: [{ type: "function" }]`},
+		{"javascript response role", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `assert.equal(message.role, "assistant")`, `assert.equal(message.role, "user")`},
+		{"javascript response text", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `assert.equal(content.text, "SDK_GATEWAY_OK\n")`, `assert.equal(content.text, "changed\n")`},
+		{"javascript fixed error", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `sdk_contract_error: javascript_assertion`, `sdk_contract_error: changed`},
+		{"javascript fixed success", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `javascript_sdk_contract_ok`, `javascript_contract_changed`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			contents := string(readRepositoryFile(t, test.path))
+			if count := strings.Count(contents, test.original); count != 1 {
+				t.Fatalf("mutation target occurs %d times, want exactly once", count)
+			}
+			mutated := strings.Replace(contents, test.original, test.replacement, 1)
+			if err := validateOfficialSDKSource(test.language, mutated); err == nil {
+				t.Fatal("source contract accepted a security/compatibility mutation")
+			}
+		})
 	}
 }
+
+func TestOfficialSDKExamplesSuppressHostileLogging(t *testing.T) {
+	t.Run("Python", func(t *testing.T) {
+		python := lookPathForSDKTest(t, "python3", "python")
+		root := t.TempDir()
+		writeFixtureFile(t, root, "openai/__init__.py", []byte(pythonSDKContractStub))
+		pythonSource := filepath.Join(root, "main.py")
+		writeFixtureFile(t, root, "main.py", readRepositoryFile(t, "examples/openai-sdk/python/main.py"))
+		runSDKClientCases(t, python, pythonSource, append(sdkTestEnvironment(),
+			"PYTHONPATH="+root,
+			"PYTHONPYCACHEPREFIX="+filepath.Join(root, "python-cache"),
+		), []sdkClientCase{
+			{name: "missing", output: "sdk_contract_error: missing AI_CLI_GATEWAY_BASE_URL\n", exitCode: 1},
+			{name: "non-ASCII timeout", environment: sdkValidEnvironment("٣"), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
+			{name: "oversized timeout", environment: sdkValidEnvironment(strings.Repeat("9", 5000)), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
+			{name: "success", environment: sdkValidEnvironment("5"), output: "python_sdk_contract_ok\n", exitCode: 0},
+		})
+	})
+
+	t.Run("JavaScript", func(t *testing.T) {
+		node := lookPathForSDKTest(t, "node")
+		root := t.TempDir()
+		writeFixtureFile(t, root, "package.json", []byte(`{"private":true,"type":"module"}`))
+		writeFixtureFile(t, root, "node_modules/openai/package.json", []byte(`{"name":"openai","type":"module","exports":"./index.mjs"}`))
+		writeFixtureFile(t, root, "node_modules/openai/index.mjs", []byte(javaScriptSDKContractStub))
+		javaScriptSource := filepath.Join(root, "main.mjs")
+		writeFixtureFile(t, root, "main.mjs", readRepositoryFile(t, "examples/openai-sdk/javascript/main.mjs"))
+		runSDKClientCases(t, node, javaScriptSource, sdkTestEnvironment(), []sdkClientCase{
+			{name: "missing", output: "sdk_contract_error: missing AI_CLI_GATEWAY_BASE_URL\n", exitCode: 1},
+			{name: "non-ASCII timeout", environment: sdkValidEnvironment("٣"), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
+			{name: "oversized timeout", environment: sdkValidEnvironment(strings.Repeat("9", 5000)), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
+			{name: "success", environment: sdkValidEnvironment("5"), output: "javascript_sdk_contract_ok\n", exitCode: 0},
+		})
+	})
+}
+
+type sdkClientCase struct {
+	name        string
+	environment []string
+	output      string
+	exitCode    int
+}
+
+func lookPathForSDKTest(t *testing.T, names ...string) string {
+	t.Helper()
+	for _, name := range names {
+		path, err := exec.LookPath(name)
+		if err == nil {
+			return path
+		}
+	}
+	t.Skip("required SDK example runtime is not installed")
+	return ""
+}
+
+func sdkTestEnvironment() []string {
+	environment := []string{"OPENAI_LOG=debug"}
+	for _, name := range []string{"PATH", "SystemRoot", "WINDIR", "ComSpec", "PATHEXT"} {
+		if value := os.Getenv(name); value != "" {
+			environment = append(environment, name+"="+value)
+		}
+	}
+	return environment
+}
+
+func sdkValidEnvironment(timeout string) []string {
+	return []string{
+		"AI_CLI_GATEWAY_BASE_URL=http://127.0.0.1:1/v1",
+		"AI_CLI_GATEWAY_API_" + "KEY=fixture-only",
+		"AI_CLI_GATEWAY_MODEL=codex-sdk-test",
+		"AI_CLI_GATEWAY_TIMEOUT_SECONDS=" + timeout,
+	}
+}
+
+func runSDKClientCases(t *testing.T, executable, source string, baseEnvironment []string, cases []sdkClientCase) {
+	t.Helper()
+	for _, test := range cases {
+		t.Run(filepath.Base(source)+" "+test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, executable, source) //nolint:gosec // Fixed test runtime and repository-owned copied source.
+			command.Env = append(append([]string{}, baseEnvironment...), test.environment...)
+			output, err := command.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatal("SDK fixture client exceeded its local execution deadline")
+			}
+			exitCode := 0
+			if err != nil {
+				var exitError *exec.ExitError
+				if !errors.As(err, &exitError) {
+					t.Fatalf("run SDK fixture client: %v", err)
+				}
+				exitCode = exitError.ExitCode()
+			}
+			if exitCode != test.exitCode {
+				t.Fatalf("exit code = %d, want %d", exitCode, test.exitCode)
+			}
+			if string(output) != test.output {
+				t.Fatalf("combined output = %q, want exactly one fixed line %q", output, test.output)
+			}
+		})
+	}
+}
+
+const pythonSDKContractStub = `import os
+import sys
+
+if os.environ.get("OPENAI_LOG") == "debug":
+    print("python_sdk_debug", file=sys.stderr)
+
+class APIError(Exception):
+    pass
+
+class Value:
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+        self.model_fields_set = set(fields)
+
+class Models:
+    def list(self):
+        return Value(data=[Value(id="codex-sdk-test", object="model", created=0, owned_by="local")])
+
+class Responses:
+    def create(self, **request):
+        expected = {
+            "model": "codex-sdk-test",
+            "instructions": "SDK contract instruction.",
+            "input": "SDK contract input.",
+            "text": {"format": {"type": "text"}},
+            "stream": False,
+            "store": False,
+            "tools": [],
+            "tool_choice": "none",
+        }
+        if request != expected:
+            raise AssertionError
+        content = Value(type="output_text", annotations=[], text="SDK_GATEWAY_OK\n")
+        message = Value(id="msg_fixture", type="message", status="completed", role="assistant", content=[content])
+        text = Value(format=Value(type="text"))
+        response = Value(
+            id="resp_fixture", object="response", created_at=1, completed_at=2, status="completed",
+            background=False, error=None, incomplete_details=None, instructions="SDK contract instruction.",
+            model="codex-sdk-test", output=[message], parallel_tool_calls=False, previous_response_id=None,
+            store=False, text=text, tools=[], tool_choice="none",
+        )
+        response._request_id = "req_fixture"
+        return response
+
+class OpenAI:
+    def __init__(self, **options):
+        if os.environ.get("OPENAI_LOG") == "debug":
+            print("python_client_debug", file=sys.stderr)
+        if options.get("max_retries") != 0 or options.get("timeout") != 5.0:
+            raise AssertionError
+        self.models = Models()
+        self.responses = Responses()
+`
+
+const javaScriptSDKContractStub = `class APIError extends Error {}
+
+class OpenAI {
+  constructor(options) {
+    if (process.env.OPENAI_LOG === "debug" && options.logLevel !== "off") {
+      console.error("javascript_sdk_debug");
+    }
+    if (options.maxRetries !== 0 || options.timeout !== 5_000) {
+      throw new Error();
+    }
+    this.models = {
+      list: async () => ({ data: [{ id: "codex-sdk-test", object: "model", created: 0, owned_by: "local" }] }),
+    };
+    this.responses = {
+      create: async (request) => {
+        const expected = {
+          model: "codex-sdk-test",
+          instructions: "SDK contract instruction.",
+          input: "SDK contract input.",
+          text: { format: { type: "text" } },
+          stream: false,
+          store: false,
+          tools: [],
+          tool_choice: "none",
+        };
+        if (JSON.stringify(request) !== JSON.stringify(expected)) {
+          throw new Error();
+        }
+        const response = {
+          id: "resp_fixture",
+          object: "response",
+          created_at: 1,
+          completed_at: 2,
+          status: "completed",
+          background: false,
+          error: null,
+          incomplete_details: null,
+          instructions: "SDK contract instruction.",
+          model: "codex-sdk-test",
+          output: [{
+            id: "msg_fixture",
+            type: "message",
+            status: "completed",
+            role: "assistant",
+            content: [{ type: "output_text", annotations: [], text: "SDK_GATEWAY_OK\n" }],
+          }],
+          parallel_tool_calls: false,
+          previous_response_id: null,
+          store: false,
+          text: { format: { type: "text" } },
+          tools: [],
+          tool_choice: "none",
+        };
+        Object.defineProperty(response, "_request_id", { value: "req_fixture", enumerable: false });
+        return response;
+      },
+    };
+  }
+}
+
+OpenAI.APIError = APIError;
+export default OpenAI;
+`
 
 func TestREADMEOpeningAndOfficialContractSources(t *testing.T) {
 	readme := string(readRepositoryFile(t, "README.md"))

@@ -54,6 +54,7 @@ async function main() {
     baseURL: requireEnv("AI_CLI_GATEWAY_BASE_URL"),
     timeout: requestTimeout,
     maxRetries: 0,
+    logLevel: "off",
   });
 
   const models = await client.models.list();
