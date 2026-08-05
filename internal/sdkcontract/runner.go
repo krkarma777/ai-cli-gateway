@@ -141,9 +141,51 @@ type runState struct {
 	root       ownedRoot
 	registry   fixtureRegistry
 	gateway    child
-	rootSafe   bool
+	safety     removalSafety
 	cleanupErr bool
 	capture    *deferredScanner
+}
+
+type cleanupOwner uint8
+
+const (
+	rootOwner cleanupOwner = iota
+	registryOwner
+	gatewayOwner
+)
+
+type removalSafety struct {
+	rootUnresolved     bool
+	registryUnresolved bool
+	gatewayUnresolved  bool
+	detachedUnresolved bool
+}
+
+func (s *removalSafety) setOwner(owner cleanupOwner, safe bool) {
+	if s == nil {
+		return
+	}
+	unresolved := !safe
+	switch owner {
+	case rootOwner:
+		s.rootUnresolved = unresolved
+	case registryOwner:
+		s.registryUnresolved = unresolved
+	case gatewayOwner:
+		s.gatewayUnresolved = unresolved
+	default:
+		s.detachedUnresolved = true
+	}
+}
+
+func (s *removalSafety) markDetachedUnresolved() {
+	if s != nil {
+		s.detachedUnresolved = true
+	}
+}
+
+func (s removalSafety) safeToRemove() bool {
+	return !s.rootUnresolved && !s.registryUnresolved && !s.gatewayUnresolved && !s.detachedUnresolved
 }
 
 func runWithSystem(
@@ -171,7 +213,7 @@ func runWithSystem(
 		return newError(categoryCanceled)
 	}
 
-	state := &runState{rootSafe: true}
+	state := &runState{}
 	completed := false
 	defer func() {
 		result = finalizeRun(state, policy, result)
@@ -367,13 +409,13 @@ func acceptRootConstructor(state *runState, value ownedRoot, err error) bool {
 		state.root = value
 		if err != nil {
 			state.cleanupErr = true
-			state.rootSafe = cleanupErrorSafe(err)
+			state.safety.setOwner(rootOwner, cleanupErrorSafe(err))
 		}
 		return true
 	}
 	if err == nil || !cleanupErrorSafe(err) && isCleanupSafety(err) {
 		state.cleanupErr = true
-		state.rootSafe = false
+		state.safety.markDetachedUnresolved()
 		return false
 	}
 	if isCleanupSafety(err) {
@@ -387,14 +429,14 @@ func acceptRegistryConstructor(state *runState, value fixtureRegistry, err error
 		state.registry = value
 		if err != nil {
 			state.cleanupErr = true
-			state.rootSafe = cleanupErrorSafe(err)
+			state.safety.setOwner(registryOwner, cleanupErrorSafe(err))
 		}
 		return true
 	}
 	if err == nil || isCleanupSafety(err) {
 		state.cleanupErr = true
 		if err == nil || !cleanupErrorSafe(err) {
-			state.rootSafe = false
+			state.safety.markDetachedUnresolved()
 		}
 	}
 	return false
@@ -405,14 +447,14 @@ func acceptGatewayConstructor(state *runState, value child, err error) bool {
 		state.gateway = value
 		if err != nil {
 			state.cleanupErr = true
-			state.rootSafe = cleanupErrorSafe(err)
+			state.safety.setOwner(gatewayOwner, cleanupErrorSafe(err))
 		}
 		return true
 	}
 	if err == nil || isCleanupSafety(err) {
 		state.cleanupErr = true
 		if err == nil || !cleanupErrorSafe(err) {
-			state.rootSafe = false
+			state.safety.markDetachedUnresolved()
 		}
 	}
 	return false
@@ -432,7 +474,7 @@ func helperFailure(ctx context.Context, state *runState, err error) error {
 	if isCleanupSafety(err) {
 		state.cleanupErr = true
 		if !cleanupErrorSafe(err) {
-			state.rootSafe = false
+			state.safety.markDetachedUnresolved()
 		}
 		return newError(categoryCleanup)
 	}
@@ -535,9 +577,7 @@ func stopGateway(state *runState, grace time.Duration) cleanupResult {
 	if result.Err != nil {
 		state.cleanupErr = true
 	}
-	if !result.SafeToRemove {
-		state.rootSafe = false
-	}
+	state.safety.setOwner(gatewayOwner, result.SafeToRemove)
 	return result
 }
 
@@ -567,11 +607,9 @@ func finalizeRun(state *runState, policy lifecyclePolicy, primary error) error {
 		if registryResult.Err != nil {
 			state.cleanupErr = true
 		}
-		if !registryResult.SafeToRemove {
-			state.rootSafe = false
-		}
+		state.safety.setOwner(registryOwner, registryResult.SafeToRemove)
 	}
-	if state.rootSafe {
+	if state.safety.safeToRemove() {
 		if err := state.root.RemoveExact(); err != nil {
 			state.cleanupErr = true
 		}

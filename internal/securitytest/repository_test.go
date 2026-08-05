@@ -530,7 +530,7 @@ func validateOfficialSDKSource(language, contents string) error {
 		"Python": {
 			`os.environ.pop("OPENAI_LOG", None)`, `"max_retries": 0`, `models = client.models.list()`,
 			`return 300.0`, `if len(value) > 3:`, `if not value.isascii() or not value.isdecimal():`,
-			`if seconds < 1 or seconds > 300:`, `assert len(models.data) == 1`,
+			`if seconds < 1 or seconds > 300:`, `assert models.object == "list"`, `assert len(models.data) == 1`,
 			`assert_fields(model, {"id", "object", "created", "owned_by"})`, `assert model.id == "codex-sdk-test"`,
 			`assert model.object == "model"`, `assert model.created == 0`, `assert model.owned_by == "local"`,
 			`assert isinstance(response._request_id, str)`, `assert response._request_id.startswith("req_")`,
@@ -563,7 +563,8 @@ func validateOfficialSDKSource(language, contents string) error {
 			`logLevel: "off"`, `maxRetries: 0`, `const models = await client.models.list()`,
 			`return 300_000`, `if (!/^[0-9]+$/.test(value))`,
 			`if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 300)`,
-			`assert.equal(models.data.length, 1)`, `assertFields(model, ["id", "object", "created", "owned_by"])`,
+			`assert.equal(models.object, "list")`, `assert.equal(models.data.length, 1)`,
+			`assertFields(model, ["id", "object", "created", "owned_by"])`,
 			`assert.equal(model.id, "codex-sdk-test")`, `assert.equal(model.object, "model")`,
 			`assert.equal(model.created, 0)`, `assert.equal(model.owned_by, "local")`,
 			`assert.equal(typeof response._request_id, "string")`, `assert.match(response._request_id, /^req_/)`,
@@ -599,12 +600,14 @@ func validateOfficialSDKSource(language, contents string) error {
 			`assert_fields( response, { "id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "instructions", "model", "output", "parallel_tool_calls", "previous_response_id", "text", "tools", "tool_choice", }, )`,
 			`assert_fields(message, {"id", "type", "status", "role", "content"})`,
 			`assert_fields(content, {"type", "annotations", "text"})`,
+			`except Exception: print("sdk_contract_error: python_assertion", file=sys.stderr) return 1`,
 		},
 		"JavaScript": {
 			`const response = await client.responses.create({ model: modelName, instructions: "SDK contract instruction.", input: "SDK contract input.", text: { format: { type: "text" } }, stream: false, store: false, tools: [], tool_choice: "none", });`,
 			`assertFields(response, [ "id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "instructions", "model", "output", "output_text", "parallel_tool_calls", "previous_response_id", "store", "text", "tools", "tool_choice", ]);`,
 			`assertFields(message, ["id", "type", "status", "role", "content"]);`,
 			`assertFields(content, ["type", "annotations", "text"]);`,
+			`} else { console.error("sdk_contract_error: javascript_assertion"); } process.exitCode = 1;`,
 		},
 	}
 	markers, ok := rawRequired[language]
@@ -614,6 +617,9 @@ func validateOfficialSDKSource(language, contents string) error {
 	for _, marker := range markers {
 		if !strings.Contains(contents, marker) {
 			return errors.New("missing required contract marker")
+		}
+		if strings.HasPrefix(marker, "assert") && !hasExecutableSDKAssertion(contents, marker) {
+			return errors.New("required SDK assertion is not executable")
 		}
 	}
 	normalized := collapseWhitespace(contents)
@@ -628,6 +634,13 @@ func validateOfficialSDKSource(language, contents string) error {
 	if (language == "Python" && strings.Contains(contents, "str(error)")) ||
 		(language == "JavaScript" && strings.Contains(contents, "String(error)")) {
 		return errors.New("source serializes an SDK exception")
+	}
+	directExceptionOutput := map[string]*regexp.Regexp{
+		"Python":     regexp.MustCompile(`\bprint\s*\(\s*error(?:\s*[,)]|\.)`),
+		"JavaScript": regexp.MustCompile(`\bconsole\s*\.\s*error\s*\(\s*error(?:\s*[,)]|\.)`),
+	}
+	if directExceptionOutput[language].MatchString(contents) {
+		return errors.New("source prints an SDK exception")
 	}
 	variables := regexp.MustCompile(`AI_CLI_GATEWAY_[A-Z0-9_]+`).FindAllString(contents, -1)
 	gotVariables := make(map[string]struct{})
@@ -660,6 +673,15 @@ func validateOfficialSDKSource(language, contents string) error {
 	return nil
 }
 
+func hasExecutableSDKAssertion(contents, marker string) bool {
+	for _, line := range strings.Split(contents, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestOfficialSDKExamplesContractRejectsMutations(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -672,6 +694,8 @@ func TestOfficialSDKExamplesContractRejectsMutations(t *testing.T) {
 		{"python timeout length", "Python", "examples/openai-sdk/python/main.py", `if len(value) > 3:`, `if len(value) > 4:`},
 		{"python timeout maximum", "Python", "examples/openai-sdk/python/main.py", `seconds > 300`, `seconds > 301`},
 		{"python retries", "Python", "examples/openai-sdk/python/main.py", `"max_retries": 0`, `"max_retries": 1`},
+		{"python models object", "Python", "examples/openai-sdk/python/main.py", `assert models.object == "list"`, `assert models.object == "collection"`},
+		{"python models object commented", "Python", "examples/openai-sdk/python/main.py", `    assert models.object == "list"`, `    # assert models.object == "list"`},
 		{"python request instruction", "Python", "examples/openai-sdk/python/main.py", `instructions="SDK contract instruction."`, `instructions="changed"`},
 		{"python request store", "Python", "examples/openai-sdk/python/main.py", `store=False`, `store=True`},
 		{"python response role", "Python", "examples/openai-sdk/python/main.py", `assert message.role == "assistant"`, `assert message.role == "user"`},
@@ -683,9 +707,13 @@ func TestOfficialSDKExamplesContractRejectsMutations(t *testing.T) {
 		{"python API status lower bound", "Python", "examples/openai-sdk/python/main.py", `400 <= status`, `399 <= status`},
 		{"python API status upper bound", "Python", "examples/openai-sdk/python/main.py", `status <= 599`, `status <= 600`},
 		{"python API status exception disclosure", "Python", "examples/openai-sdk/python/main.py", `return "unknown"`, "return str(error)\n    return \"unknown\""},
+		{"python generic exception disclosure", "Python", "examples/openai-sdk/python/main.py", `print("sdk_contract_error: python_assertion", file=sys.stderr)`, "print(error, file=sys.stderr)\n        print(\"sdk_contract_error: python_assertion\", file=sys.stderr)"},
+		{"python generic exception interpolation", "Python", "examples/openai-sdk/python/main.py", "except Exception:\n        print(\"sdk_contract_error: python_assertion\", file=sys.stderr)", "except Exception as error:\n        print(f\"{error}\", file=sys.stderr)\n        print(\"sdk_contract_error: python_assertion\", file=sys.stderr)"},
 		{"javascript logging suppression", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `logLevel: "off"`, `logLevel: "warn"`},
 		{"javascript timeout maximum", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `seconds > 300`, `seconds > 301`},
 		{"javascript retries", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `maxRetries: 0`, `maxRetries: 1`},
+		{"javascript models object", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `assert.equal(models.object, "list")`, `assert.equal(models.object, "collection")`},
+		{"javascript models object commented", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `  assert.equal(models.object, "list");`, `  // assert.equal(models.object, "list");`},
 		{"javascript request input", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `input: "SDK contract input."`, `input: "changed"`},
 		{"javascript request tools", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `tools: []`, `tools: [{ type: "function" }]`},
 		{"javascript response role", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `assert.equal(message.role, "assistant")`, `assert.equal(message.role, "user")`},
@@ -696,6 +724,8 @@ func TestOfficialSDKExamplesContractRejectsMutations(t *testing.T) {
 		{"javascript API status lower bound", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `error.status >= 400`, `error.status >= 399`},
 		{"javascript API status upper bound", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `error.status <= 599`, `error.status <= 600`},
 		{"javascript API status exception disclosure", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `return "unknown"`, "return String(error);\n  return \"unknown\""},
+		{"javascript generic exception disclosure", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `console.error("sdk_contract_error: javascript_assertion")`, "console.error(error);\n    console.error(\"sdk_contract_error: javascript_assertion\")"},
+		{"javascript generic exception console log", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `console.error("sdk_contract_error: javascript_assertion")`, "console.log(error);\n    console.error(\"sdk_contract_error: javascript_assertion\")"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -733,6 +763,10 @@ func TestOfficialSDKExamplesSuppressHostileLogging(t *testing.T) {
 			{name: "API status boolean", environment: sdkAPIErrorEnvironment("models:boolean"), output: "sdk_contract_error: python_api unknown\n", exitCode: 1},
 			{name: "API status below range", environment: sdkAPIErrorEnvironment("responses:399"), output: "sdk_contract_error: python_api unknown\n", exitCode: 1},
 			{name: "API status above range", environment: sdkAPIErrorEnvironment("models:600"), output: "sdk_contract_error: python_api unknown\n", exitCode: 1},
+			{name: "models object missing", environment: sdkModelsObjectEnvironment("missing"), output: "sdk_contract_error: python_assertion\n", exitCode: 1},
+			{name: "models object wrong", environment: sdkModelsObjectEnvironment("wrong"), output: "sdk_contract_error: python_assertion\n", exitCode: 1},
+			{name: "models generic exception", environment: sdkGenericErrorEnvironment("models"), output: "sdk_contract_error: python_assertion\n", exitCode: 1},
+			{name: "responses generic exception", environment: sdkGenericErrorEnvironment("responses"), output: "sdk_contract_error: python_assertion\n", exitCode: 1},
 		})
 	})
 
@@ -756,6 +790,10 @@ func TestOfficialSDKExamplesSuppressHostileLogging(t *testing.T) {
 			{name: "API status boolean", environment: sdkAPIErrorEnvironment("models:boolean"), output: "sdk_contract_error: javascript_api unknown\n", exitCode: 1},
 			{name: "API status below range", environment: sdkAPIErrorEnvironment("responses:399"), output: "sdk_contract_error: javascript_api unknown\n", exitCode: 1},
 			{name: "API status above range", environment: sdkAPIErrorEnvironment("models:600"), output: "sdk_contract_error: javascript_api unknown\n", exitCode: 1},
+			{name: "models object missing", environment: sdkModelsObjectEnvironment("missing"), output: "sdk_contract_error: javascript_assertion\n", exitCode: 1},
+			{name: "models object wrong", environment: sdkModelsObjectEnvironment("wrong"), output: "sdk_contract_error: javascript_assertion\n", exitCode: 1},
+			{name: "models generic exception", environment: sdkGenericErrorEnvironment("models"), output: "sdk_contract_error: javascript_assertion\n", exitCode: 1},
+			{name: "responses generic exception", environment: sdkGenericErrorEnvironment("responses"), output: "sdk_contract_error: javascript_assertion\n", exitCode: 1},
 		})
 	})
 }
@@ -857,6 +895,14 @@ func sdkAPIErrorEnvironment(mode string) []string {
 	return append(sdkValidEnvironment("5"), "SDK_CONTRACT_FAKE_API_ERROR="+mode)
 }
 
+func sdkGenericErrorEnvironment(location string) []string {
+	return append(sdkValidEnvironment("5"), "SDK_CONTRACT_FAKE_GENERIC_ERROR="+location)
+}
+
+func sdkModelsObjectEnvironment(mode string) []string {
+	return append(sdkValidEnvironment("5"), "SDK_CONTRACT_FAKE_MODELS_OBJECT="+mode)
+}
+
 func runSDKClientCases(t *testing.T, executable, source string, baseEnvironment []string, cases []sdkClientCase) {
 	t.Helper()
 	for _, test := range cases {
@@ -896,6 +942,10 @@ if os.environ.get("OPENAI_LOG") == "debug":
 class APIError(Exception):
     pass
 
+def raise_generic_error(location):
+    if os.environ.get("SDK_CONTRACT_FAKE_GENERIC_ERROR") == location:
+        raise RuntimeError("planted-sensitive-generic-exception-message")
+
 def raise_api_error(location):
     mode = os.environ.get("SDK_CONTRACT_FAKE_API_ERROR")
     if mode is None or not mode.startswith(location + ":"):
@@ -921,8 +971,13 @@ class Value:
 
 class Models:
     def list(self):
+        raise_generic_error("models")
         raise_api_error("models")
-        return Value(data=[Value(id="codex-sdk-test", object="model", created=0, owned_by="local")])
+        data = [Value(id="codex-sdk-test", object="model", created=0, owned_by="local")]
+        mode = os.environ.get("SDK_CONTRACT_FAKE_MODELS_OBJECT")
+        if mode == "missing":
+            return Value(data=data)
+        return Value(object="collection" if mode == "wrong" else "list", data=data)
 
 class Responses:
     def create(self, **request):
@@ -938,6 +993,7 @@ class Responses:
         }
         if request != expected:
             raise AssertionError
+        raise_generic_error("responses")
         raise_api_error("responses")
         content = Value(type="output_text", annotations=[], text="SDK_GATEWAY_OK\n")
         message = Value(id="msg_fixture", type="message", status="completed", role="assistant", content=[content])
@@ -963,6 +1019,12 @@ class OpenAI:
 `
 
 const javaScriptSDKContractStub = `class APIError extends Error {}
+
+function raiseGenericError(location) {
+  if (process.env.SDK_CONTRACT_FAKE_GENERIC_ERROR === location) {
+    throw new Error("planted-sensitive-generic-exception-message");
+  }
+}
 
 function raiseAPIError(location) {
   const mode = process.env.SDK_CONTRACT_FAKE_API_ERROR;
@@ -995,8 +1057,14 @@ class OpenAI {
     }
     this.models = {
       list: async () => {
+        raiseGenericError("models");
         raiseAPIError("models");
-        return { data: [{ id: "codex-sdk-test", object: "model", created: 0, owned_by: "local" }] };
+        const data = [{ id: "codex-sdk-test", object: "model", created: 0, owned_by: "local" }];
+        const mode = process.env.SDK_CONTRACT_FAKE_MODELS_OBJECT;
+        if (mode === "missing") {
+          return { data };
+        }
+        return { object: mode === "wrong" ? "collection" : "list", data };
       },
     };
     this.responses = {
@@ -1014,6 +1082,7 @@ class OpenAI {
         if (JSON.stringify(request) !== JSON.stringify(expected)) {
           throw new Error();
         }
+        raiseGenericError("responses");
         raiseAPIError("responses");
         const response = {
           id: "resp_fixture",

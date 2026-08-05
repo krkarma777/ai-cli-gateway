@@ -197,7 +197,7 @@ func TestConstructorOutcomeTables(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			for _, test := range outcomes {
 				t.Run(test.name, func(t *testing.T) {
-					state := &runState{rootSafe: true}
+					state := &runState{}
 					accepted := false
 					switch kind {
 					case "root":
@@ -219,10 +219,114 @@ func TestConstructorOutcomeTables(t *testing.T) {
 						}
 						accepted = acceptGatewayConstructor(state, value, test.err)
 					}
-					if accepted != test.wantAccept || state.cleanupErr != test.wantCleanup || state.rootSafe != test.wantSafe {
-						t.Fatalf("accepted=%t cleanup=%t safe=%t", accepted, state.cleanupErr, state.rootSafe)
+					if accepted != test.wantAccept || state.cleanupErr != test.wantCleanup || state.safety.safeToRemove() != test.wantSafe {
+						t.Fatalf("accepted=%t cleanup=%t safe=%t", accepted, state.cleanupErr, state.safety.safeToRemove())
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestGatewayConstructorUncertaintyUsesFinalOwnerProof(t *testing.T) {
+	tests := []struct {
+		name              string
+		gatewayCleanup    cleanupResult
+		independentUnsafe bool
+		wantRemove        int
+		wantClose         int
+	}{
+		{
+			name:           "final absence",
+			gatewayCleanup: cleanupResult{SafeToRemove: true},
+			wantRemove:     1,
+		},
+		{
+			name:           "final absence with cleanup error",
+			gatewayCleanup: cleanupResult{SafeToRemove: true, Err: errors.New("private cleanup failure")},
+			wantRemove:     1,
+		},
+		{
+			name:           "final absence not proven",
+			gatewayCleanup: cleanupResult{SafeToRemove: false, Err: errors.New("private cleanup failure")},
+			wantClose:      1,
+		},
+		{
+			name:              "independent uncertainty remains",
+			gatewayCleanup:    cleanupResult{SafeToRemove: true},
+			independentUnsafe: true,
+			wantClose:         1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := &fakeRoot{path: "/safe/root"}
+			gateway := &fakeChild{exited: make(chan struct{}), result: test.gatewayCleanup}
+			state := &runState{root: root}
+			if test.independentUnsafe {
+				if got := ErrorCategory(helperFailure(context.Background(), state, newCleanupError(false))); got != categoryCleanup {
+					t.Fatalf("helper failure category = %q", got)
+				}
+			}
+			if !acceptGatewayConstructor(state, gateway, newCleanupError(false)) {
+				t.Fatal("gateway recovery owner was rejected")
+			}
+
+			err := finalizeRun(state, testPolicy, newError(categoryFailed))
+			if got := ErrorCategory(err); got != categoryCleanup {
+				t.Fatalf("category = %q", got)
+			}
+			if gateway.stops != 1 {
+				t.Fatalf("gateway stops = %d", gateway.stops)
+			}
+			if root.removes != test.wantRemove || root.closes != test.wantClose {
+				t.Fatalf("root remove/close = %d/%d, want %d/%d", root.removes, root.closes, test.wantRemove, test.wantClose)
+			}
+		})
+	}
+}
+
+func TestRegistryConstructorUncertaintyUsesFinalOwnerProof(t *testing.T) {
+	tests := []struct {
+		name            string
+		registryCleanup cleanupResult
+		wantRemove      int
+		wantClose       int
+	}{
+		{
+			name:            "final absence",
+			registryCleanup: cleanupResult{SafeToRemove: true},
+			wantRemove:      1,
+		},
+		{
+			name:            "final absence with cleanup error",
+			registryCleanup: cleanupResult{SafeToRemove: true, Err: errors.New("private cleanup failure")},
+			wantRemove:      1,
+		},
+		{
+			name:            "final absence not proven",
+			registryCleanup: cleanupResult{SafeToRemove: false, Err: errors.New("private cleanup failure")},
+			wantClose:       1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := &fakeRoot{path: "/safe/root"}
+			registry := &fakeRegistry{ready: make(chan struct{}), result: test.registryCleanup}
+			state := &runState{root: root}
+			if !acceptRegistryConstructor(state, registry, newCleanupError(false)) {
+				t.Fatal("registry recovery owner was rejected")
+			}
+
+			err := finalizeRun(state, testPolicy, newError(categoryFailed))
+			if got := ErrorCategory(err); got != categoryCleanup {
+				t.Fatalf("category = %q", got)
+			}
+			if registry.stops != 1 {
+				t.Fatalf("registry stops = %d", registry.stops)
+			}
+			if root.removes != test.wantRemove || root.closes != test.wantClose {
+				t.Fatalf("root remove/close = %d/%d, want %d/%d", root.removes, root.closes, test.wantRemove, test.wantClose)
 			}
 		})
 	}

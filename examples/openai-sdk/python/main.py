@@ -69,6 +69,7 @@ def main() -> None:
     )
 
     models = client.models.list()
+    assert models.object == "list"
     assert len(models.data) == 1
     model = models.data[0]
     assert_fields(model, {"id", "object", "created", "owned_by"})

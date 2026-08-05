@@ -3,13 +3,17 @@
 package sdkcontract
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -19,86 +23,337 @@ import (
 
 func TestRealForcedGatewayKillRegistryCleanup(t *testing.T) {
 	repository := moduleRootForIntegration(t)
-	parent := trustedSiblingFixture(t)
-	owned, err := createOwnedRoot(parent, ".sdk-contract-")
+	python, err := exec.LookPath("python3")
 	if err != nil {
-		t.Fatalf("create integration root: %v", err)
+		t.Fatalf("look up python3: %v", err)
 	}
-	root := owned.Path()
-	slowPath := filepath.Join(root, "slow-codex")
-	goExecutable, err := exec.LookPath("go")
+	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Fatalf("look up go: %v", err)
+		t.Fatalf("look up node: %v", err)
 	}
-	result, err := runGroupCommand(context.Background(), goExecutable, repository,
-		[]string{"build", "-trimpath", "-o", slowPath, "./internal/sdkcontract/testdata/slow-codex"},
-		minimalBuildEnvironment(), productionPolicy.HelperGrace, 0, 8<<10)
-	if err != nil {
-		t.Fatalf("build slow fixture: %v (%d bytes)", err, len(result.stderr))
-	}
-	registry, err := startPlatformRegistry(filepath.Join(root, "fixture.registry"), productionPolicy.RegistryProtocol)
-	if err != nil {
-		t.Fatalf("start registry: %v", err)
-	}
-	ready := registry.Ready()
 	testExecutable, err := os.Executable()
 	if err != nil {
 		t.Fatalf("test executable: %v", err)
 	}
-	gateway, err := startUnixChild(testExecutable, repository,
-		[]string{"-test.run=TestSDKContractGatewayHelperProcess"},
-		[]string{"SDK_CONTRACT_TEST_GATEWAY=" + slowPath}, io.Discard)
-	if err != nil {
-		t.Fatalf("start gateway helper: %v", err)
+	options := Options{
+		RepositoryRoot:       repository,
+		PythonExecutable:     cleanAbsolutePath(t, python),
+		NodeExecutable:       cleanAbsolutePath(t, node),
+		JavaScriptEntrypoint: filepath.Join(repository, "examples/openai-sdk/javascript/main.mjs"),
+	}
+	sys := newForcedKillRunSystem(testExecutable)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var output bytes.Buffer
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- runWithSystem(ctx, options, &output, sys, productionPolicy)
+	}()
+
+	var registry *forcedKillRegistry
+	select {
+	case registry = <-sys.registryStarted:
+	case err := <-runDone:
+		t.Fatalf("run ended before registry start: %v", err)
+	case <-time.After(productionPolicy.ReadinessDeadline):
+		cancel()
+		<-runDone
+		t.Fatal("run did not start fixture registry")
 	}
 	readyTimer := time.NewTimer(productionPolicy.RegistryProtocol)
 	select {
-	case <-ready:
+	case <-registry.ready:
 		if !readyTimer.Stop() {
 			<-readyTimer.C
 		}
+	case err := <-runDone:
+		if !readyTimer.Stop() {
+			<-readyTimer.C
+		}
+		t.Fatalf("run ended before fixture registry Ready: %v", err)
 	case <-readyTimer.C:
-		_ = gateway.StopAndWait(productionPolicy.GatewayGrace)
-		_ = registry.StopAndVerify(productionPolicy.RegistryCleanup)
+		cancel()
+		<-runDone
 		t.Fatal("fixture registry did not become ready")
 	}
-	if err := verifyRegisteredGroupIgnoresTERM(registry.(*unixFixtureRegistry)); err != nil {
-		_ = gateway.StopAndWait(productionPolicy.GatewayGrace)
-		_ = registry.StopAndVerify(productionPolicy.RegistryCleanup)
+	if err := verifyRegisteredGroupIgnoresTERM(registry.concrete); err != nil {
+		cancel()
+		<-runDone
 		t.Fatalf("registered fixture TERM behavior: %v", err)
 	}
-	registry.(*unixFixtureRegistry).mu.Lock()
-	recorded := append([]registryRecord(nil), registry.(*unixFixtureRegistry).records...)
-	registry.(*unixFixtureRegistry).mu.Unlock()
+	recorded := registry.records()
+
+	var gateway *forcedKillChild
 	select {
-	case <-gateway.Exited():
-		t.Log("gateway helper exited before terminal stop")
+	case gateway = <-sys.gatewayStarted:
 	default:
+		cancel()
+		<-runDone
+		t.Fatal("gateway was not started before fixture readiness")
 	}
-	gatewayResult := gateway.StopAndWait(productionPolicy.GatewayGrace)
-	if gatewayResult.Err != nil || !gatewayResult.SafeToRemove {
-		t.Fatalf("gateway cleanup = %#v", gatewayResult)
+	cancel()
+	select {
+	case err := <-runDone:
+		if got := ErrorCategory(err); got != categoryCanceled {
+			t.Fatalf("run category = %q", got)
+		}
+	case <-time.After(productionPolicy.GatewayGrace + productionPolicy.RegistryCleanup + time.Second):
+		t.Fatal("runWithSystem finalizer did not finish")
 	}
-	if !gateway.(*unixChild).killSent {
-		concrete := gateway.(*unixChild)
-		concrete.waitMu.Lock()
-		t.Logf("gateway helper wait result before missing KILL: %v", concrete.waitErr)
-		concrete.waitMu.Unlock()
+	if output.Len() != 0 {
+		t.Fatalf("public output = %q", output.String())
+	}
+	if gateway.result.Err != nil || !gateway.result.SafeToRemove {
+		t.Fatalf("gateway cleanup = %#v", gateway.result)
+	}
+	if !gateway.concrete.killSent {
 		t.Fatal("gateway helper exited without exercising forced SIGKILL")
 	}
-	registryResult := registry.StopAndVerify(productionPolicy.RegistryCleanup)
-	if registryResult.Err != nil || !registryResult.SafeToRemove {
-		t.Fatalf("registry cleanup = %#v", registryResult)
+	select {
+	case <-gateway.Exited():
+	default:
+		t.Fatal("gateway Wait was not joined")
+	}
+	gateway.concrete.waitMu.Lock()
+	waitErr := gateway.concrete.waitErr
+	gateway.concrete.waitMu.Unlock()
+	var exitErr *exec.ExitError
+	if !errors.As(waitErr, &exitErr) {
+		t.Fatalf("gateway Wait error = %T %v", waitErr, waitErr)
+	}
+	waitStatus, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !waitStatus.Signaled() || waitStatus.Signal() != syscall.SIGKILL {
+		t.Fatalf("gateway Wait status = %#v", exitErr.Sys())
+	}
+	if !groupAbsent(gateway.concrete.pgid) || !errors.Is(unix.Kill(gateway.PID(), 0), unix.ESRCH) {
+		t.Fatal("gateway process group or PID remains after finalizer")
+	}
+	if registry.result.Err != nil || !registry.result.SafeToRemove {
+		t.Fatalf("registry cleanup = %#v", registry.result)
 	}
 	if !registryAbsent(recorded) {
-		t.Fatal("registered fixture process remains before root removal")
+		t.Fatal("registered fixture process remains after finalizer")
 	}
-	if err := owned.RemoveExact(); err != nil {
-		t.Fatalf("remove exact integration root: %v", err)
+	root := sys.rootSnapshot()
+	if root == nil || root.removeErr != nil || root.removes != 1 || root.closes != 0 {
+		t.Fatalf("root cleanup = %#v", root)
 	}
-	if _, err := os.Lstat(root); !errors.Is(err, os.ErrNotExist) {
+	if got := sys.cleanupEvents(); !slices.Equal(got, []string{"gateway_stop", "registry_stop", "root_remove"}) {
+		t.Fatalf("cleanup events = %#v", got)
+	}
+	if _, err := os.Lstat(root.Path()); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("integration root remains after RemoveExact: %v", err)
 	}
+}
+
+type forcedKillRunSystem struct {
+	*realSystem
+	testExecutable  string
+	registryStarted chan *forcedKillRegistry
+	gatewayStarted  chan *forcedKillChild
+	mu              sync.Mutex
+	slowPath        string
+	root            *forcedKillRoot
+	events          []string
+}
+
+func newForcedKillRunSystem(testExecutable string) *forcedKillRunSystem {
+	return &forcedKillRunSystem{
+		realSystem:      &realSystem{},
+		testExecutable:  testExecutable,
+		registryStarted: make(chan *forcedKillRegistry, 1),
+		gatewayStarted:  make(chan *forcedKillChild, 1),
+	}
+}
+
+func (s *forcedKillRunSystem) MkdirTemp(parent, pattern string) (ownedRoot, error) {
+	root, err := s.realSystem.MkdirTemp(parent, pattern)
+	if root == nil {
+		return nil, err
+	}
+	wrapped := &forcedKillRoot{ownedRoot: root, system: s}
+	s.mu.Lock()
+	s.root = wrapped
+	s.mu.Unlock()
+	return wrapped, err
+}
+
+func (s *forcedKillRunSystem) Build(ctx context.Context, repositoryRoot, output, packagePath string, grace time.Duration) error {
+	if err := s.realSystem.Build(ctx, repositoryRoot, output, packagePath, grace); err != nil {
+		return err
+	}
+	if packagePath != "./internal/testcli/cmd/fake-codex-cli" {
+		return nil
+	}
+	goExecutable, err := resolveBuildTool(exec.LookPath)
+	if err != nil {
+		return err
+	}
+	result, err := runGroupCommand(ctx, goExecutable, repositoryRoot,
+		[]string{"build", "-trimpath", "-o", output, "./internal/sdkcontract/testdata/slow-codex"},
+		minimalBuildEnvironment(), grace, 0, 8<<10)
+	if err != nil {
+		return err
+	}
+	if len(result.stderr) != 0 {
+		return newError(categoryFailed)
+	}
+	if _, err := validateExecutableIdentity(output); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.slowPath = output
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *forcedKillRunSystem) StartFixtureRegistry(path string, grace time.Duration) (fixtureRegistry, error) {
+	registry, err := s.realSystem.StartFixtureRegistry(path, grace)
+	if err != nil || registry == nil {
+		return registry, err
+	}
+	concrete, ok := registry.(*unixFixtureRegistry)
+	if !ok {
+		return registry, newCleanupError(false)
+	}
+	wrapped := &forcedKillRegistry{
+		fixtureRegistry: registry,
+		concrete:        concrete,
+		ready:           registry.Ready(),
+		system:          s,
+	}
+	s.registryStarted <- wrapped
+	return wrapped, nil
+}
+
+func (s *forcedKillRunSystem) StartGateway(executable, directory string, argv, environment []string, output io.Writer) (child, error) {
+	if err := s.revalidateRepository(directory); err != nil {
+		return nil, err
+	}
+	identity, err := validateExecutableIdentity(executable)
+	if err != nil || revalidateExecutableIdentity(identity) != nil {
+		return nil, newError(categoryInvalid)
+	}
+	s.mu.Lock()
+	slowPath := s.slowPath
+	root := s.root
+	s.mu.Unlock()
+	if slowPath == "" || root == nil {
+		return nil, newError(categoryFailed)
+	}
+	rootPath := root.Path()
+	wantArgv := []string{"serve", "--config", filepath.Join(rootPath, "attempt-1/config.toml")}
+	wantEnvironment := []string{
+		"PATH=" + filepath.Join(rootPath, "bin"),
+		"HOME=" + filepath.Join(rootPath, "home"),
+	}
+	if executable != filepath.Join(rootPath, "bin/ai-cli-gateway") ||
+		!slices.Equal(argv, wantArgv) || len(environment) != 3 ||
+		!slices.Equal(environment[:2], wantEnvironment) {
+		return nil, newError(categoryInvalid)
+	}
+	const keyPrefix = "AI_CLI_GATEWAY_API_KEY="
+	if len(environment[2]) != len(keyPrefix)+64 || environment[2][:len(keyPrefix)] != keyPrefix {
+		return nil, newError(categoryInvalid)
+	}
+	decodedKey, err := hex.DecodeString(environment[2][len(keyPrefix):])
+	if err != nil || len(decodedKey) != 32 {
+		return nil, newError(categoryFailed)
+	}
+	started, err := startUnixCommand(s.testExecutable, directory,
+		[]string{"-test.run=^TestSDKContractGatewayHelperProcess$"},
+		[]string{"SDK_CONTRACT_TEST_GATEWAY=" + slowPath}, output, output)
+	if started == nil {
+		return nil, err
+	}
+	wrapped := &forcedKillChild{concrete: started, system: s}
+	s.gatewayStarted <- wrapped
+	return wrapped, err
+}
+
+func (s *forcedKillRunSystem) record(event string) {
+	s.mu.Lock()
+	s.events = append(s.events, event)
+	s.mu.Unlock()
+}
+
+func (s *forcedKillRunSystem) cleanupEvents() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.events...)
+}
+
+func (s *forcedKillRunSystem) rootSnapshot() *forcedKillRoot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.root
+}
+
+type forcedKillRoot struct {
+	ownedRoot
+	system              *forcedKillRunSystem
+	removes, closes     int
+	removeErr, closeErr error
+}
+
+func (r *forcedKillRoot) RemoveExact() error {
+	r.removes++
+	r.removeErr = r.ownedRoot.RemoveExact()
+	r.system.record("root_remove")
+	return r.removeErr
+}
+
+func (r *forcedKillRoot) Close() error {
+	r.closes++
+	r.closeErr = r.ownedRoot.Close()
+	r.system.record("root_close")
+	return r.closeErr
+}
+
+type forcedKillRegistry struct {
+	fixtureRegistry
+	concrete *unixFixtureRegistry
+	ready    <-chan struct{}
+	system   *forcedKillRunSystem
+	result   cleanupResult
+}
+
+func (r *forcedKillRegistry) StopAndVerify(grace time.Duration) cleanupResult {
+	r.result = r.fixtureRegistry.StopAndVerify(grace)
+	r.system.record("registry_stop")
+	return r.result
+}
+
+func (r *forcedKillRegistry) records() []registryRecord {
+	r.concrete.mu.Lock()
+	defer r.concrete.mu.Unlock()
+	return append([]registryRecord(nil), r.concrete.records...)
+}
+
+type forcedKillChild struct {
+	concrete *unixChild
+	system   *forcedKillRunSystem
+	result   cleanupResult
+}
+
+func (c *forcedKillChild) PID() int                { return c.concrete.PID() }
+func (c *forcedKillChild) Exited() <-chan struct{} { return c.concrete.Exited() }
+func (c *forcedKillChild) StopAndWait(grace time.Duration) cleanupResult {
+	c.result = c.concrete.StopAndWait(grace)
+	c.system.record("gateway_stop")
+	return c.result
+}
+
+func cleanAbsolutePath(t *testing.T, path string) string {
+	t.Helper()
+	if !filepath.IsAbs(path) {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			t.Fatalf("make %q absolute: %v", path, err)
+		}
+		path = absolute
+	}
+	return filepath.Clean(path)
 }
 
 func verifyRegisteredGroupIgnoresTERM(registry *unixFixtureRegistry) error {
@@ -124,7 +379,7 @@ func verifyRegisteredGroupIgnoresTERM(registry *unixFixtureRegistry) error {
 	return nil
 }
 
-func TestSDKContractGatewayHelperProcess(t *testing.T) {
+func TestSDKContractGatewayHelperProcess(_ *testing.T) {
 	slowPath := os.Getenv("SDK_CONTRACT_TEST_GATEWAY")
 	if slowPath == "" {
 		return
@@ -132,7 +387,7 @@ func TestSDKContractGatewayHelperProcess(t *testing.T) {
 	term := make(chan os.Signal, 1)
 	signal.Notify(term, syscall.SIGTERM)
 	defer signal.Stop(term)
-	cmd := exec.Command(slowPath, slowCodexFinalArgs()...) //nolint:gosec // test-owned executable and closed argv.
+	cmd := exec.CommandContext(context.Background(), slowPath, slowCodexFinalArgs()...) //nolint:gosec // test-owned executable and closed argv.
 	cmd.Env = []string{}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()

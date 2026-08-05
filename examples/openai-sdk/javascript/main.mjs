@@ -58,6 +58,7 @@ async function main() {
   });
 
   const models = await client.models.list();
+  assert.equal(models.object, "list");
   assert.equal(models.data.length, 1);
   const model = models.data[0];
   assertFields(model, ["id", "object", "created", "owned_by"]);
