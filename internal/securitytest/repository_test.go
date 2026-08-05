@@ -31,20 +31,54 @@ const expectedModule = "github.com/krkarma777/ai-cli-gateway"
 
 var scanRootFlag = flag.String("scan-root", "", "scan an explicit absolute materialized repository root")
 
-func TestCodexConfigExampleContract(t *testing.T) {
+var codexConfigAuthFilenamePattern = regexp.MustCompile(`(?i)(?:^|[\\/[:space:]"']+)[^\\/[:space:]"']*(?:auth(?:entication)?|credentials?|tokens?|login)[^\\/[:space:]"']*\.(?:json|toml|yaml|yml|ini|conf|db)(?:$|[^[:alnum:]_])`)
+
+func TestCodexConfigExampleContentSafety(t *testing.T) {
 	contents := readRepositoryFile(t, "examples/config/codex.example.toml")
+	if err := codexConfigContentSafety(contents); err != nil {
+		t.Fatalf("shipped codex.example.toml safety error: %v", err)
+	}
+	for _, mutation := range []string{
+		`C:\Users\alice`,
+		"C:/Users/alice",
+		".CODEX/SESSION-AUTH.JSON",
+		"LOGIN-state.toml",
+		"tokens.yaml",
+	} {
+		t.Run(mutation, func(t *testing.T) {
+			if err := codexConfigContentSafety(append(contents, []byte("\n# "+mutation)...)); err == nil {
+				t.Fatalf("safety policy accepted mutation %q", mutation)
+			}
+		})
+	}
+}
+
+func codexConfigContentSafety(contents []byte) error {
 	if !utf8.Valid(contents) {
-		t.Fatal("codex.example.toml is not valid UTF-8")
+		return errors.New("not valid UTF-8")
 	}
 	text := string(contents)
+	lower := strings.ToLower(text)
 	for _, forbidden := range []string{
 		"prefix_args", "credential_env", "concurrency", "queue_size", "queue_bytes", "queue_timeout", "execution_timeout",
-		"/Users/", "/home/", "C:\\\\Users\\\\", "auth.json", "credentials.json", "@", "account", "token",
+		"/users/", "/home/", "c:\\users\\", "c:/users/", "@", "account",
 	} {
-		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
-			t.Fatalf("codex.example.toml contains forbidden marker %q", forbidden)
+		if strings.Contains(lower, forbidden) {
+			return errors.New("contains forbidden marker " + strconv.Quote(forbidden))
 		}
 	}
+	if codexConfigAuthFilenamePattern.MatchString(text) {
+		return errors.New("contains auth-like filename")
+	}
+	return nil
+}
+
+func TestCodexConfigExampleContract(t *testing.T) {
+	contents := readRepositoryFile(t, "examples/config/codex.example.toml")
+	if err := codexConfigContentSafety(contents); err != nil {
+		t.Fatalf("codex.example.toml safety error: %v", err)
+	}
+	text := string(contents)
 
 	var raw map[string]any
 	if err := toml.Unmarshal(contents, &raw); err != nil {
