@@ -1898,22 +1898,15 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 			"go-version-file: .go-version", "cache: true")
 	}
 
-	actionCounts := make(map[string]int)
-	for _, line := range strings.Split(workflow, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "- uses:") {
-			actionCounts[strings.TrimSpace(strings.TrimPrefix(trimmed, "- uses:"))]++
+	wantActionsByJob := expectedCIJobActions()
+	for name, block := range jobs {
+		actions, err := parsedYAMLJobActions(block)
+		if err != nil {
+			t.Fatalf("parse CI job %q actions: %v", name, err)
 		}
-	}
-	wantActionCounts := map[string]int{
-		"actions/checkout@v7":              6,
-		"actions/setup-go@v7":              6,
-		"golangci/golangci-lint-action@v9": 1,
-		"actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97": 1,
-		"actions/setup-node@820762786026740c76f36085b0efc47a31fe5020":   1,
-	}
-	if !reflect.DeepEqual(actionCounts, wantActionCounts) {
-		t.Fatalf("CI actions = %v, want only current pinned majors %v", actionCounts, wantActionCounts)
+		if !reflect.DeepEqual(actions, wantActionsByJob[name]) {
+			t.Fatalf("CI job %q actions = %q, want exact ordered actions %q", name, actions, wantActionsByJob[name])
+		}
 	}
 	requireContainsAll(t, "lint job", jobs["lint"],
 		"runs-on: ubuntu-latest", "gofmt -l .", "go vet ./...",
@@ -1991,6 +1984,119 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		{name: "workflow_call secrets", mutate: replaceCIOnce("  workflow_call:\n", "  workflow_call:\n    secrets:\n")},
 		{name: "missing SDK job", mutate: replaceCIOnce("  sdk-contract:\n", "  sdk-contract-removed:\n")},
 		{name: "extra job", mutate: replaceCIOnce("jobs:\n", "jobs:\n  unexpected:\n    runs-on: ubuntu-latest\n    timeout-minutes: 1\n    steps:\n")},
+		{
+			name: "second top-level jobs mapping",
+			mutate: func(document string) string {
+				return document + "\njobs:\n  shadow:\n    runs-on: ubuntu-latest\n    timeout-minutes: 1\n    steps:\n      - run: true\n"
+			},
+		},
+		{
+			name: "job write permissions",
+			mutate: replaceCIOnce(
+				"  lint:\n    runs-on: ubuntu-latest\n",
+				"  lint:\n    runs-on: ubuntu-latest\n    permissions: { contents: write }\n",
+			),
+		},
+		{
+			name: "flow-style action step",
+			mutate: replaceCIOnce(
+				"  lint:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    steps:\n",
+				"  lint:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    steps:\n      - { uses: attacker/action@deadbeef }\n",
+			),
+		},
+		{
+			name: "job if disables checks",
+			mutate: replaceCIOnce(
+				"  macos:\n    runs-on: macos-latest\n",
+				"  macos:\n    runs-on: macos-latest\n    if: false\n",
+			),
+		},
+		{
+			name: "job continue-on-error bypass",
+			mutate: replaceCIOnce(
+				"  macos:\n    runs-on: macos-latest\n",
+				"  macos:\n    runs-on: macos-latest\n    continue-on-error: true\n",
+			),
+		},
+		{
+			name: "step if disables checks",
+			mutate: replaceCIOnce(
+				"      - name: Unit tests\n        run: go test -count=1 ./...\n",
+				"      - name: Unit tests\n        if: false\n        run: go test -count=1 ./...\n",
+			),
+		},
+		{
+			name: "step continue-on-error bypass",
+			mutate: replaceCIOnce(
+				"      - name: Unit tests\n        run: go test -count=1 ./...\n",
+				"      - name: Unit tests\n        continue-on-error: true\n        run: go test -count=1 ./...\n",
+			),
+		},
+		{
+			name: "duplicate step uses field",
+			mutate: replaceCIOnce(
+				"      - uses: actions/checkout@v7\n",
+				"      - uses: actions/checkout@v7\n        uses: attacker/action@deadbeef\n",
+			),
+		},
+		{
+			name: "duplicate legacy runs-on field",
+			mutate: replaceCIOnce(
+				"  lint:\n    runs-on: ubuntu-latest\n",
+				"  lint:\n    runs-on: ubuntu-latest\n    runs-on: ubuntu-latest\n",
+			),
+		},
+		{
+			name: "duplicate legacy timeout field",
+			mutate: replaceCIOnce(
+				"  lint:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n",
+				"  lint:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    timeout-minutes: 10\n",
+			),
+		},
+		{
+			name: "Windows runner hidden by comment",
+			mutate: replaceCIOnce(
+				"  windows:\n    runs-on: windows-latest\n",
+				"  windows:\n    runs-on: ubuntu-latest # runs-on: windows-latest\n",
+			),
+		},
+		{
+			name: "setup-go moved out of Linux with decoys",
+			mutate: func(document string) string {
+				linuxSetup := strings.Join([]string{
+					"      - uses: actions/setup-go@v7",
+					"        with:",
+					"          go-version-file: .go-version",
+					"          cache: true",
+				}, "\n") + "\n"
+				linuxDecoy := strings.Join([]string{
+					"      - name: No Go setup",
+					"        run: |",
+					"          # actions/setup-go@v7",
+					"          # go-version-file: .go-version",
+					"          # cache: true",
+					"          true",
+				}, "\n") + "\n"
+				lintIndex := strings.Index(document, linuxSetup)
+				if lintIndex < 0 {
+					return document
+				}
+				linuxRelative := strings.Index(document[lintIndex+len(linuxSetup):], linuxSetup)
+				if linuxRelative < 0 {
+					return document
+				}
+				linuxIndex := lintIndex + len(linuxSetup) + linuxRelative
+				withoutLinux := document[:linuxIndex] + linuxDecoy + document[linuxIndex+len(linuxSetup):]
+				return withoutLinux[:lintIndex] + linuxSetup + linuxSetup + withoutLinux[lintIndex+len(linuxSetup):]
+			},
+		},
+		{
+			name: "legacy run command and step name hidden by comments",
+			mutate: replaceCIOnce(
+				"      - name: Unit tests\n        run: go test -count=1 ./...\n",
+				"      - name: No unit coverage # Unit tests\n        run: echo skipped # go test -count=1 ./...\n",
+			),
+		},
 		{
 			name: "wrong SDK runner",
 			mutate: replaceCIOnce(
@@ -2126,19 +2232,31 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 }
 
 func validateSDKCIWorkflowContract(workflow string) error {
-	if count := len(regexp.MustCompile(`(?m)^on:\s*$`).FindAllStringIndex(workflow, -1)); count != 1 {
-		return fmt.Errorf("top-level on blocks = %d, want exactly one", count)
+	topLevelFields, err := parseImmediateYAMLFields(workflow, 0)
+	if err != nil {
+		return fmt.Errorf("top-level workflow: %w", err)
+	}
+	wantTopLevelFields := map[string]string{
+		"name": "CI", "on": "", "permissions": "", "jobs": "",
+	}
+	if !reflect.DeepEqual(topLevelFields, wantTopLevelFields) {
+		return fmt.Errorf("top-level fields = %v, want exact fields %v", topLevelFields, wantTopLevelFields)
 	}
 	if got, want := topLevelYAMLBlockLines(workflow, "on:"), []string{"push:", "pull_request:", "workflow_call:"}; !reflect.DeepEqual(got, want) {
 		return fmt.Errorf("top-level triggers = %q, want exactly %q without inputs or secrets", got, want)
+	}
+	if got := topLevelYAMLBlockLines(workflow, "permissions:"); !reflect.DeepEqual(got, []string{"contents: read"}) {
+		return fmt.Errorf("top-level permissions = %q, want only contents: read", got)
 	}
 
 	jobs, err := parseYAMLJobBlocks(workflow)
 	if err != nil {
 		return err
 	}
-	wantJobs := map[string]struct{}{
-		"lint": {}, "linux": {}, "macos": {}, "windows": {}, "cross-build": {}, "sdk-contract": {},
+	contracts := expectedCIJobContracts()
+	wantJobs := make(map[string]struct{}, len(contracts))
+	for name := range contracts {
+		wantJobs[name] = struct{}{}
 	}
 	gotJobs := make(map[string]struct{}, len(jobs))
 	for name := range jobs {
@@ -2148,91 +2266,235 @@ func validateSDKCIWorkflowContract(workflow string) error {
 		return fmt.Errorf("jobs = %v, want exact set %v", gotJobs, wantJobs)
 	}
 
-	sdkJob := jobs["sdk-contract"]
-	fields, err := parseImmediateYAMLFields(sdkJob, 4)
-	if err != nil {
-		return fmt.Errorf("sdk-contract job: %w", err)
-	}
-	wantFields := map[string]string{
-		"runs-on": "ubuntu-latest", "timeout-minutes": "12", "steps": "",
-	}
-	if !reflect.DeepEqual(fields, wantFields) {
-		return fmt.Errorf("sdk-contract fields = %v, want exact fields %v", fields, wantFields)
-	}
-
-	steps, err := parseYAMLSteps(sdkJob)
-	if err != nil {
-		return fmt.Errorf("sdk-contract steps: %w", err)
-	}
-	wantSteps := []string{
-		"- uses: actions/checkout@v7",
-		strings.Join([]string{
-			"- uses: actions/setup-go@v7",
-			"  with:",
-			"    go-version-file: .go-version",
-			"    cache: true",
-		}, "\n"),
-		strings.Join([]string{
-			"- uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
-			"  with:",
-			`    python-version: "3.12"`,
-		}, "\n"),
-		strings.Join([]string{
-			"- uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
-			"  with:",
-			`    node-version: "24"`,
-		}, "\n"),
-		strings.Join([]string{
-			"- name: Verify official SDK compatibility",
-			"  shell: bash",
-			"  run: |",
-			"    set -eu",
-			"    umask 077",
-			`    install -d -m 0700 "${RUNNER_TEMP}/sdk-python"`,
-			`    python -m venv "${RUNNER_TEMP}/sdk-python"`,
-			`    chmod 0700 "${RUNNER_TEMP}/sdk-python"`,
-			`    test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-python")" = "700"`,
-			`    "${RUNNER_TEMP}/sdk-python/bin/python" -m pip install --disable-pip-version-check --no-input --requirement "${GITHUB_WORKSPACE}/examples/openai-sdk/python/requirements.lock"`,
-			`    install -d -m 0700 "${RUNNER_TEMP}/sdk-javascript"`,
-			`    cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/main.mjs" "${RUNNER_TEMP}/sdk-javascript/main.mjs"`,
-			`    cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/package.json" "${RUNNER_TEMP}/sdk-javascript/package.json"`,
-			`    cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/package-lock.json" "${RUNNER_TEMP}/sdk-javascript/package-lock.json"`,
-			`    chmod 0700 "${RUNNER_TEMP}/sdk-javascript"`,
-			`    test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-javascript")" = "700"`,
-			`    npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"`,
-			`    scripts/sdk-contract.sh \`,
-			`      "${RUNNER_TEMP}/sdk-python/bin/python" \`,
-			`      "$(command -v node)" \`,
-			`      "${RUNNER_TEMP}/sdk-javascript/main.mjs"`,
-		}, "\n"),
-	}
-	if !reflect.DeepEqual(steps, wantSteps) {
-		return fmt.Errorf("sdk-contract steps differ from the closed preparation and three-argv contract")
-	}
-
-	actionCounts := make(map[string]int)
-	for name, job := range jobs {
-		jobSteps, parseErr := parseYAMLSteps(job)
+	wantActionsByJob := expectedCIJobActions()
+	for _, name := range []string{"lint", "linux", "macos", "windows", "cross-build", "sdk-contract"} {
+		job := jobs[name]
+		contract := contracts[name]
+		fields, parseErr := parseImmediateYAMLFields(job, 4)
+		if parseErr != nil {
+			return fmt.Errorf("job %s fields: %w", name, parseErr)
+		}
+		if !reflect.DeepEqual(fields, contract.fields) {
+			return fmt.Errorf("job %s fields = %v, want exact fields %v", name, fields, contract.fields)
+		}
+		steps, parseErr := parseYAMLSteps(job)
 		if parseErr != nil {
 			return fmt.Errorf("job %s steps: %w", name, parseErr)
 		}
-		for _, step := range jobSteps {
-			if action := parsedStepAction(step); action != "" {
-				actionCounts[action]++
+		if !reflect.DeepEqual(steps, contract.steps) {
+			return fmt.Errorf("job %s steps differ from the closed execution contract", name)
+		}
+		actions, parseErr := parsedYAMLJobActions(job)
+		if parseErr != nil {
+			return fmt.Errorf("job %s actions: %w", name, parseErr)
+		}
+		if !reflect.DeepEqual(actions, wantActionsByJob[name]) {
+			return fmt.Errorf("job %s actions = %q, want exact ordered actions %q", name, actions, wantActionsByJob[name])
+		}
+		if contract.strategy != nil {
+			strategy, blockErr := parseIndentedYAMLBlock(job, "strategy", 4)
+			if blockErr != nil {
+				return fmt.Errorf("job %s strategy: %w", name, blockErr)
+			}
+			if !reflect.DeepEqual(strategy, contract.strategy) {
+				return fmt.Errorf("job %s strategy differs from the exact matrix contract", name)
 			}
 		}
 	}
-	wantActionCounts := map[string]int{
-		"actions/checkout@v7":              6,
-		"actions/setup-go@v7":              6,
-		"golangci/golangci-lint-action@v9": 1,
-		"actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97": 1,
-		"actions/setup-node@820762786026740c76f36085b0efc47a31fe5020":   1,
-	}
-	if !reflect.DeepEqual(actionCounts, wantActionCounts) {
-		return fmt.Errorf("actions = %v, want exact pins and counts %v", actionCounts, wantActionCounts)
-	}
 	return nil
+}
+
+type ciWorkflowJobContract struct {
+	fields   map[string]string
+	steps    []string
+	strategy []string
+}
+
+func expectedCIJobContracts() map[string]ciWorkflowJobContract {
+	checkout := "- uses: actions/checkout@v7"
+	setupGo := yamlContractLines(
+		"- uses: actions/setup-go@v7",
+		"  with:",
+		"    go-version-file: .go-version",
+		"    cache: true",
+	)
+	unixBuild := yamlContractLines(
+		"- name: Build",
+		"  env:",
+		"    CGO_ENABLED: 0",
+		`  run: go build -trimpath -o "${RUNNER_TEMP}/ai-cli-gateway" ./cmd/ai-cli-gateway`,
+	)
+
+	return map[string]ciWorkflowJobContract{
+		"lint": {
+			fields: map[string]string{"runs-on": "ubuntu-latest", "timeout-minutes": "10", "steps": ""},
+			steps: []string{
+				checkout,
+				setupGo,
+				yamlContractLines(
+					"- name: Check formatting",
+					"  shell: bash",
+					"  run: |",
+					`    unformatted_files="$(gofmt -l .)"`,
+					`    test -z "$unformatted_files"`,
+				),
+				yamlContractLines("- name: Vet", "  run: go vet ./..."),
+				yamlContractLines(
+					"- uses: golangci/golangci-lint-action@v9",
+					"  with:",
+					"    version: v2.12.2",
+				),
+			},
+		},
+		"linux": {
+			fields: map[string]string{"runs-on": "ubuntu-latest", "timeout-minutes": "40", "steps": ""},
+			steps: []string{
+				checkout,
+				setupGo,
+				yamlContractLines("- name: Verify modules", "  run: go mod verify"),
+				yamlContractLines("- name: Unit tests", "  run: go test -count=1 ./..."),
+				yamlContractLines("- name: Race tests", "  run: go test -race -count=1 ./..."),
+				yamlContractLines("- name: Fake CLI integration tests", "  run: go test -tags=integration -count=1 ./..."),
+				yamlContractLines("- name: Trimmed-path tests", "  run: go test -trimpath -count=1 ./..."),
+				yamlContractLines("- name: Trimmed-path helper tests", "  run: GOFLAGS=-trimpath go test -count=1 ./internal/testutil ./internal/testcli"),
+				yamlContractLines("- name: Compile opt-in live contracts without running them", "  run: go test -tags=live -run '^$' ./internal/provider/..."),
+				unixBuild,
+			},
+		},
+		"macos": {
+			fields: map[string]string{"runs-on": "macos-latest", "timeout-minutes": "45", "steps": ""},
+			steps: []string{
+				checkout,
+				setupGo,
+				yamlContractLines("- name: Unit tests", "  run: go test -count=1 ./..."),
+				yamlContractLines("- name: Race tests", "  run: go test -race -count=1 ./..."),
+				yamlContractLines("- name: Fake CLI integration tests", "  run: go test -tags=integration -count=1 ./..."),
+				yamlContractLines("- name: Trimmed-path tests", "  run: go test -trimpath -count=1 ./..."),
+				unixBuild,
+			},
+		},
+		"windows": {
+			fields: map[string]string{"runs-on": "windows-latest", "timeout-minutes": "45", "steps": ""},
+			steps: []string{
+				checkout,
+				setupGo,
+				yamlContractLines("- name: Unit tests", "  run: go test -count=1 ./..."),
+				yamlContractLines(
+					"- name: Native Job Object, ACL, reparse, cancellation, and cleanup tests",
+					"  run: go test -tags=integration -count=1 -v ./...",
+				),
+				yamlContractLines("- name: Trimmed-path tests", "  run: go test -trimpath -count=1 ./..."),
+				yamlContractLines(
+					"- name: Build",
+					"  env:",
+					"    CGO_ENABLED: 0",
+					`  run: go build -trimpath -o "$env:RUNNER_TEMP/ai-cli-gateway.exe" ./cmd/ai-cli-gateway`,
+				),
+			},
+		},
+		"cross-build": {
+			fields: map[string]string{
+				"runs-on": "ubuntu-latest", "timeout-minutes": "15", "strategy": "", "steps": "",
+			},
+			strategy: []string{
+				"  fail-fast: false",
+				"  matrix:",
+				"    include:",
+				"      - goos: linux",
+				"        goarch: amd64",
+				`        extension: ""`,
+				"      - goos: linux",
+				"        goarch: arm64",
+				`        extension: ""`,
+				"      - goos: darwin",
+				"        goarch: amd64",
+				`        extension: ""`,
+				"      - goos: darwin",
+				"        goarch: arm64",
+				`        extension: ""`,
+				"      - goos: windows",
+				"        goarch: amd64",
+				"        extension: .exe",
+			},
+			steps: []string{
+				checkout,
+				setupGo,
+				yamlContractLines(
+					"- name: Cross-build",
+					"  env:",
+					"    CGO_ENABLED: 0",
+					"    GOOS: ${{ matrix.goos }}",
+					"    GOARCH: ${{ matrix.goarch }}",
+					"  run: >-",
+					"    go build -trimpath",
+					`    -o "${RUNNER_TEMP}/ai-cli-gateway-${GOOS}-${GOARCH}${{ matrix.extension }}"`,
+					"    ./cmd/ai-cli-gateway",
+				),
+			},
+		},
+		"sdk-contract": {
+			fields: map[string]string{"runs-on": "ubuntu-latest", "timeout-minutes": "12", "steps": ""},
+			steps: []string{
+				checkout,
+				setupGo,
+				yamlContractLines(
+					"- uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+					"  with:",
+					`    python-version: "3.12"`,
+				),
+				yamlContractLines(
+					"- uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+					"  with:",
+					`    node-version: "24"`,
+				),
+				yamlContractLines(
+					"- name: Verify official SDK compatibility",
+					"  shell: bash",
+					"  run: |",
+					"    set -eu",
+					"    umask 077",
+					`    install -d -m 0700 "${RUNNER_TEMP}/sdk-python"`,
+					`    python -m venv "${RUNNER_TEMP}/sdk-python"`,
+					`    chmod 0700 "${RUNNER_TEMP}/sdk-python"`,
+					`    test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-python")" = "700"`,
+					`    "${RUNNER_TEMP}/sdk-python/bin/python" -m pip install --disable-pip-version-check --no-input --requirement "${GITHUB_WORKSPACE}/examples/openai-sdk/python/requirements.lock"`,
+					`    install -d -m 0700 "${RUNNER_TEMP}/sdk-javascript"`,
+					`    cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/main.mjs" "${RUNNER_TEMP}/sdk-javascript/main.mjs"`,
+					`    cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/package.json" "${RUNNER_TEMP}/sdk-javascript/package.json"`,
+					`    cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/package-lock.json" "${RUNNER_TEMP}/sdk-javascript/package-lock.json"`,
+					`    chmod 0700 "${RUNNER_TEMP}/sdk-javascript"`,
+					`    test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-javascript")" = "700"`,
+					`    npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"`,
+					`    scripts/sdk-contract.sh \`,
+					`      "${RUNNER_TEMP}/sdk-python/bin/python" \`,
+					`      "$(command -v node)" \`,
+					`      "${RUNNER_TEMP}/sdk-javascript/main.mjs"`,
+				),
+			},
+		},
+	}
+}
+
+func expectedCIJobActions() map[string][]string {
+	return map[string][]string{
+		"lint": {
+			"actions/checkout@v7", "actions/setup-go@v7", "golangci/golangci-lint-action@v9",
+		},
+		"linux":       {"actions/checkout@v7", "actions/setup-go@v7"},
+		"macos":       {"actions/checkout@v7", "actions/setup-go@v7"},
+		"windows":     {"actions/checkout@v7", "actions/setup-go@v7"},
+		"cross-build": {"actions/checkout@v7", "actions/setup-go@v7"},
+		"sdk-contract": {
+			"actions/checkout@v7",
+			"actions/setup-go@v7",
+			"actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+			"actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+		},
+	}
+}
+
+func yamlContractLines(lines ...string) string {
+	return strings.Join(lines, "\n")
 }
 
 func replaceCIOnce(old, replacement string) func(string) string {
@@ -2243,6 +2505,15 @@ func replaceCIOnce(old, replacement string) func(string) string {
 
 func parseYAMLJobBlocks(workflow string) (map[string]string, error) {
 	lines := strings.Split(strings.ReplaceAll(workflow, "\r\n", "\n"), "\n")
+	topLevelJobs := 0
+	for _, line := range lines {
+		if leadingSpaces(line) == 0 && strings.HasPrefix(line, "jobs:") {
+			topLevelJobs++
+		}
+	}
+	if topLevelJobs != 1 {
+		return nil, fmt.Errorf("top-level jobs mappings = %d, want exactly one", topLevelJobs)
+	}
 	jobsStart := -1
 	for index, line := range lines {
 		if line == "jobs:" {
@@ -2268,16 +2539,25 @@ func parseYAMLJobBlocks(workflow string) (map[string]string, error) {
 		return nil
 	}
 	for _, line := range lines[jobsStart:] {
-		if strings.TrimSpace(line) != "" && leadingSpaces(line) == 0 {
+		trimmed := strings.TrimSpace(line)
+		indentation := leadingSpaces(line)
+		if trimmed != "" && indentation == 0 {
 			break
 		}
-		if match := jobHeader.FindStringSubmatch(line); match != nil {
+		if trimmed != "" && indentation == 2 {
+			match := jobHeader.FindStringSubmatch(line)
+			if match == nil {
+				return nil, fmt.Errorf("unsupported job entry %q", line)
+			}
 			if err := flush(); err != nil {
 				return nil, err
 			}
 			current = match[1]
 			currentLines = []string{line}
 			continue
+		}
+		if trimmed != "" && current == "" {
+			return nil, fmt.Errorf("job content before first job %q", line)
 		}
 		if current != "" {
 			currentLines = append(currentLines, line)
@@ -2297,7 +2577,8 @@ func parseImmediateYAMLFields(block string, indentation int) (map[string]string,
 	prefix := strings.Repeat(" ", indentation)
 	fieldPattern := regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `([A-Za-z0-9_-]+):(?:\s*(.*))?$`)
 	for _, line := range strings.Split(block, "\n") {
-		if strings.TrimSpace(line) == "" || leadingSpaces(line) != indentation {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || leadingSpaces(line) != indentation {
 			continue
 		}
 		match := fieldPattern.FindStringSubmatch(line)
@@ -2329,10 +2610,15 @@ func parseYAMLSteps(jobBlock string) ([]string, error) {
 
 	steps := make([]string, 0)
 	current := make([]string, 0)
-	flush := func() {
+	flush := func() error {
 		if len(current) > 0 {
-			steps = append(steps, strings.Join(current, "\n"))
+			step := strings.Join(current, "\n")
+			if err := validateYAMLStepFields(step); err != nil {
+				return err
+			}
+			steps = append(steps, step)
 		}
+		return nil
 	}
 	for _, line := range lines[stepsStart:] {
 		if strings.TrimSpace(line) == "" {
@@ -2346,7 +2632,9 @@ func parseYAMLSteps(jobBlock string) ([]string, error) {
 			if !strings.HasPrefix(line, "      - ") {
 				return nil, fmt.Errorf("invalid step boundary %q", line)
 			}
-			flush()
+			if err := flush(); err != nil {
+				return nil, err
+			}
 			current = []string{strings.TrimPrefix(line, "      ")}
 			continue
 		}
@@ -2358,11 +2646,104 @@ func parseYAMLSteps(jobBlock string) ([]string, error) {
 		}
 		current = append(current, strings.TrimPrefix(line, "      "))
 	}
-	flush()
+	if err := flush(); err != nil {
+		return nil, err
+	}
 	if len(steps) == 0 {
 		return nil, errors.New("empty steps list")
 	}
 	return steps, nil
+}
+
+func validateYAMLStepFields(step string) error {
+	lines := strings.Split(step, "\n")
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "- ") {
+		return errors.New("step does not start with a block-style list item")
+	}
+	fieldPattern := regexp.MustCompile(`^([A-Za-z0-9_-]+):(?:\s*(.*))?$`)
+	allowedFields := map[string]struct{}{
+		"name": {}, "uses": {}, "with": {}, "env": {}, "shell": {}, "run": {},
+	}
+	fields := make(map[string]struct{})
+	addField := func(fieldLine string) error {
+		match := fieldPattern.FindStringSubmatch(fieldLine)
+		if match == nil {
+			return fmt.Errorf("unsupported flow-style or malformed step field %q", fieldLine)
+		}
+		name := match[1]
+		if _, allowed := allowedFields[name]; !allowed {
+			return fmt.Errorf("unsupported step field %q", name)
+		}
+		if _, duplicate := fields[name]; duplicate {
+			return fmt.Errorf("duplicate step field %q", name)
+		}
+		fields[name] = struct{}{}
+		return nil
+	}
+	if err := addField(strings.TrimPrefix(lines[0], "- ")); err != nil {
+		return err
+	}
+	for _, line := range lines[1:] {
+		if leadingSpaces(line) != 2 {
+			continue
+		}
+		if err := addField(strings.TrimPrefix(line, "  ")); err != nil {
+			return err
+		}
+	}
+	_, hasUses := fields["uses"]
+	_, hasRun := fields["run"]
+	if hasUses == hasRun {
+		return errors.New("step must contain exactly one of uses or run")
+	}
+	return nil
+}
+
+func parsedYAMLJobActions(jobBlock string) ([]string, error) {
+	steps, err := parseYAMLSteps(jobBlock)
+	if err != nil {
+		return nil, err
+	}
+	actions := make([]string, 0)
+	for _, step := range steps {
+		if action := parsedStepAction(step); action != "" {
+			actions = append(actions, action)
+		}
+	}
+	return actions, nil
+}
+
+func parseIndentedYAMLBlock(document, key string, indentation int) ([]string, error) {
+	lines := strings.Split(strings.ReplaceAll(document, "\r\n", "\n"), "\n")
+	header := strings.Repeat(" ", indentation) + key + ":"
+	start := -1
+	for index, line := range lines {
+		if line != header {
+			continue
+		}
+		if start >= 0 {
+			return nil, fmt.Errorf("duplicate %s block", key)
+		}
+		start = index + 1
+	}
+	if start < 0 {
+		return nil, fmt.Errorf("missing %s block", key)
+	}
+	prefix := strings.Repeat(" ", indentation)
+	result := make([]string, 0)
+	for _, line := range lines[start:] {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if leadingSpaces(line) <= indentation {
+			break
+		}
+		result = append(result, strings.TrimPrefix(line, prefix))
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("empty %s block", key)
+	}
+	return result, nil
 }
 
 func parsedStepAction(step string) string {
