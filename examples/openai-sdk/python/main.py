@@ -50,6 +50,11 @@ def assert_integer_timestamp(value: object) -> None:
     assert math.isfinite(numeric) and numeric.is_integer()
 
 
+def assert_expected_output(value: object) -> None:
+    assert isinstance(value, str)
+    assert value in ("SDK_GATEWAY_OK", "SDK_GATEWAY_OK\n")
+
+
 def main() -> None:
     for name in (
         "AI_CLI_GATEWAY_BASE_URL",
@@ -68,21 +73,22 @@ def main() -> None:
         }
     )
 
+    model_name = require_env("AI_CLI_GATEWAY_MODEL")
     models = client.models.list()
     assert models.object == "list"
-    assert len(models.data) == 1
-    model = models.data[0]
+    matching_models = [model for model in models.data if model.id == model_name]
+    assert len(matching_models) == 1
+    model = matching_models[0]
     assert_fields(model, {"id", "object", "created", "owned_by"})
-    assert model.id == "codex-sdk-test"
+    assert model.id == model_name
     assert model.object == "model"
     assert model.created == 0
     assert model.owned_by == "local"
 
-    model_name = require_env("AI_CLI_GATEWAY_MODEL")
     response = client.responses.create(
         model=model_name,
-        instructions="SDK contract instruction.",
-        input="SDK contract input.",
+        instructions="Return only the exact text requested.",
+        input="Reply with exactly: SDK_GATEWAY_OK",
         text={"format": {"type": "text"}},
         stream=False,
         store=False,
@@ -122,7 +128,7 @@ def main() -> None:
     assert response.background is False
     assert response.error is None
     assert response.incomplete_details is None
-    assert response.instructions == "SDK contract instruction."
+    assert response.instructions == "Return only the exact text requested."
     assert response.model == model_name
     assert response.parallel_tool_calls is False
     assert response.previous_response_id is None
@@ -147,7 +153,7 @@ def main() -> None:
     assert_fields(content, {"type", "annotations", "text"})
     assert content.type == "output_text"
     assert content.annotations == []
-    assert content.text == "SDK_GATEWAY_OK\n"
+    assert_expected_output(content.text)
 
 
 def api_status(error: openai.APIError) -> str:

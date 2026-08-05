@@ -544,9 +544,13 @@ func validateOfficialSDKSource(language, contents string) error {
 		"Python": {
 			`os.environ.pop("OPENAI_LOG", None)`, `"max_retries": 0`, `models = client.models.list()`,
 			`return 300.0`, `if len(value) > 3:`, `if not value.isascii() or not value.isdecimal():`,
-			`if seconds < 1 or seconds > 300:`, `assert models.object == "list"`, `assert len(models.data) == 1`,
-			`assert_fields(model, {"id", "object", "created", "owned_by"})`, `assert model.id == "codex-sdk-test"`,
+			`if seconds < 1 or seconds > 300:`, `assert models.object == "list"`,
+			`matching_models = [model for model in models.data if model.id == model_name]`,
+			`assert len(matching_models) == 1`, `model = matching_models[0]`,
+			`assert_fields(model, {"id", "object", "created", "owned_by"})`, `assert model.id == model_name`,
 			`assert model.object == "model"`, `assert model.created == 0`, `assert model.owned_by == "local"`,
+			`def assert_expected_output(value: object) -> None:`, `assert isinstance(value, str)`,
+			`assert value in ("SDK_GATEWAY_OK", "SDK_GATEWAY_OK\n")`,
 			`assert isinstance(response._request_id, str)`, `assert response._request_id.startswith("req_")`,
 			`assert isinstance(response.id, str) and response.id.startswith("resp_")`,
 			`assert response.object == "response"`, `def assert_integer_timestamp(value: object) -> None:`,
@@ -555,7 +559,7 @@ func validateOfficialSDKSource(language, contents string) error {
 			`assert_integer_timestamp(response.created_at)`, `assert_integer_timestamp(response.completed_at)`,
 			`assert response.completed_at >= response.created_at`, `assert response.status == "completed"`,
 			`assert response.background is False`, `assert response.error is None`,
-			`assert response.incomplete_details is None`, `assert response.instructions == "SDK contract instruction."`,
+			`assert response.incomplete_details is None`, `assert response.instructions == "Return only the exact text requested."`,
 			`assert response.model == model_name`, `assert response.parallel_tool_calls is False`,
 			`assert response.previous_response_id is None`, `assert response.store is False`,
 			`assert response.tools == []`, `assert response.tool_choice == "none"`,
@@ -564,7 +568,7 @@ func validateOfficialSDKSource(language, contents string) error {
 			`assert isinstance(message.id, str) and message.id.startswith("msg_")`,
 			`assert message.type == "message"`, `assert message.status == "completed"`,
 			`assert message.role == "assistant"`, `assert len(message.content) == 1`, `assert content.type == "output_text"`,
-			`assert content.annotations == []`, `assert content.text == "SDK_GATEWAY_OK\n"`,
+			`assert content.annotations == []`, `assert_expected_output(content.text)`,
 			`status = getattr(error, "status_code", None)`,
 			`if isinstance(status, int) and not isinstance(status, bool) and 400 <= status <= 599:`,
 			`return str(status)`, `return "unknown"`,
@@ -577,10 +581,14 @@ func validateOfficialSDKSource(language, contents string) error {
 			`logLevel: "off"`, `maxRetries: 0`, `const models = await client.models.list()`,
 			`return 300_000`, `if (!/^[0-9]+$/.test(value))`,
 			`if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 300)`,
-			`assert.equal(models.object, "list")`, `assert.equal(models.data.length, 1)`,
+			`assert.equal(models.object, "list")`,
+			`const matchingModels = models.data.filter((model) => model.id === modelName)`,
+			`assert.equal(matchingModels.length, 1)`, `const [model] = matchingModels`,
 			`assertFields(model, ["id", "object", "created", "owned_by"])`,
-			`assert.equal(model.id, "codex-sdk-test")`, `assert.equal(model.object, "model")`,
+			`assert.equal(model.id, modelName)`, `assert.equal(model.object, "model")`,
 			`assert.equal(model.created, 0)`, `assert.equal(model.owned_by, "local")`,
+			`function assertExpectedOutput(value)`, `assert.equal(typeof value, "string")`,
+			`assert.equal(value === "SDK_GATEWAY_OK" || value === "SDK_GATEWAY_OK\n", true)`,
 			`assert.equal(typeof response._request_id, "string")`, `assert.match(response._request_id, /^req_/)`,
 			`assert.equal(typeof response.id, "string")`, `assert.match(response.id, /^resp_/)`,
 			`assert.equal(response.object, "response")`, `assert.equal(Number.isSafeInteger(response.created_at), true)`,
@@ -588,8 +596,8 @@ func validateOfficialSDKSource(language, contents string) error {
 			`assert.equal(response.completed_at >= response.created_at, true)`,
 			`assert.equal(response.status, "completed")`, `assert.equal(response.background, false)`,
 			`assert.equal(response.error, null)`, `assert.equal(response.incomplete_details, null)`,
-			`assert.equal(response.instructions, "SDK contract instruction.")`, `assert.equal(response.model, modelName)`,
-			`assert.equal(response.output_text, "SDK_GATEWAY_OK\n")`,
+			`assert.equal(response.instructions, "Return only the exact text requested.")`, `assert.equal(response.model, modelName)`,
+			`assertExpectedOutput(response.output_text)`,
 			`assert.equal(response.parallel_tool_calls, false)`, `assert.equal(response.previous_response_id, null)`,
 			`assert.equal(response.store, false)`, `assert.deepEqual(response.tools, [])`,
 			`assert.equal(response.tool_choice, "none")`, `assertFields(response.text, ["format"])`,
@@ -599,7 +607,7 @@ func validateOfficialSDKSource(language, contents string) error {
 			`assert.equal(message.status, "completed")`, `assert.equal(message.role, "assistant")`,
 			`assert.equal(message.content.length, 1)`, `assert.equal(content.type, "output_text")`,
 			`assert.deepEqual(content.annotations, [])`,
-			`assert.equal(content.text, "SDK_GATEWAY_OK\n")`,
+			`assertExpectedOutput(content.text)`,
 			`if (Number.isSafeInteger(error.status) && error.status >= 400 && error.status <= 599)`,
 			`return String(error.status)`, `return "unknown"`,
 			"console.error(`sdk_contract_error: missing ${error.name}`)",
@@ -610,14 +618,14 @@ func validateOfficialSDKSource(language, contents string) error {
 	}
 	normalizedRequired := map[string][]string{
 		"Python": {
-			`response = client.responses.create( model=model_name, instructions="SDK contract instruction.", input="SDK contract input.", text={"format": {"type": "text"}}, stream=False, store=False, tools=[], tool_choice="none", )`,
+			`response = client.responses.create( model=model_name, instructions="Return only the exact text requested.", input="Reply with exactly: SDK_GATEWAY_OK", text={"format": {"type": "text"}}, stream=False, store=False, tools=[], tool_choice="none", )`,
 			`assert_fields( response, { "id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "instructions", "model", "output", "parallel_tool_calls", "previous_response_id", "text", "tools", "tool_choice", }, )`,
 			`assert_fields(message, {"id", "type", "status", "role", "content"})`,
 			`assert_fields(content, {"type", "annotations", "text"})`,
 			`except Exception: print("sdk_contract_error: python_assertion", file=sys.stderr) return 1`,
 		},
 		"JavaScript": {
-			`const response = await client.responses.create({ model: modelName, instructions: "SDK contract instruction.", input: "SDK contract input.", text: { format: { type: "text" } }, stream: false, store: false, tools: [], tool_choice: "none", });`,
+			`const response = await client.responses.create({ model: modelName, instructions: "Return only the exact text requested.", input: "Reply with exactly: SDK_GATEWAY_OK", text: { format: { type: "text" } }, stream: false, store: false, tools: [], tool_choice: "none", });`,
 			`assertFields(response, [ "id", "object", "created_at", "completed_at", "status", "background", "error", "incomplete_details", "instructions", "model", "output", "output_text", "parallel_tool_calls", "previous_response_id", "store", "text", "tools", "tool_choice", ]);`,
 			`assertFields(message, ["id", "type", "status", "role", "content"]);`,
 			`assertFields(content, ["type", "annotations", "text"]);`,
@@ -710,10 +718,13 @@ func TestOfficialSDKExamplesContractRejectsMutations(t *testing.T) {
 		{"python retries", "Python", "examples/openai-sdk/python/main.py", `"max_retries": 0`, `"max_retries": 1`},
 		{"python models object", "Python", "examples/openai-sdk/python/main.py", `assert models.object == "list"`, `assert models.object == "collection"`},
 		{"python models object commented", "Python", "examples/openai-sdk/python/main.py", `    assert models.object == "list"`, `    # assert models.object == "list"`},
-		{"python request instruction", "Python", "examples/openai-sdk/python/main.py", `instructions="SDK contract instruction."`, `instructions="changed"`},
+		{"python model alias selection", "Python", "examples/openai-sdk/python/main.py", `matching_models = [model for model in models.data if model.id == model_name]`, `matching_models = [model for model in models.data if model.id == "codex-sdk-test"]`},
+		{"python exact model alias count", "Python", "examples/openai-sdk/python/main.py", `assert len(matching_models) == 1`, `assert len(matching_models) > 0`},
+		{"python request instruction", "Python", "examples/openai-sdk/python/main.py", `instructions="Return only the exact text requested."`, `instructions="changed"`},
+		{"python request input", "Python", "examples/openai-sdk/python/main.py", `input="Reply with exactly: SDK_GATEWAY_OK"`, `input="changed"`},
 		{"python request store", "Python", "examples/openai-sdk/python/main.py", `store=False`, `store=True`},
 		{"python response role", "Python", "examples/openai-sdk/python/main.py", `assert message.role == "assistant"`, `assert message.role == "user"`},
-		{"python response text", "Python", "examples/openai-sdk/python/main.py", `assert content.text == "SDK_GATEWAY_OK\n"`, `assert content.text == "changed\n"`},
+		{"python response text", "Python", "examples/openai-sdk/python/main.py", `assert value in ("SDK_GATEWAY_OK", "SDK_GATEWAY_OK\n")`, `assert value.startswith("SDK_GATEWAY_OK")`},
 		{"python fixed error", "Python", "examples/openai-sdk/python/main.py", `sdk_contract_error: python_assertion`, `sdk_contract_error: changed`},
 		{"python fixed success", "Python", "examples/openai-sdk/python/main.py", `python_sdk_contract_ok`, `python_contract_changed`},
 		{"python API status integer", "Python", "examples/openai-sdk/python/main.py", `isinstance(status, int)`, `status is not None`},
@@ -728,10 +739,13 @@ func TestOfficialSDKExamplesContractRejectsMutations(t *testing.T) {
 		{"javascript retries", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `maxRetries: 0`, `maxRetries: 1`},
 		{"javascript models object", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `assert.equal(models.object, "list")`, `assert.equal(models.object, "collection")`},
 		{"javascript models object commented", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `  assert.equal(models.object, "list");`, `  // assert.equal(models.object, "list");`},
-		{"javascript request input", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `input: "SDK contract input."`, `input: "changed"`},
+		{"javascript model alias selection", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `model.id === modelName`, `model.id === "codex-sdk-test"`},
+		{"javascript exact model alias count", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `assert.equal(matchingModels.length, 1)`, `assert.equal(matchingModels.length > 0, true)`},
+		{"javascript request instruction", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `instructions: "Return only the exact text requested."`, `instructions: "changed"`},
+		{"javascript request input", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `input: "Reply with exactly: SDK_GATEWAY_OK"`, `input: "changed"`},
 		{"javascript request tools", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `tools: []`, `tools: [{ type: "function" }]`},
 		{"javascript response role", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `assert.equal(message.role, "assistant")`, `assert.equal(message.role, "user")`},
-		{"javascript response text", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `assert.equal(content.text, "SDK_GATEWAY_OK\n")`, `assert.equal(content.text, "changed\n")`},
+		{"javascript response text", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `assert.equal(value === "SDK_GATEWAY_OK" || value === "SDK_GATEWAY_OK\n", true)`, `assert.equal(value.startsWith("SDK_GATEWAY_OK"), true)`},
 		{"javascript fixed error", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `sdk_contract_error: javascript_assertion`, `sdk_contract_error: changed`},
 		{"javascript fixed success", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `javascript_sdk_contract_ok`, `javascript_contract_changed`},
 		{"javascript API status integer", "JavaScript", "examples/openai-sdk/javascript/main.mjs", `Number.isSafeInteger(error.status)`, `Number.isFinite(error.status)`},
@@ -770,6 +784,11 @@ func TestOfficialSDKExamplesSuppressHostileLogging(t *testing.T) {
 			{name: "non-ASCII timeout", environment: sdkValidEnvironment("٣"), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
 			{name: "oversized timeout", environment: sdkValidEnvironment(strings.Repeat("9", 5000)), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
 			{name: "success", environment: sdkValidEnvironment("5"), output: "python_sdk_contract_ok\n", exitCode: 0},
+			{name: "success without trailing newline", environment: sdkOutputEnvironment("plain"), output: "python_sdk_contract_ok\n", exitCode: 0},
+			{name: "reject double trailing newline", environment: sdkOutputEnvironment("double-newline"), output: "sdk_contract_error: python_assertion\n", exitCode: 1},
+			{name: "reject extra output", environment: sdkOutputEnvironment("extra"), output: "sdk_contract_error: python_assertion\n", exitCode: 1},
+			{name: "model alias missing", environment: sdkModelsDataEnvironment("missing"), output: "sdk_contract_error: python_assertion\n", exitCode: 1},
+			{name: "model alias duplicated", environment: sdkModelsDataEnvironment("duplicate"), output: "sdk_contract_error: python_assertion\n", exitCode: 1},
 			{name: "models API status 400", environment: sdkAPIErrorEnvironment("models:400"), output: "sdk_contract_error: python_api 400\n", exitCode: 1},
 			{name: "responses API status 599", environment: sdkAPIErrorEnvironment("responses:599"), output: "sdk_contract_error: python_api 599\n", exitCode: 1},
 			{name: "API status missing", environment: sdkAPIErrorEnvironment("models:missing"), output: "sdk_contract_error: python_api unknown\n", exitCode: 1},
@@ -797,6 +816,11 @@ func TestOfficialSDKExamplesSuppressHostileLogging(t *testing.T) {
 			{name: "non-ASCII timeout", environment: sdkValidEnvironment("٣"), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
 			{name: "oversized timeout", environment: sdkValidEnvironment(strings.Repeat("9", 5000)), output: "sdk_contract_error: invalid AI_CLI_GATEWAY_TIMEOUT_SECONDS\n", exitCode: 1},
 			{name: "success", environment: sdkValidEnvironment("5"), output: "javascript_sdk_contract_ok\n", exitCode: 0},
+			{name: "success without trailing newline", environment: sdkOutputEnvironment("plain"), output: "javascript_sdk_contract_ok\n", exitCode: 0},
+			{name: "reject double trailing newline", environment: sdkOutputEnvironment("double-newline"), output: "sdk_contract_error: javascript_assertion\n", exitCode: 1},
+			{name: "reject extra output", environment: sdkOutputEnvironment("extra"), output: "sdk_contract_error: javascript_assertion\n", exitCode: 1},
+			{name: "model alias missing", environment: sdkModelsDataEnvironment("missing"), output: "sdk_contract_error: javascript_assertion\n", exitCode: 1},
+			{name: "model alias duplicated", environment: sdkModelsDataEnvironment("duplicate"), output: "sdk_contract_error: javascript_assertion\n", exitCode: 1},
 			{name: "models API status 400", environment: sdkAPIErrorEnvironment("models:400"), output: "sdk_contract_error: javascript_api 400\n", exitCode: 1},
 			{name: "responses API status 599", environment: sdkAPIErrorEnvironment("responses:599"), output: "sdk_contract_error: javascript_api 599\n", exitCode: 1},
 			{name: "API status missing", environment: sdkAPIErrorEnvironment("models:missing"), output: "sdk_contract_error: javascript_api unknown\n", exitCode: 1},
@@ -900,7 +924,7 @@ func sdkValidEnvironment(timeout string) []string {
 	return []string{
 		"AI_CLI_GATEWAY_BASE_URL=http://127.0.0.1:1/v1",
 		"AI_CLI_GATEWAY_API_" + "KEY=fixture-only",
-		"AI_CLI_GATEWAY_MODEL=codex-sdk-test",
+		"AI_CLI_GATEWAY_MODEL=codex-local",
 		"AI_CLI_GATEWAY_TIMEOUT_SECONDS=" + timeout,
 	}
 }
@@ -915,6 +939,14 @@ func sdkGenericErrorEnvironment(location string) []string {
 
 func sdkModelsObjectEnvironment(mode string) []string {
 	return append(sdkValidEnvironment("5"), "SDK_CONTRACT_FAKE_MODELS_OBJECT="+mode)
+}
+
+func sdkModelsDataEnvironment(mode string) []string {
+	return append(sdkValidEnvironment("5"), "SDK_CONTRACT_FAKE_MODELS_DATA="+mode)
+}
+
+func sdkOutputEnvironment(mode string) []string {
+	return append(sdkValidEnvironment("5"), "SDK_CONTRACT_FAKE_OUTPUT="+mode)
 }
 
 func runSDKClientCases(t *testing.T, executable, source string, baseEnvironment []string, cases []sdkClientCase) {
@@ -987,7 +1019,15 @@ class Models:
     def list(self):
         raise_generic_error("models")
         raise_api_error("models")
-        data = [Value(id="codex-sdk-test", object="model", created=0, owned_by="local")]
+        data = [
+            Value(id="decoy-local", object="model", created=0, owned_by="local"),
+            Value(id="codex-local", object="model", created=0, owned_by="local"),
+        ]
+        data_mode = os.environ.get("SDK_CONTRACT_FAKE_MODELS_DATA")
+        if data_mode == "missing":
+            data = data[:1]
+        elif data_mode == "duplicate":
+            data.append(Value(id="codex-local", object="model", created=0, owned_by="local"))
         mode = os.environ.get("SDK_CONTRACT_FAKE_MODELS_OBJECT")
         if mode == "missing":
             return Value(data=data)
@@ -996,9 +1036,9 @@ class Models:
 class Responses:
     def create(self, **request):
         expected = {
-            "model": "codex-sdk-test",
-            "instructions": "SDK contract instruction.",
-            "input": "SDK contract input.",
+            "model": "codex-local",
+            "instructions": "Return only the exact text requested.",
+            "input": "Reply with exactly: SDK_GATEWAY_OK",
             "text": {"format": {"type": "text"}},
             "stream": False,
             "store": False,
@@ -1009,13 +1049,18 @@ class Responses:
             raise AssertionError
         raise_generic_error("responses")
         raise_api_error("responses")
-        content = Value(type="output_text", annotations=[], text="SDK_GATEWAY_OK\n")
+        output = {
+            "plain": "SDK_GATEWAY_OK",
+            "double-newline": "SDK_GATEWAY_OK\n\n",
+            "extra": "SDK_GATEWAY_OK extra",
+        }.get(os.environ.get("SDK_CONTRACT_FAKE_OUTPUT"), "SDK_GATEWAY_OK\n")
+        content = Value(type="output_text", annotations=[], text=output)
         message = Value(id="msg_fixture", type="message", status="completed", role="assistant", content=[content])
         text = Value(format=Value(type="text"))
         response = Value(
             id="resp_fixture", object="response", created_at=1.0, completed_at=2.0, status="completed",
-            background=False, error=None, incomplete_details=None, instructions="SDK contract instruction.",
-            model="codex-sdk-test", output=[message], parallel_tool_calls=False, previous_response_id=None,
+            background=False, error=None, incomplete_details=None, instructions="Return only the exact text requested.",
+            model="codex-local", output=[message], parallel_tool_calls=False, previous_response_id=None,
             text=text, tools=[], tool_choice="none",
         )
         response.store = False
@@ -1073,7 +1118,16 @@ class OpenAI {
       list: async () => {
         raiseGenericError("models");
         raiseAPIError("models");
-        const data = [{ id: "codex-sdk-test", object: "model", created: 0, owned_by: "local" }];
+        const data = [
+          { id: "decoy-local", object: "model", created: 0, owned_by: "local" },
+          { id: "codex-local", object: "model", created: 0, owned_by: "local" },
+        ];
+        const dataMode = process.env.SDK_CONTRACT_FAKE_MODELS_DATA;
+        if (dataMode === "missing") {
+          data.splice(1);
+        } else if (dataMode === "duplicate") {
+          data.push({ id: "codex-local", object: "model", created: 0, owned_by: "local" });
+        }
         const mode = process.env.SDK_CONTRACT_FAKE_MODELS_OBJECT;
         if (mode === "missing") {
           return { data };
@@ -1084,9 +1138,9 @@ class OpenAI {
     this.responses = {
       create: async (request) => {
         const expected = {
-          model: "codex-sdk-test",
-          instructions: "SDK contract instruction.",
-          input: "SDK contract input.",
+          model: "codex-local",
+          instructions: "Return only the exact text requested.",
+          input: "Reply with exactly: SDK_GATEWAY_OK",
           text: { format: { type: "text" } },
           stream: false,
           store: false,
@@ -1098,6 +1152,11 @@ class OpenAI {
         }
         raiseGenericError("responses");
         raiseAPIError("responses");
+        const output = {
+          plain: "SDK_GATEWAY_OK",
+          "double-newline": "SDK_GATEWAY_OK\n\n",
+          extra: "SDK_GATEWAY_OK extra",
+        }[process.env.SDK_CONTRACT_FAKE_OUTPUT] ?? "SDK_GATEWAY_OK\n";
         const response = {
           id: "resp_fixture",
           object: "response",
@@ -1107,16 +1166,16 @@ class OpenAI {
           background: false,
           error: null,
           incomplete_details: null,
-          instructions: "SDK contract instruction.",
-          model: "codex-sdk-test",
+          instructions: "Return only the exact text requested.",
+          model: "codex-local",
           output: [{
             id: "msg_fixture",
             type: "message",
             status: "completed",
             role: "assistant",
-            content: [{ type: "output_text", annotations: [], text: "SDK_GATEWAY_OK\n" }],
+            content: [{ type: "output_text", annotations: [], text: output }],
           }],
-          output_text: "SDK_GATEWAY_OK\n",
+          output_text: output,
           parallel_tool_calls: false,
           previous_response_id: null,
           store: false,
@@ -1192,134 +1251,557 @@ func TestREADMEOpeningAndOfficialContractSources(t *testing.T) {
 
 func TestREADMEReleaseQuickStart(t *testing.T) {
 	readme := string(readRepositoryFile(t, "README.md"))
-	paragraphs := markdownProseParagraphs(readme)
-	if len(paragraphs) < 2 {
-		t.Fatal("README.md must begin with the description and subset disclaimer")
+	if err := validateREADMEReleaseQuickStart(readme); err != nil {
+		t.Fatalf("README release Quick Start contract: %v", err)
 	}
+}
+
+func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
+	readme := string(readRepositoryFile(t, "README.md"))
+	if err := validateREADMEReleaseQuickStart(readme); err != nil {
+		t.Fatalf("baseline README Quick Start must be valid before mutation checks: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(string) (string, error)
+	}{
+		{name: "broad POSIX filename regex", mutate: replaceREADMEOnce(`length($0) == 66 + length(name) && substr($0, 65) == " *" name`, `$0 ~ name`)},
+		{name: "commented POSIX exact count", mutate: replaceREADMEOnce(`      if (matches != 1) exit 1`, `      # if (matches != 1) exit 1`)},
+		{name: "POSIX digest merely nonempty", mutate: replaceREADMEOnce(`test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"`, `test -n "${ACTUAL_SHA}"`)},
+		{name: "broad PowerShell checksum regex", mutate: replaceREADMEOnce(`$ArchivePattern = '^[0-9a-f]{64} \*' + [regex]::Escape($ArchiveName) + '$'`, `$ArchivePattern = $ArchiveName`)},
+		{name: "printed POSIX key", mutate: replaceREADMENth(`export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`, `export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`+"\n"+`printf '%s\n' "${GATEWAY_KEY}"`, 2)},
+		{name: "commented POSIX terminal load", mutate: replaceREADMENth(`GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`, `# GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`, 2)},
+		{name: "first Bash fence changed to text", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.1.0", "```text\nset -eu\nVERSION=0.1.0")},
+		{name: "Darwin ARM64 branch removed", mutate: replaceREADMEOnce(`  Darwin:arm64) ASSET="ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz" ;;`+"\n", "")},
+		{name: "POSIX substitution commented", mutate: replaceREADMEOnce(`    [q{configured-provider-model}, $ENV{CODEX_MODEL}],`, `    # [q{configured-provider-model}, $ENV{CODEX_MODEL}],`)},
+		{name: "POSIX chmod commented", mutate: replaceREADMEOnce(`chmod 700 "${GATEWAY_CONFIG_DIR}" "${GATEWAY_RUNTIME_DIR}" "${CODEX_CONFIG_HOME}"`, `# chmod 700 "${GATEWAY_CONFIG_DIR}" "${GATEWAY_RUNTIME_DIR}" "${CODEX_CONFIG_HOME}"`)},
+		{name: "models curl commented", mutate: replaceREADMENth("curl --fail-with-body \\\n  -H \"Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}\" \\\n  http://127.0.0.1:8080/v1/models", "# curl --fail-with-body \\\n#   -H \"Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}\" \\\n#   http://127.0.0.1:8080/v1/models", 1)},
+		{name: "Node SDK command commented", mutate: replaceREADMEOnce(`node "${SDK_WORK_ROOT}/javascript/main.mjs"`, `# node "${SDK_WORK_ROOT}/javascript/main.mjs"`)},
+		{name: "subset only in HTML comment", mutate: replaceREADMEOnce(`It exercises the documented non-streaming **Responses API-compatible subset**;`, `It exercises the documented non-streaming local subset. <!-- Responses API-compatible subset -->`)},
+		{name: "systemd link moved to Windows", mutate: moveREADMESystemdLink},
+		{name: "PowerShell accepts preexisting target", mutate: replaceREADMEOnce(`if (Test-Path -LiteralPath $FreshTarget) { throw 'private target already exists' }`, `if (Test-Path -LiteralPath $FreshTarget) { Write-Output 'reusing target' }`)},
+		{name: "PowerShell adds another ACE", mutate: replaceREADMEOnce(`& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)(F)" | Out-Null`, `& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)(F)" | Out-Null`+"\n"+`  & icacls.exe $PrivateDir /grant 'BUILTIN\Users:(R)' | Out-Null`)},
+		{name: "PowerShell omits exact ACL count", mutate: replaceREADMEOnce(`if ($Rules.Count -ne 1) { throw 'private ACL must contain exactly one rule' }`, `# if ($Rules.Count -ne 1) { throw 'private ACL must contain exactly one rule' }`)},
+		{name: "PowerShell terminal load commented", mutate: replaceREADMENth(`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, `# $LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, 2)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated, err := test.mutate(readme)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateREADMEReleaseQuickStart(mutated); err == nil {
+				t.Fatal("README Quick Start validator accepted the mutation")
+			}
+		})
+	}
+}
+
+func replaceREADMEOnce(old, replacement string) func(string) (string, error) {
+	return func(document string) (string, error) {
+		if count := strings.Count(document, old); count != 1 {
+			return "", fmt.Errorf("README mutation target %q occurs %d times, want one", old, count)
+		}
+		return strings.Replace(document, old, replacement, 1), nil
+	}
+}
+
+func replaceREADMENth(old, replacement string, occurrence int) func(string) (string, error) {
+	return func(document string) (string, error) {
+		position := 0
+		for current := 1; current <= occurrence; current++ {
+			relative := strings.Index(document[position:], old)
+			if relative < 0 {
+				return "", fmt.Errorf("README mutation target %q has fewer than %d occurrences", old, occurrence)
+			}
+			position += relative
+			if current == occurrence {
+				return document[:position] + replacement + document[position+len(old):], nil
+			}
+			position += len(old)
+		}
+		return "", errors.New("unreachable README mutation")
+	}
+}
+
+func moveREADMESystemdLink(document string) (string, error) {
+	const sentence = "Linux service operators can adapt the checked-in [systemd service example](deploy/systemd/ai-cli-gateway.service) after completing the same path, ownership, Doctor, and credential checks."
+	if strings.Count(document, sentence) != 1 {
+		return "", errors.New("systemd mutation target is not unique")
+	}
+	document = strings.Replace(document, sentence, "Linux service operators must complete the same path, ownership, Doctor, and credential checks.", 1)
+	const windows = "### Windows PowerShell\n"
+	if strings.Count(document, windows) != 1 {
+		return "", errors.New("Windows heading mutation target is not unique")
+	}
+	return strings.Replace(document, windows, windows+"\nUse the [systemd service example](deploy/systemd/ai-cli-gateway.service).\n", 1), nil
+}
+
+type readmeQuickStartFence struct {
+	section  string
+	language string
+	body     string
+}
+
+type readmeQuickStartDocument struct {
+	prose  map[string]string
+	fences []readmeQuickStartFence
+}
+
+const (
+	quickStartRootSection    = "root"
+	quickStartPOSIXSection   = "posix"
+	quickStartWindowsSection = "windows"
+	quickStartSDKSection     = "sdk"
+)
+
+func validateREADMEReleaseQuickStart(readme string) error {
+	paragraphs := markdownProseParagraphs(readme)
 	const opening = "AI CLI Gateway turns locally authenticated AI CLIs into an OpenAI Responses-compatible API."
 	const disclaimer = "It deliberately implements a small **Responses API-compatible subset**, not full OpenAI API compatibility. The gateway is a local, final-output bridge with strict validation; it is not a drop-in implementation of every OpenAI endpoint or feature."
-	if paragraphs[0] != opening || paragraphs[1] != disclaimer {
-		t.Fatalf("README opening paragraphs changed: got %q followed by %q", paragraphs[0], paragraphs[1])
+	if len(paragraphs) < 2 || paragraphs[0] != opening || paragraphs[1] != disclaimer {
+		return errors.New("opening description or adjacent subset disclaimer changed")
 	}
-
-	quickStartIndex := strings.Index(readme, "\n## Quick Start\n")
-	architectureIndex := strings.Index(readme, "\n## Architecture and scope\n")
-	if quickStartIndex < 0 {
-		t.Fatal("README.md is missing the release Quick Start")
+	document, err := parseREADMEQuickStart(readme)
+	if err != nil {
+		return err
 	}
-	if architectureIndex < 0 || quickStartIndex > architectureIndex {
-		t.Fatal("README Quick Start must precede Architecture and scope")
-	}
-	quickStart := readme[quickStartIndex:architectureIndex]
-
-	requireContainsAll(t, "README Quick Start release boundary", quickStart,
-		"v0.1.0",
-		"ai-cli-gateway_0.1.0_linux_amd64.tar.gz",
-		"ai-cli-gateway_0.1.0_linux_arm64.tar.gz",
-		"ai-cli-gateway_0.1.0_darwin_amd64.tar.gz",
-		"ai-cli-gateway_0.1.0_darwin_arm64.tar.gz",
-		"ai-cli-gateway_0.1.0_windows_amd64.zip",
+	rootProse := document.prose[quickStartRootSection]
+	posixProse := document.prose[quickStartPOSIXSection]
+	windowsProse := document.prose[quickStartWindowsSection]
+	sdkProse := document.prose[quickStartSDKSection]
+	for _, marker := range []string{
+		"v0.1.0", "ai-cli-gateway_0.1.0_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.1.0_linux_arm64.tar.gz", "ai-cli-gateway_0.1.0_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.1.0_darwin_arm64.tar.gz", "ai-cli-gateway_0.1.0_windows_amd64.zip",
 		"Responses API-compatible subset",
-		"You are responsible for installing and authenticating each provider CLI and for using it in accordance with its applicable terms.",
-	)
-
-	posixIndex := strings.Index(quickStart, "\n### POSIX (macOS and Linux)\n")
-	windowsIndex := strings.Index(quickStart, "\n### Windows PowerShell\n")
-	sdkIndex := strings.Index(quickStart, "\n### Official SDK checks\n")
-	if posixIndex < 0 || windowsIndex < 0 || sdkIndex < 0 || posixIndex >= windowsIndex || windowsIndex >= sdkIndex {
-		t.Fatal("README Quick Start must keep separate ordered POSIX, Windows PowerShell, and SDK sections")
+	} {
+		if !strings.Contains(rootProse, marker) {
+			return fmt.Errorf("active Quick Start prose is missing %q", marker)
+		}
 	}
-	posix := quickStart[posixIndex:windowsIndex]
-	windows := quickStart[windowsIndex:sdkIndex]
-	sdk := quickStart[sdkIndex:]
-
-	requireContainsAll(t, "README POSIX Quick Start", posix,
-		"awk -v name=\"${ASSET}\"",
-		"matches != 1",
-		"${#EXPECTED_SHA}",
-		"*[!0-9a-f]*",
-		"shasum -a 256",
-		"tar -xzf",
-		"${HOME}/.local/bin",
-		"examples/config/codex.example.toml",
-		"/opt/ai-cli-gateway/bin/codex",
-		"/var/lib/ai-cli-gateway/codex-home",
-		"/var/lib/ai-cli-gateway/runtime",
-		"configured-provider-model",
-		"chmod 700",
-		"chmod 600",
-		"openssl rand -hex 32",
-		"LC_ALL=C tr -d '\\n'",
-		"export AI_CLI_GATEWAY_API_KEY=\"${GATEWAY_KEY}\"",
-		"ai-cli-gateway doctor --config",
-		"ai-cli-gateway serve --config",
-		"http://127.0.0.1:8080/v1/models",
-		"http://127.0.0.1:8080/v1/responses",
-		"gh attestation verify \"${ASSET}\"",
-		"--repo krkarma777/ai-cli-gateway",
-		"--predicate-type https://slsa.dev/provenance/v1",
-		"--signer-workflow github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml",
-		"[systemd service example](deploy/systemd/ai-cli-gateway.service)",
-	)
-	if strings.Contains(posix, "shasum -c") {
-		t.Fatal("README POSIX Quick Start must verify only the selected archive, not the incomplete manifest set")
+	const terms = "You are responsible for installing and authenticating each provider CLI and for using it in accordance with its applicable terms."
+	if !strings.Contains(sdkProse, terms) {
+		return errors.New("active SDK prose is missing the provider-terms notice")
 	}
-	if count := strings.Count(posix, "LC_ALL=C tr -d '\\n'"); count < 3 {
-		t.Fatalf("README POSIX Quick Start loads and validates the external key in %d terminals, want at least three", count)
+	const systemdLink = "[systemd service example](deploy/systemd/ai-cli-gateway.service)"
+	if !strings.Contains(posixProse, systemdLink) || strings.Contains(windowsProse, systemdLink) {
+		return errors.New("systemd link is not active POSIX-only prose")
 	}
 
-	requireContainsAll(t, "README PowerShell Quick Start", windows,
-		"ai-cli-gateway_0.1.0_windows_amd64.zip",
-		"Get-FileHash -Algorithm SHA256",
-		"$ManifestMatches.Count -ne 1",
-		"^[0-9a-f]{64}$",
-		"OrdinalIgnoreCase",
-		"Expand-Archive",
-		"C:/Tools/Codex/codex.exe",
-		"C:/GatewayService/codex-home",
-		"C:/GatewayService/runtime",
-		"examples/config/codex.example.toml",
-		"configured-provider-model",
-		"RandomNumberGenerator",
-		"ToHexString",
-		"UTF8Encoding]::new($false)",
-		"icacls.exe",
-		"$LASTEXITCODE -ne 0",
-		"[IO.File]::ReadAllText($GatewayKeyPath).Trim()",
-		"$env:AI_CLI_GATEWAY_API_KEY = $LoadedGatewayKey",
-		"ai-cli-gateway.exe doctor --config",
-		"ai-cli-gateway.exe serve --config",
-		"http://127.0.0.1:8080/v1/models",
-		"http://127.0.0.1:8080/v1/responses",
-	)
-	if digestIndex, extractIndex := strings.Index(windows, "Get-FileHash -Algorithm SHA256"), strings.Index(windows, "Expand-Archive"); digestIndex < 0 || extractIndex < 0 || digestIndex > extractIndex {
-		t.Fatal("README PowerShell Quick Start must compare the selected digest before extraction")
+	posixFences := quickStartFences(document, quickStartPOSIXSection, "bash")
+	windowsFences := quickStartFences(document, quickStartWindowsSection, "powershell")
+	sdkFences := quickStartFences(document, quickStartSDKSection, "bash")
+	if len(posixFences) != 6 || len(windowsFences) != 6 || len(sdkFences) != 1 {
+		return fmt.Errorf("executable fence counts = POSIX %d, Windows %d, SDK %d", len(posixFences), len(windowsFences), len(sdkFences))
 	}
-	if count := strings.Count(windows, "[IO.File]::ReadAllText($GatewayKeyPath).Trim()"); count < 3 {
-		t.Fatalf("README PowerShell Quick Start loads and validates the external key in %d terminals, want at least three", count)
+	posixCode := strings.Join(posixFences, "\n")
+	windowsCode := strings.Join(windowsFences, "\n")
+	sdkCode := sdkFences[0]
+
+	for _, branch := range []string{
+		`Linux:x86_64) ASSET="ai-cli-gateway_${VERSION}_linux_amd64.tar.gz" ;;`,
+		`Linux:aarch64|Linux:arm64) ASSET="ai-cli-gateway_${VERSION}_linux_arm64.tar.gz" ;;`,
+		`Darwin:x86_64) ASSET="ai-cli-gateway_${VERSION}_darwin_amd64.tar.gz" ;;`,
+		`Darwin:arm64) ASSET="ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz" ;;`,
+	} {
+		if !strings.Contains(posixFences[0], branch) {
+			return fmt.Errorf("POSIX selector is missing %q", branch)
+		}
 	}
-	if strings.Contains(strings.ToLower(windows), "systemd") {
-		t.Fatal("README Windows Quick Start must not contain systemd instructions")
+	if err := requireOrderedMarkers(posixCode,
+		`awk -v name="${ASSET}"`,
+		`length($0) == 66 + length(name) && substr($0, 65) == " *" name`,
+		`if (matches != 1) exit 1`,
+		`test "${#EXPECTED_SHA}" -eq 64`,
+		`case "${EXPECTED_SHA}" in *[!0-9a-f]*) exit 1 ;; esac`,
+		`ACTUAL_SHA="$(shasum -a 256 "${ASSET}" | awk '{print $1}')"`,
+		`test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"`,
+		`tar -xzf "${ASSET}"`,
+	); err != nil {
+		return fmt.Errorf("POSIX checksum contract: %w", err)
+	}
+	for _, forbidden := range []string{"$0 ~ name", "shasum -c", `test -n "${ACTUAL_SHA}"`} {
+		if strings.Contains(posixCode, forbidden) {
+			return fmt.Errorf("POSIX checksum uses forbidden broad check %q", forbidden)
+		}
+	}
+	if err := requireOrderedMarkers(windowsCode,
+		`$ArchivePattern = '^[0-9a-f]{64} \*' + [regex]::Escape($ArchiveName) + '$'`,
+		`$ManifestMatches = @(Get-Content -LiteralPath $ManifestPath | Where-Object { $_ -cmatch $ArchivePattern })`,
+		`if ($ManifestMatches.Count -ne 1)`,
+		`if ($ExpectedSHA -cnotmatch '^[0-9a-f]{64}$')`,
+		`$ActualSHA = (Get-FileHash -Algorithm SHA256 -LiteralPath $ArchivePath).Hash`,
+		`[StringComparison]::OrdinalIgnoreCase`,
+		`Expand-Archive -LiteralPath $ArchivePath`,
+	); err != nil {
+		return fmt.Errorf("PowerShell checksum contract: %w", err)
 	}
 
-	requireContainsAll(t, "README SDK Quick Start", sdk,
-		"examples/openai-sdk/python/requirements.lock",
-		"python3.12 -m venv",
-		"-m pip install --disable-pip-version-check --no-input",
-		"examples/openai-sdk/python/main.py",
-		"examples/openai-sdk/javascript/package-lock.json",
-		"npm ci --ignore-scripts --prefix",
-		"examples/openai-sdk/javascript/main.mjs",
-		"AI_CLI_GATEWAY_BASE_URL=\"http://127.0.0.1:8080/v1\"",
-		"AI_CLI_GATEWAY_MODEL=\"codex-local\"",
-		"AI_CLI_GATEWAY_TIMEOUT_SECONDS",
-		"1..300",
-		"300",
-		"five seconds",
-		"models.list()",
-		"responses.create()",
-		"non-streaming",
-	)
+	for index, block := range posixFences[3:6] {
+		if err := requireOrderedMarkers(block,
+			`GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`,
+			`test "${#GATEWAY_KEY}" -eq 64`,
+			`case "${GATEWAY_KEY}" in *[!0-9a-f]*) exit 1 ;; esac`,
+			`export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`,
+		); err != nil {
+			return fmt.Errorf("POSIX key terminal %d: %w", index+1, err)
+		}
+	}
+	for index, block := range windowsFences[3:6] {
+		if err := requireOrderedMarkers(block,
+			`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`,
+			`if ($LoadedGatewayKey -cnotmatch '^[0-9a-f]{64}$')`,
+			`$env:AI_CLI_GATEWAY_API_KEY = $LoadedGatewayKey`,
+		); err != nil {
+			return fmt.Errorf("PowerShell key terminal %d: %w", index+1, err)
+		}
+	}
+	secretOutput := regexp.MustCompile(`(?mi)^\s*(?:echo|printf|cat|source|\.|Write-Output|Write-Host|Get-Content)\b[^\n]*(?:GATEWAY_KEY|gateway\.key|AI_CLI_GATEWAY_API_KEY)`)
+	literalKey := regexp.MustCompile(`(?mi)AI_CLI_GATEWAY_API_KEY\s*=\s*["']?[0-9a-f]{16}`)
+	if secretOutput.MatchString(posixCode+"\n"+windowsCode) || literalKey.MatchString(posixCode+"\n"+windowsCode) {
+		return errors.New("Quick Start prints, sources, or literally assigns gateway key material")
+	}
+
+	for _, marker := range []string{
+		`validate_toml_value() {`, `*\\*|*\"*|*[[:cntrl:]]*`,
+		`validate_toml_value "${CODEX_EXECUTABLE}"`, `validate_toml_value "${CODEX_CONFIG_HOME}"`,
+		`validate_toml_value "${GATEWAY_RUNTIME_DIR}"`, `validate_toml_value "${CODEX_MODEL}"`,
+		`[q{/opt/ai-cli-gateway/bin/codex}, $ENV{CODEX_EXECUTABLE}]`,
+		`[q{/var/lib/ai-cli-gateway/codex-home}, $ENV{CODEX_CONFIG_HOME}]`,
+		`[q{/var/lib/ai-cli-gateway/runtime}, $ENV{GATEWAY_RUNTIME_DIR}]`,
+		`[q{configured-provider-model}, $ENV{CODEX_MODEL}]`,
+		`chmod 700 "${GATEWAY_CONFIG_DIR}" "${GATEWAY_RUNTIME_DIR}" "${CODEX_CONFIG_HOME}"`,
+		`chmod 600 "${GATEWAY_CONFIG_FILE}"`,
+	} {
+		if !strings.Contains(posixFences[3], marker) {
+			return fmt.Errorf("active POSIX configuration is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{
+		`$CodexExecutableTOML = $CodexExecutable.Replace('\', '/')`,
+		`$CodexConfigHomeTOML = $CodexConfigHome.Replace('\', '/')`,
+		`$GatewayRuntimeTOML = $GatewayRuntimeDir.Replace('\', '/')`, `$CodexModelTOML = $CodexModel`,
+		`function Assert-SafeTOMLValue`, `[char]::IsControl($Character)`,
+		`Assert-SafeTOMLValue $CodexExecutableTOML`, `Assert-SafeTOMLValue $CodexConfigHomeTOML`,
+		`Assert-SafeTOMLValue $GatewayRuntimeTOML`, `Assert-SafeTOMLValue $CodexModelTOML`,
+		`Replace-ExactlyOnce $ConfigText '/opt/ai-cli-gateway/bin/codex' $CodexExecutableTOML`,
+		`Replace-ExactlyOnce $ConfigText '/var/lib/ai-cli-gateway/codex-home' $CodexConfigHomeTOML`,
+		`Replace-ExactlyOnce $ConfigText '/var/lib/ai-cli-gateway/runtime' $GatewayRuntimeTOML`,
+		`Replace-ExactlyOnce $ConfigText 'configured-provider-model' $CodexModelTOML`,
+		`if (Test-Path -LiteralPath $FreshTarget) { throw 'private target already exists' }`,
+		`AreAccessRulesProtected`, `$Rules.Count -ne 1`,
+		`$Rule.IsInherited`, `$Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value`,
+		`$RuleSID -ne $CurrentSID`,
+		`[Security.AccessControl.AccessControlType]::Allow`,
+		`Assert-ExactPrivateDirectoryACL $PrivateDir`, `Assert-ExactPrivateFileACL $GatewayConfigFile`,
+		`Assert-ExactPrivateFileACL $GatewayKeyPath`,
+	} {
+		if !strings.Contains(windowsFences[3], marker) {
+			return fmt.Errorf("active PowerShell configuration is missing %q", marker)
+		}
+	}
+	if count := strings.Count(windowsFences[3], "& icacls.exe"); count != 3 {
+		return fmt.Errorf("PowerShell setup contains %d icacls commands, want exactly three", count)
+	}
+
+	if err := requireOrderedMarkers(posixFences[5],
+		`curl --fail-with-body`, `http://127.0.0.1:8080/v1/models`,
+		`curl --fail-with-body`, `http://127.0.0.1:8080/v1/responses`,
+	); err != nil {
+		return fmt.Errorf("active POSIX curl contract: %w", err)
+	}
+	if err := requireOrderedMarkers(windowsFences[5],
+		`curl.exe --fail-with-body`, `http://127.0.0.1:8080/v1/models`,
+		`curl.exe --fail-with-body`, `http://127.0.0.1:8080/v1/responses`,
+	); err != nil {
+		return fmt.Errorf("active PowerShell curl contract: %w", err)
+	}
+	for _, marker := range []string{
+		`python3.12 -m venv`, `examples/openai-sdk/python/requirements.lock`,
+		`examples/openai-sdk/python/main.py`, `npm ci --ignore-scripts --prefix`,
+		`examples/openai-sdk/javascript/package-lock.json`, `node "${SDK_WORK_ROOT}/javascript/main.mjs"`,
+		`AI_CLI_GATEWAY_BASE_URL="http://127.0.0.1:8080/v1"`, `AI_CLI_GATEWAY_MODEL="codex-local"`,
+	} {
+		if !strings.Contains(sdkCode, marker) {
+			return fmt.Errorf("active SDK commands are missing %q", marker)
+		}
+	}
+	for _, marker := range []string{
+		"1..300", "300", "five seconds", "models.list()", "responses.create()", "non-streaming",
+		"SDK_GATEWAY_OK", "zero or one trailing newline",
+	} {
+		if !strings.Contains(sdkProse, marker) {
+			return fmt.Errorf("active SDK prose is missing %q", marker)
+		}
+	}
+	return nil
+}
+
+func parseREADMEQuickStart(readme string) (readmeQuickStartDocument, error) {
+	normalized := strings.ReplaceAll(readme, "\r\n", "\n")
+	const quickStartMarker = "\n## Quick Start\n"
+	const architectureMarker = "\n## Architecture and scope\n"
+	if strings.Count(normalized, quickStartMarker) != 1 || strings.Count(normalized, architectureMarker) != 1 {
+		return readmeQuickStartDocument{}, errors.New("Quick Start and Architecture headings must each occur exactly once")
+	}
+	start := strings.Index(normalized, quickStartMarker)
+	end := strings.Index(normalized, architectureMarker)
+	if start < 0 || end < 0 || start >= end {
+		return readmeQuickStartDocument{}, errors.New("Quick Start must precede Architecture and scope")
+	}
+	section := quickStartRootSection
+	sectionOrder := []string{quickStartPOSIXSection, quickStartWindowsSection, quickStartSDKSection}
+	nextSection := 0
+	proseLines := map[string][]string{
+		quickStartRootSection: {}, quickStartPOSIXSection: {}, quickStartWindowsSection: {}, quickStartSDKSection: {},
+	}
+	fences := make([]readmeQuickStartFence, 0)
+	inFence := false
+	language := ""
+	fenceLines := make([]string, 0)
+	for _, line := range strings.Split(normalized[start+len(quickStartMarker):end], "\n") {
+		if inFence {
+			if line == "```" {
+				fences = append(fences, readmeQuickStartFence{section: section, language: language, body: executableREADMEFence(strings.Join(fenceLines, "\n"))})
+				inFence = false
+				language = ""
+				fenceLines = fenceLines[:0]
+				continue
+			}
+			fenceLines = append(fenceLines, line)
+			continue
+		}
+		if strings.HasPrefix(line, "```") {
+			inFence = true
+			language = strings.TrimPrefix(line, "```")
+			continue
+		}
+		if strings.HasPrefix(line, "### ") {
+			var next string
+			switch line {
+			case "### POSIX (macOS and Linux)":
+				next = quickStartPOSIXSection
+			case "### Windows PowerShell":
+				next = quickStartWindowsSection
+			case "### Official SDK checks":
+				next = quickStartSDKSection
+			default:
+				return readmeQuickStartDocument{}, fmt.Errorf("unexpected Quick Start subsection %q", line)
+			}
+			if nextSection >= len(sectionOrder) || sectionOrder[nextSection] != next {
+				return readmeQuickStartDocument{}, errors.New("Quick Start subsections are missing, duplicated, or reordered")
+			}
+			nextSection++
+			section = next
+			continue
+		}
+		proseLines[section] = append(proseLines[section], line)
+	}
+	if inFence {
+		return readmeQuickStartDocument{}, errors.New("Quick Start has an unterminated code fence")
+	}
+	if nextSection != len(sectionOrder) {
+		return readmeQuickStartDocument{}, errors.New("Quick Start is missing a required subsection")
+	}
+	prose := make(map[string]string, len(proseLines))
+	for name, lines := range proseLines {
+		prose[name] = stripREADMEHTMLComments(strings.Join(lines, "\n"))
+	}
+	return readmeQuickStartDocument{prose: prose, fences: fences}, nil
+}
+
+func quickStartFences(document readmeQuickStartDocument, section, language string) []string {
+	result := make([]string, 0)
+	for _, fence := range document.fences {
+		if fence.section == section && fence.language == language {
+			result = append(result, fence.body)
+		}
+	}
+	return result
+}
+
+func executableREADMEFence(body string) string {
+	withoutHTML := stripREADMEHTMLComments(body)
+	lines := make([]string, 0)
+	for _, line := range strings.Split(withoutHTML, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func stripREADMEHTMLComments(document string) string {
+	var result strings.Builder
+	for len(document) > 0 {
+		start := strings.Index(document, "<!--")
+		if start < 0 {
+			result.WriteString(document)
+			break
+		}
+		result.WriteString(document[:start])
+		document = document[start+len("<!--"):]
+		end := strings.Index(document, "-->")
+		if end < 0 {
+			break
+		}
+		document = document[end+len("-->"):]
+	}
+	return result.String()
+}
+
+func requireOrderedMarkers(document string, markers ...string) error {
+	position := 0
+	for _, marker := range markers {
+		relative := strings.Index(document[position:], marker)
+		if relative < 0 {
+			return fmt.Errorf("missing ordered executable marker %q", marker)
+		}
+		position += relative + len(marker)
+	}
+	return nil
+}
+
+func TestREADMEPOSIXChecksumCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the documented POSIX checksum commands require Bash and shasum")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Fatal("Bash is required to verify the documented POSIX checksum commands")
+	}
+	if _, err := exec.LookPath("shasum"); err != nil {
+		t.Fatal("shasum is required to verify the documented POSIX checksum commands")
+	}
+	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fences := quickStartFences(document, quickStartPOSIXSection, "bash")
+	if len(fences) != 6 {
+		t.Fatalf("POSIX Bash fence count = %d, want six", len(fences))
+	}
+	const startMarker = `MANIFEST_LINE="$(`
+	const endMarker = `test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"`
+	start := strings.Index(fences[0], startMarker)
+	end := strings.Index(fences[0], endMarker)
+	if start < 0 || end < start {
+		t.Fatal("cannot extract the documented POSIX checksum program")
+	}
+	program := "set -eu\nASSET=ai-cli-gateway_0.1.0_darwin_arm64.tar.gz\n" + fences[0][start:end+len(endMarker)] + "\n"
+	asset := []byte("verified release fixture\n")
+	digest := sha256.Sum256(asset)
+	validRecord := fmt.Sprintf("%x *ai-cli-gateway_0.1.0_darwin_arm64.tar.gz\n", digest)
+	decoys := ""
+	for index := 0; index < 5; index++ {
+		decoys += fmt.Sprintf("%064x *decoy-%d\n", index+1, index)
+	}
+	tests := []struct {
+		name     string
+		manifest string
+		wantOK   bool
+	}{
+		{name: "valid selected record", manifest: decoys + validRecord, wantOK: true},
+		{name: "duplicate selected record", manifest: decoys + validRecord + validRecord},
+		{name: "mismatched selected digest", manifest: decoys + strings.Repeat("0", 64) + " *ai-cli-gateway_0.1.0_darwin_arm64.tar.gz\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "ai-cli-gateway_0.1.0_darwin_arm64.tar.gz"), asset, 0o600); err != nil {
+				t.Fatalf("write asset fixture: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "SHA256SUMS"), []byte(test.manifest), 0o600); err != nil {
+				t.Fatalf("write manifest fixture: %v", err)
+			}
+			command := exec.CommandContext(context.Background(), "bash", "-c", program) //nolint:gosec // Fixed README program and test-owned fixtures.
+			command.Dir = root
+			command.Env = []string{"PATH=" + os.Getenv("PATH")}
+			output, err := command.CombinedOutput()
+			if test.wantOK && err != nil {
+				t.Fatalf("documented checksum program failed: %v output=%q", err, output)
+			}
+			if !test.wantOK && err == nil {
+				t.Fatal("documented checksum program accepted an invalid manifest")
+			}
+		})
+	}
+}
+
+func TestREADMEQuickStartTOMLSubstitutionValues(t *testing.T) {
+	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	posix := quickStartFences(document, quickStartPOSIXSection, "bash")
+	windows := quickStartFences(document, quickStartWindowsSection, "powershell")
+	if len(posix) != 6 || len(windows) != 6 {
+		t.Fatal("Quick Start configuration fences are incomplete")
+	}
+	for _, marker := range []string{`*\\*|*\"*|*[[:cntrl:]]*`, `validate_toml_value "${CODEX_MODEL}"`} {
+		if !strings.Contains(posix[3], marker) {
+			t.Fatalf("POSIX TOML rejection contract is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{`[char]::IsControl($Character)`, `Assert-SafeTOMLValue $CodexModelTOML`} {
+		if !strings.Contains(windows[3], marker) {
+			t.Fatalf("PowerShell TOML rejection contract is missing %q", marker)
+		}
+	}
+
+	for _, value := range []string{"back\\slash", `double"quote`, "carriage\rreturn", "line\nfeed", "horizontal\ttab", "delete\x7fcontrol"} {
+		if readmeTOMLBasicStringValueSafe(value) {
+			t.Fatalf("unsafe TOML substitution value %q was accepted", value)
+		}
+	}
+	template := string(readRepositoryFile(t, "examples/config/codex.example.toml"))
+	posixConfig := replaceREADMEConfigMarkers(t, template, map[string]string{
+		"/opt/ai-cli-gateway/bin/codex":      "/opt/Codex Tools/bin/codex",
+		"/var/lib/ai-cli-gateway/codex-home": "/var/lib/AI CLI Gateway/codex-home",
+		"/var/lib/ai-cli-gateway/runtime":    "/var/lib/AI CLI Gateway/runtime",
+		"configured-provider-model":          "accessible-model_1",
+	})
+	if _, err := config.Decode(strings.NewReader(posixConfig)); err != nil {
+		t.Fatalf("safe POSIX substitutions do not pass the real config decoder: %v", err)
+	}
+	windowsConfig := replaceREADMEConfigMarkers(t, template, map[string]string{
+		"/opt/ai-cli-gateway/bin/codex":      "C:/Tools/Codex/codex.exe",
+		"/var/lib/ai-cli-gateway/codex-home": "C:/Gateway Service/codex-home",
+		"/var/lib/ai-cli-gateway/runtime":    "C:/Gateway Service/runtime",
+		"configured-provider-model":          "accessible-model_1",
+	})
+	var parsed map[string]any
+	if err := toml.Unmarshal([]byte(windowsConfig), &parsed); err != nil {
+		t.Fatalf("safe normalized Windows substitutions are not valid TOML: %v", err)
+	}
+}
+
+func readmeTOMLBasicStringValueSafe(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character == '\\' || character == '"' || unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
+}
+
+func replaceREADMEConfigMarkers(t *testing.T, template string, replacements map[string]string) string {
+	t.Helper()
+	for marker, replacement := range replacements {
+		if !readmeTOMLBasicStringValueSafe(replacement) {
+			t.Fatalf("test replacement %q is not safe", replacement)
+		}
+		if count := strings.Count(template, marker); count != 1 {
+			t.Fatalf("config marker %q occurs %d times, want one", marker, count)
+		}
+		template = strings.Replace(template, marker, replacement, 1)
+	}
+	return template
 }
 
 func TestREADMEExactAPISubsetExamplesAndErrors(t *testing.T) {

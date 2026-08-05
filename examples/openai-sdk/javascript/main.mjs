@@ -39,6 +39,11 @@ function assertFields(value, expected) {
   assert.deepEqual(Object.keys(value).sort(), [...expected].sort());
 }
 
+function assertExpectedOutput(value) {
+  assert.equal(typeof value, "string");
+  assert.equal(value === "SDK_GATEWAY_OK" || value === "SDK_GATEWAY_OK\n", true);
+}
+
 async function main() {
   for (const name of [
     "AI_CLI_GATEWAY_BASE_URL",
@@ -57,21 +62,22 @@ async function main() {
     logLevel: "off",
   });
 
+  const modelName = requireEnv("AI_CLI_GATEWAY_MODEL");
   const models = await client.models.list();
   assert.equal(models.object, "list");
-  assert.equal(models.data.length, 1);
-  const model = models.data[0];
+  const matchingModels = models.data.filter((model) => model.id === modelName);
+  assert.equal(matchingModels.length, 1);
+  const [model] = matchingModels;
   assertFields(model, ["id", "object", "created", "owned_by"]);
-  assert.equal(model.id, "codex-sdk-test");
+  assert.equal(model.id, modelName);
   assert.equal(model.object, "model");
   assert.equal(model.created, 0);
   assert.equal(model.owned_by, "local");
 
-  const modelName = requireEnv("AI_CLI_GATEWAY_MODEL");
   const response = await client.responses.create({
     model: modelName,
-    instructions: "SDK contract instruction.",
-    input: "SDK contract input.",
+    instructions: "Return only the exact text requested.",
+    input: "Reply with exactly: SDK_GATEWAY_OK",
     text: { format: { type: "text" } },
     stream: false,
     store: false,
@@ -111,9 +117,9 @@ async function main() {
   assert.equal(response.background, false);
   assert.equal(response.error, null);
   assert.equal(response.incomplete_details, null);
-  assert.equal(response.instructions, "SDK contract instruction.");
+  assert.equal(response.instructions, "Return only the exact text requested.");
   assert.equal(response.model, modelName);
-  assert.equal(response.output_text, "SDK_GATEWAY_OK\n");
+  assertExpectedOutput(response.output_text);
   assert.equal(response.parallel_tool_calls, false);
   assert.equal(response.previous_response_id, null);
   assert.equal(response.store, false);
@@ -138,7 +144,7 @@ async function main() {
   assertFields(content, ["type", "annotations", "text"]);
   assert.equal(content.type, "output_text");
   assert.deepEqual(content.annotations, []);
-  assert.equal(content.text, "SDK_GATEWAY_OK\n");
+  assertExpectedOutput(content.text);
 }
 
 function apiStatus(error) {
