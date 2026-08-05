@@ -326,7 +326,7 @@ function Assert-ExactPrivateFileACL([string]$Path) {
   Assert-ExactPrivateACL $Path $Rights ([Security.AccessControl.InheritanceFlags]::None)
 }
 foreach ($PrivateDir in @($GatewayConfigDir, $GatewayRuntimeDir)) {
-  & icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)(F)" | Out-Null
+  & icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'failed to protect private directory ACL' }
   Assert-ExactPrivateDirectoryACL $PrivateDir
 }
@@ -345,7 +345,7 @@ $ConfigText = Replace-ExactlyOnce $ConfigText '/var/lib/ai-cli-gateway/codex-hom
 $ConfigText = Replace-ExactlyOnce $ConfigText '/var/lib/ai-cli-gateway/runtime' $GatewayRuntimeTOML
 $ConfigText = Replace-ExactlyOnce $ConfigText 'configured-provider-model' $CodexModelTOML
 [IO.File]::WriteAllText($GatewayConfigFile, $ConfigText, [Text.UTF8Encoding]::new($false))
-& icacls.exe $GatewayConfigFile /inheritance:r /grant:r "${CurrentIdentity}:(R,W)" | Out-Null
+& icacls.exe $GatewayConfigFile /inheritance:r /grant:r "${CurrentIdentity}:(RD,REA,RA,RC,WD,AD,WEA,WA,S)" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'failed to protect config ACL' }
 Assert-ExactPrivateFileACL $GatewayConfigFile
 
@@ -353,7 +353,7 @@ $RandomBytes = [byte[]]::new(32)
 [Security.Cryptography.RandomNumberGenerator]::Fill($RandomBytes)
 $GatewayKey = [Convert]::ToHexString($RandomBytes).ToLowerInvariant()
 [IO.File]::WriteAllText($GatewayKeyPath, $GatewayKey, [Text.UTF8Encoding]::new($false))
-& icacls.exe $GatewayKeyPath /inheritance:r /grant:r "${CurrentIdentity}:(R,W)" | Out-Null
+& icacls.exe $GatewayKeyPath /inheritance:r /grant:r "${CurrentIdentity}:(RD,REA,RA,RC,WD,AD,WEA,WA,S)" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'failed to protect gateway key ACL' }
 Assert-ExactPrivateFileACL $GatewayKeyPath
 $LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()

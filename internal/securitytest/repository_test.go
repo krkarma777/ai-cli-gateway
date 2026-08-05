@@ -1256,6 +1256,20 @@ func TestREADMEReleaseQuickStart(t *testing.T) {
 	}
 }
 
+func TestREADMEWindowsACLGrantSyntax(t *testing.T) {
+	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows := quickStartFences(document, quickStartWindowsSection, "powershell")
+	if len(windows) != 6 {
+		t.Fatalf("PowerShell fence count = %d, want six", len(windows))
+	}
+	if _, err := extractREADMEWindowsACLGrants(windows[3]); err != nil {
+		t.Fatalf("README Windows ACL grants are not executable documented icacls syntax: %v", err)
+	}
+}
+
 func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
 	readme := string(readRepositoryFile(t, "README.md"))
 	if err := validateREADMEReleaseQuickStart(readme); err != nil {
@@ -1269,19 +1283,30 @@ func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
 		{name: "commented POSIX exact count", mutate: replaceREADMEOnce(`      if (matches != 1) exit 1`, `      # if (matches != 1) exit 1`)},
 		{name: "POSIX digest merely nonempty", mutate: replaceREADMEOnce(`test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"`, `test -n "${ACTUAL_SHA}"`)},
 		{name: "broad PowerShell checksum regex", mutate: replaceREADMEOnce(`$ArchivePattern = '^[0-9a-f]{64} \*' + [regex]::Escape($ArchiveName) + '$'`, `$ArchivePattern = $ArchiveName`)},
+		{name: "PowerShell checksum comparison is inert", mutate: replaceREADMEOnce(`if (-not [String]::Equals($ExpectedSHA, $ActualSHA, [StringComparison]::OrdinalIgnoreCase)) {`, `[StringComparison]::OrdinalIgnoreCase | Out-Null`+"\n"+`if ($false) {`)},
 		{name: "printed POSIX key", mutate: replaceREADMENth(`export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`, `export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`+"\n"+`printf '%s\n' "${GATEWAY_KEY}"`, 2)},
 		{name: "commented POSIX terminal load", mutate: replaceREADMENth(`GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`, `# GATEWAY_KEY="$(LC_ALL=C tr -d '\n' < "${GATEWAY_CONFIG_DIR}/gateway.key")"`, 2)},
+		{name: "bare PowerShell terminal key", mutate: replaceREADMENth(`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, `$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`+"\n"+`$LoadedGatewayKey`, 2)},
+		{name: "unexpected shell fence prints key", mutate: replaceREADMEOnce("### Official SDK checks\n", "```sh\nprintf '%s\\n' \"${GATEWAY_KEY}\"\n```\n\n### Official SDK checks\n")},
 		{name: "first Bash fence changed to text", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.1.0", "```text\nset -eu\nVERSION=0.1.0")},
 		{name: "Darwin ARM64 branch removed", mutate: replaceREADMEOnce(`  Darwin:arm64) ASSET="ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz" ;;`+"\n", "")},
+		{name: "Darwin ARM64 branch moved to unused function", mutate: moveREADMEHostBranchToUnusedFunction},
 		{name: "POSIX substitution commented", mutate: replaceREADMEOnce(`    [q{configured-provider-model}, $ENV{CODEX_MODEL}],`, `    # [q{configured-provider-model}, $ENV{CODEX_MODEL}],`)},
 		{name: "POSIX chmod commented", mutate: replaceREADMEOnce(`chmod 700 "${GATEWAY_CONFIG_DIR}" "${GATEWAY_RUNTIME_DIR}" "${CODEX_CONFIG_HOME}"`, `# chmod 700 "${GATEWAY_CONFIG_DIR}" "${GATEWAY_RUNTIME_DIR}" "${CODEX_CONFIG_HOME}"`)},
 		{name: "models curl commented", mutate: replaceREADMENth("curl --fail-with-body \\\n  -H \"Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}\" \\\n  http://127.0.0.1:8080/v1/models", "# curl --fail-with-body \\\n#   -H \"Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}\" \\\n#   http://127.0.0.1:8080/v1/models", 1)},
 		{name: "Node SDK command commented", mutate: replaceREADMEOnce(`node "${SDK_WORK_ROOT}/javascript/main.mjs"`, `# node "${SDK_WORK_ROOT}/javascript/main.mjs"`)},
 		{name: "subset only in HTML comment", mutate: replaceREADMEOnce(`It exercises the documented non-streaming **Responses API-compatible subset**;`, `It exercises the documented non-streaming local subset. <!-- Responses API-compatible subset -->`)},
+		{name: "subset only in Markdown reference", mutate: replaceREADMEOnce(`This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. It exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility.`, "This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. It is fully OpenAI API compatible.[subset-contract]\n\n[subset-contract]: Responses API-compatible subset")},
 		{name: "systemd link moved to Windows", mutate: moveREADMESystemdLink},
+		{name: "raw systemd path added to Windows", mutate: replaceREADMEOnce(`Use PowerShell 7 as an unprivileged gateway identity.`, `Use PowerShell 7 as an unprivileged gateway identity. See deploy/systemd/ai-cli-gateway.service.`)},
 		{name: "PowerShell accepts preexisting target", mutate: replaceREADMEOnce(`if (Test-Path -LiteralPath $FreshTarget) { throw 'private target already exists' }`, `if (Test-Path -LiteralPath $FreshTarget) { Write-Output 'reusing target' }`)},
-		{name: "PowerShell adds another ACE", mutate: replaceREADMEOnce(`& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)(F)" | Out-Null`, `& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)(F)" | Out-Null`+"\n"+`  & icacls.exe $PrivateDir /grant 'BUILTIN\Users:(R)' | Out-Null`)},
+		{name: "PowerShell directory basic right parenthesized", mutate: replaceREADMEOnce(`& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null`, `& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)(F)" | Out-Null`)},
+		{name: "PowerShell file basic rights parenthesized", mutate: replaceREADMENth(`(RD,REA,RA,RC,WD,AD,WEA,WA,S)`, `(R,W)`, 1)},
+		{name: "PowerShell file Synchronize omitted", mutate: replaceREADMENth(`(RD,REA,RA,RC,WD,AD,WEA,WA,S)`, `(RD,REA,RA,RC,WD,AD,WEA,WA)`, 1)},
+		{name: "PowerShell adds another ACE", mutate: replaceREADMEOnce(`& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null`, `& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null`+"\n"+`  & icacls.exe $PrivateDir /grant 'BUILTIN\Users:R' | Out-Null`)},
 		{name: "PowerShell omits exact ACL count", mutate: replaceREADMEOnce(`if ($Rules.Count -ne 1) { throw 'private ACL must contain exactly one rule' }`, `# if ($Rules.Count -ne 1) { throw 'private ACL must contain exactly one rule' }`)},
+		{name: "PowerShell key ACL assertion is inert", mutate: replaceREADMEOnce(`Assert-ExactPrivateFileACL $GatewayKeyPath`, `$null = 'Assert-ExactPrivateFileACL $GatewayKeyPath'`)},
+		{name: "PowerShell TOML model assertion is inert", mutate: replaceREADMEOnce(`Assert-SafeTOMLValue $CodexModelTOML`, `$null = 'Assert-SafeTOMLValue $CodexModelTOML'`)},
 		{name: "PowerShell terminal load commented", mutate: replaceREADMENth(`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, `# $LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, 2)},
 	}
 	for _, test := range tests {
@@ -1337,6 +1362,20 @@ func moveREADMESystemdLink(document string) (string, error) {
 	return strings.Replace(document, windows, windows+"\nUse the [systemd service example](deploy/systemd/ai-cli-gateway.service).\n", 1), nil
 }
 
+func moveREADMEHostBranchToUnusedFunction(document string) (string, error) {
+	const branch = `  Darwin:arm64) ASSET="ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz" ;;`
+	if strings.Count(document, branch) != 1 {
+		return "", errors.New("Darwin ARM64 branch mutation target is not unique")
+	}
+	document = strings.Replace(document, branch+"\n", "", 1)
+	const selector = `case "$(uname -s):$(uname -m)" in`
+	if strings.Count(document, selector) != 1 {
+		return "", errors.New("host selector mutation target is not unique")
+	}
+	unused := "unused_darwin_arm64() {\n  case \"$1\" in\n" + branch + "\n  esac\n}\n"
+	return strings.Replace(document, selector, unused+selector, 1), nil
+}
+
 type readmeQuickStartFence struct {
 	section  string
 	language string
@@ -1366,10 +1405,25 @@ func validateREADMEReleaseQuickStart(readme string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateREADMEQuickStartFenceSequence(document); err != nil {
+		return err
+	}
 	rootProse := document.prose[quickStartRootSection]
 	posixProse := document.prose[quickStartPOSIXSection]
 	windowsProse := document.prose[quickStartWindowsSection]
 	sdkProse := document.prose[quickStartSDKSection]
+	const subsetSentence = "It exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility."
+	if strings.Count(rootProse, subsetSentence) != 1 {
+		return errors.New("active Quick Start prose is missing the exact rendered subset qualification")
+	}
+	visibleQuickStartProse := strings.Join([]string{rootProse, posixProse, windowsProse, sdkProse}, "\n")
+	for _, forbidden := range []string{
+		"fully OpenAI API compatible", "complete OpenAI API compatibility", "drop-in replacement for the OpenAI API",
+	} {
+		if strings.Contains(strings.ToLower(visibleQuickStartProse), strings.ToLower(forbidden)) {
+			return fmt.Errorf("active Quick Start prose makes forbidden compatibility claim %q", forbidden)
+		}
+	}
 	for _, marker := range []string{
 		"v0.1.0", "ai-cli-gateway_0.1.0_linux_amd64.tar.gz",
 		"ai-cli-gateway_0.1.0_linux_arm64.tar.gz", "ai-cli-gateway_0.1.0_darwin_amd64.tar.gz",
@@ -1385,7 +1439,7 @@ func validateREADMEReleaseQuickStart(readme string) error {
 		return errors.New("active SDK prose is missing the provider-terms notice")
 	}
 	const systemdLink = "[systemd service example](deploy/systemd/ai-cli-gateway.service)"
-	if !strings.Contains(posixProse, systemdLink) || strings.Contains(windowsProse, systemdLink) {
+	if !strings.Contains(posixProse, systemdLink) || strings.Contains(strings.ToLower(windowsProse), "systemd") {
 		return errors.New("systemd link is not active POSIX-only prose")
 	}
 
@@ -1399,15 +1453,22 @@ func validateREADMEReleaseQuickStart(readme string) error {
 	windowsCode := strings.Join(windowsFences, "\n")
 	sdkCode := sdkFences[0]
 
+	hostSelector, err := extractREADMEPOSIXHostSelector(posixFences[0])
+	if err != nil {
+		return fmt.Errorf("POSIX host selector: %w", err)
+	}
 	for _, branch := range []string{
 		`Linux:x86_64) ASSET="ai-cli-gateway_${VERSION}_linux_amd64.tar.gz" ;;`,
 		`Linux:aarch64|Linux:arm64) ASSET="ai-cli-gateway_${VERSION}_linux_arm64.tar.gz" ;;`,
 		`Darwin:x86_64) ASSET="ai-cli-gateway_${VERSION}_darwin_amd64.tar.gz" ;;`,
 		`Darwin:arm64) ASSET="ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz" ;;`,
 	} {
-		if !strings.Contains(posixFences[0], branch) {
+		if !containsExactTrimmedLine(hostSelector, branch) {
 			return fmt.Errorf("POSIX selector is missing %q", branch)
 		}
+	}
+	if strings.Contains(hostSelector, "function ") || regexp.MustCompile(`(?m)^[[:space:]]*[[:alnum:]_]+\(\)[[:space:]]*\{`).MatchString(hostSelector) {
+		return errors.New("POSIX selector contains a function declaration instead of active case arms")
 	}
 	if err := requireOrderedMarkers(posixCode,
 		`awk -v name="${ASSET}"`,
@@ -1432,7 +1493,8 @@ func validateREADMEReleaseQuickStart(readme string) error {
 		`if ($ManifestMatches.Count -ne 1)`,
 		`if ($ExpectedSHA -cnotmatch '^[0-9a-f]{64}$')`,
 		`$ActualSHA = (Get-FileHash -Algorithm SHA256 -LiteralPath $ArchivePath).Hash`,
-		`[StringComparison]::OrdinalIgnoreCase`,
+		`if (-not [String]::Equals($ExpectedSHA, $ActualSHA, [StringComparison]::OrdinalIgnoreCase)) {`,
+		`throw 'archive checksum mismatch'`,
 		`Expand-Archive -LiteralPath $ArchivePath`,
 	); err != nil {
 		return fmt.Errorf("PowerShell checksum contract: %w", err)
@@ -1457,9 +1519,12 @@ func validateREADMEReleaseQuickStart(readme string) error {
 			return fmt.Errorf("PowerShell key terminal %d: %w", index+1, err)
 		}
 	}
-	secretOutput := regexp.MustCompile(`(?mi)^\s*(?:echo|printf|cat|source|\.|Write-Output|Write-Host|Get-Content)\b[^\n]*(?:GATEWAY_KEY|gateway\.key|AI_CLI_GATEWAY_API_KEY)`)
+	secretOutput := regexp.MustCompile(`(?mi)^\s*(?:echo|printf|cat|source|\.|Write-Output|Write-Host|Get-Content)\b[^\n]*(?:GATEWAY_KEY|LoadedGatewayKey|GatewayKey|gateway\.key|AI_CLI_GATEWAY_API_KEY)`)
+	barePowerShellSecret := regexp.MustCompile(`(?mi)^\s*\$(?:LoadedGatewayKey|GatewayKey)\s*$`)
+	inertPowerShellString := regexp.MustCompile(`(?mi)^\s*\$null\s*=\s*['"][^\r\n]*['"]\s*$`)
 	literalKey := regexp.MustCompile(`(?mi)AI_CLI_GATEWAY_API_KEY\s*=\s*["']?[0-9a-f]{16}`)
-	if secretOutput.MatchString(posixCode+"\n"+windowsCode) || literalKey.MatchString(posixCode+"\n"+windowsCode) {
+	if secretOutput.MatchString(posixCode+"\n"+windowsCode) || barePowerShellSecret.MatchString(windowsCode) ||
+		inertPowerShellString.MatchString(windowsCode) || literalKey.MatchString(posixCode+"\n"+windowsCode) {
 		return errors.New("Quick Start prints, sources, or literally assigns gateway key material")
 	}
 
@@ -1501,8 +1566,16 @@ func validateREADMEReleaseQuickStart(readme string) error {
 			return fmt.Errorf("active PowerShell configuration is missing %q", marker)
 		}
 	}
-	if count := strings.Count(windowsFences[3], "& icacls.exe"); count != 3 {
-		return fmt.Errorf("PowerShell setup contains %d icacls commands, want exactly three", count)
+	for _, statement := range []string{
+		`Assert-SafeTOMLValue $CodexModelTOML`,
+		`Assert-ExactPrivateFileACL $GatewayKeyPath`,
+	} {
+		if !containsExactTrimmedLine(windowsFences[3], statement) {
+			return fmt.Errorf("active PowerShell configuration is missing executable statement %q", statement)
+		}
+	}
+	if _, err := extractREADMEWindowsACLGrants(windowsFences[3]); err != nil {
+		return fmt.Errorf("PowerShell ACL grant contract: %w", err)
 	}
 
 	if err := requireOrderedMarkers(posixFences[5],
@@ -1596,6 +1669,9 @@ func parseREADMEQuickStart(readme string) (readmeQuickStartDocument, error) {
 			section = next
 			continue
 		}
+		if regexp.MustCompile(`^[ \t]{0,3}\[[^]\r\n]+\]:`).MatchString(line) {
+			return readmeQuickStartDocument{}, errors.New("Quick Start prose contains a non-rendered Markdown reference definition")
+		}
 		proseLines[section] = append(proseLines[section], line)
 	}
 	if inFence {
@@ -1619,6 +1695,97 @@ func quickStartFences(document readmeQuickStartDocument, section, language strin
 		}
 	}
 	return result
+}
+
+func validateREADMEQuickStartFenceSequence(document readmeQuickStartDocument) error {
+	expected := []struct {
+		section  string
+		language string
+	}{
+		{quickStartPOSIXSection, "bash"}, {quickStartPOSIXSection, "bash"},
+		{quickStartPOSIXSection, "bash"}, {quickStartPOSIXSection, "bash"},
+		{quickStartPOSIXSection, "bash"}, {quickStartPOSIXSection, "bash"},
+		{quickStartWindowsSection, "powershell"}, {quickStartWindowsSection, "powershell"},
+		{quickStartWindowsSection, "powershell"}, {quickStartWindowsSection, "powershell"},
+		{quickStartWindowsSection, "powershell"}, {quickStartWindowsSection, "powershell"},
+		{quickStartSDKSection, "bash"},
+	}
+	if len(document.fences) != len(expected) {
+		return fmt.Errorf("Quick Start contains %d code fences, want exactly %d", len(document.fences), len(expected))
+	}
+	for index, want := range expected {
+		got := document.fences[index]
+		if got.section != want.section || got.language != want.language {
+			return fmt.Errorf(
+				"Quick Start fence %d = %s/%s, want %s/%s",
+				index+1, got.section, got.language, want.section, want.language,
+			)
+		}
+	}
+	return nil
+}
+
+func extractREADMEPOSIXHostSelector(block string) (string, error) {
+	const startMarker = `case "$(uname -s):$(uname -m)" in`
+	start := strings.Index(block, startMarker)
+	if start < 0 || strings.Count(block, startMarker) != 1 {
+		return "", errors.New("active host case selector must occur exactly once")
+	}
+	lines := strings.Split(block[start:], "\n")
+	depth := 0
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "case ") && strings.HasSuffix(trimmed, " in") {
+			depth++
+		}
+		if trimmed == "esac" {
+			depth--
+			if depth == 0 {
+				return strings.Join(lines[:index+1], "\n"), nil
+			}
+		}
+	}
+	return "", errors.New("active host case selector is not structurally closed")
+}
+
+func containsExactTrimmedLine(document, expected string) bool {
+	for _, line := range strings.Split(document, "\n") {
+		if strings.TrimSpace(line) == expected {
+			return true
+		}
+	}
+	return false
+}
+
+type readmeWindowsACLGrants struct {
+	directory string
+	config    string
+	key       string
+}
+
+func extractREADMEWindowsACLGrants(block string) (readmeWindowsACLGrants, error) {
+	grantPattern := regexp.MustCompile(`(?m)^\s*& icacls\.exe \$(PrivateDir|GatewayConfigFile|GatewayKeyPath) /inheritance:r /grant:r "\$\{CurrentIdentity\}:([^"]+)" \| Out-Null\s*$`)
+	matches := grantPattern.FindAllStringSubmatch(block, -1)
+	if commandCount := strings.Count(block, "& icacls.exe"); commandCount != 3 || len(matches) != commandCount {
+		return readmeWindowsACLGrants{}, fmt.Errorf("found %d parsed grants among %d icacls commands, want three", len(matches), commandCount)
+	}
+	values := make(map[string]string, len(matches))
+	for _, match := range matches {
+		if _, duplicate := values[match[1]]; duplicate {
+			return readmeWindowsACLGrants{}, fmt.Errorf("duplicate grant target %s", match[1])
+		}
+		values[match[1]] = match[2]
+	}
+	const directoryGrant = `(OI)(CI)F`
+	const fileGrant = `(RD,REA,RA,RC,WD,AD,WEA,WA,S)`
+	for target, expected := range map[string]string{
+		"PrivateDir": directoryGrant, "GatewayConfigFile": fileGrant, "GatewayKeyPath": fileGrant,
+	} {
+		if values[target] != expected {
+			return readmeWindowsACLGrants{}, fmt.Errorf("grant for %s = %q, want %q", target, values[target], expected)
+		}
+	}
+	return readmeWindowsACLGrants{directory: directoryGrant, config: fileGrant, key: fileGrant}, nil
 }
 
 func executableREADMEFence(body string) string {
@@ -1730,6 +1897,84 @@ func TestREADMEPOSIXChecksumCommands(t *testing.T) {
 	}
 }
 
+func TestREADMEPOSIXHostSelectorCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the documented POSIX host selector requires a POSIX shell")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatal("Bash is required to execute the documented POSIX host selector")
+	}
+	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fences := quickStartFences(document, quickStartPOSIXSection, "bash")
+	if len(fences) != 6 {
+		t.Fatalf("POSIX Bash fence count = %d, want six", len(fences))
+	}
+	selector, err := extractREADMEPOSIXHostSelector(fences[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	uname := filepath.Join(root, "uname")
+	const fakeUname = `#!/bin/sh
+case "$1" in
+  -s) printf '%s\n' "${README_TEST_UNAME_S:?}" ;;
+  -m) printf '%s\n' "${README_TEST_UNAME_M:?}" ;;
+  *) exit 64 ;;
+esac
+`
+	if err := os.WriteFile(uname, []byte(fakeUname), 0o600); err != nil {
+		t.Fatalf("write fake uname: %v", err)
+	}
+	if err := os.Chmod(uname, 0o700); err != nil { //nolint:gosec // Test-owned fake uname must be executable and private.
+		t.Fatalf("make fake uname executable: %v", err)
+	}
+	program := "set -eu\nVERSION=0.1.0\n" + selector + "\nprintf '%s' \"${ASSET}\"\n"
+	tests := []struct {
+		name    string
+		system  string
+		machine string
+		want    string
+		wantOK  bool
+	}{
+		{name: "Linux x86-64", system: "Linux", machine: "x86_64", want: "ai-cli-gateway_0.1.0_linux_amd64.tar.gz", wantOK: true},
+		{name: "Linux aarch64", system: "Linux", machine: "aarch64", want: "ai-cli-gateway_0.1.0_linux_arm64.tar.gz", wantOK: true},
+		{name: "Linux arm64", system: "Linux", machine: "arm64", want: "ai-cli-gateway_0.1.0_linux_arm64.tar.gz", wantOK: true},
+		{name: "Darwin Intel", system: "Darwin", machine: "x86_64", want: "ai-cli-gateway_0.1.0_darwin_amd64.tar.gz", wantOK: true},
+		{name: "Darwin Apple silicon", system: "Darwin", machine: "arm64", want: "ai-cli-gateway_0.1.0_darwin_arm64.tar.gz", wantOK: true},
+		{name: "unsupported", system: "FreeBSD", machine: "amd64"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, bash, "-c", program) //nolint:gosec // Fixed README program and test-owned fake uname.
+			command.Env = []string{
+				"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"README_TEST_UNAME_S=" + test.system,
+				"README_TEST_UNAME_M=" + test.machine,
+			}
+			output, err := command.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatal("documented host selector exceeded its local deadline")
+			}
+			if test.wantOK {
+				if err != nil {
+					t.Fatalf("documented host selector failed: %v output=%q", err, output)
+				}
+				if string(output) != test.want {
+					t.Fatalf("selected asset = %q, want %q", output, test.want)
+				}
+			} else if err == nil {
+				t.Fatalf("documented host selector accepted unsupported tuple with output %q", output)
+			}
+		})
+	}
+}
+
 func TestREADMEQuickStartTOMLSubstitutionValues(t *testing.T) {
 	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
 	if err != nil {
@@ -1803,6 +2048,306 @@ func replaceREADMEConfigMarkers(t *testing.T, template string, replacements map[
 	}
 	return template
 }
+
+func TestREADMEWindowsPowerShellFencesNative(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell fence parsing is exercised by Windows CI")
+	}
+	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows := quickStartFences(document, quickStartWindowsSection, "powershell")
+	if len(windows) != 6 {
+		t.Fatalf("PowerShell fence count = %d, want six", len(windows))
+	}
+	for index, source := range windows {
+		t.Run(fmt.Sprintf("fence_%d", index+1), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "readme-fence.ps1")
+			if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+				t.Fatalf("write PowerShell source: %v", err)
+			}
+			const parseOnly = `$ErrorActionPreference = 'Stop'
+$Source = [IO.File]::ReadAllText($env:README_PS_SOURCE)
+$null = [scriptblock]::Create($Source)
+`
+			output, err := runREADMEPowerShell(t, parseOnly, "README_PS_SOURCE="+path)
+			if err != nil {
+				t.Fatalf("PowerShell fence does not parse: %v output=%q", err, output)
+			}
+		})
+	}
+}
+
+func TestREADMEWindowsChecksumCommandsNative(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the documented PowerShell checksum commands are exercised by Windows CI")
+	}
+	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows := quickStartFences(document, quickStartWindowsSection, "powershell")
+	if len(windows) != 6 {
+		t.Fatalf("PowerShell fence count = %d, want six", len(windows))
+	}
+	program, err := extractREADMEWindowsChecksumProgram(windows[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	const archiveName = "ai-cli-gateway_0.1.0_windows_amd64.zip"
+	archive := []byte("verified Windows release fixture\n")
+	digest := sha256.Sum256(archive)
+	validRecord := fmt.Sprintf("%x *%s\n", digest, archiveName)
+	tests := []struct {
+		name     string
+		manifest string
+		wantOK   bool
+	}{
+		{name: "valid selected record", manifest: strings.Repeat("0", 64) + " *decoy.zip\n" + validRecord, wantOK: true},
+		{name: "duplicate selected record", manifest: validRecord + validRecord},
+		{name: "malformed selected record", manifest: "not-a-sha256 *" + archiveName + "\n"},
+		{name: "mismatched selected digest", manifest: strings.Repeat("0", 64) + " *" + archiveName + "\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			archivePath := filepath.Join(root, archiveName)
+			manifestPath := filepath.Join(root, "SHA256SUMS")
+			if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+				t.Fatalf("write archive fixture: %v", err)
+			}
+			if err := os.WriteFile(manifestPath, []byte(test.manifest), 0o600); err != nil {
+				t.Fatalf("write checksum fixture: %v", err)
+			}
+			script := "$ErrorActionPreference = 'Stop'\n" +
+				"$ArchiveName = $env:README_ARCHIVE_NAME\n" +
+				"$ArchivePath = $env:README_ARCHIVE_PATH\n" +
+				"$ManifestPath = $env:README_MANIFEST_PATH\n" + program + "\n"
+			output, err := runREADMEPowerShell(t, script,
+				"README_ARCHIVE_NAME="+archiveName,
+				"README_ARCHIVE_PATH="+archivePath,
+				"README_MANIFEST_PATH="+manifestPath,
+			)
+			if test.wantOK && err != nil {
+				t.Fatalf("documented PowerShell checksum program failed: %v output=%q", err, output)
+			}
+			if !test.wantOK && err == nil {
+				t.Fatalf("documented PowerShell checksum program accepted invalid fixture with output %q", output)
+			}
+		})
+	}
+}
+
+func TestREADMEWindowsTOMLValidationFunctionNative(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the documented PowerShell TOML function is exercised by Windows CI")
+	}
+	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows := quickStartFences(document, quickStartWindowsSection, "powershell")
+	function, err := extractREADMEPowerShellFunction(windows[3], "Assert-SafeTOMLValue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		value  string
+		wantOK bool
+	}{
+		{name: "normalized path", value: "C:/Tools/Codex/codex.exe", wantOK: true},
+		{name: "model", value: "accessible-model_1", wantOK: true},
+		{name: "empty"},
+		{name: "backslash", value: `C:\Tools\Codex\codex.exe`},
+		{name: "double quote", value: `bad"model`},
+		{name: "control", value: "bad\tmodel"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			script := "$ErrorActionPreference = 'Stop'\n" + function + "\nAssert-SafeTOMLValue $env:README_TOML_VALUE\n"
+			output, err := runREADMEPowerShell(t, script, "README_TOML_VALUE="+test.value)
+			if test.wantOK && err != nil {
+				t.Fatalf("documented TOML validation rejected safe value: %v output=%q", err, output)
+			}
+			if !test.wantOK && err == nil {
+				t.Fatalf("documented TOML validation accepted unsafe value %q", test.value)
+			}
+		})
+	}
+}
+
+func TestREADMEWindowsACLCommandsNative(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the documented PowerShell ACL commands are exercised by Windows CI")
+	}
+	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows := quickStartFences(document, quickStartWindowsSection, "powershell")
+	grants, err := extractREADMEWindowsACLGrants(windows[3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	functions := make([]string, 0, 3)
+	for _, name := range []string{"Assert-ExactPrivateACL", "Assert-ExactPrivateDirectoryACL", "Assert-ExactPrivateFileACL"} {
+		function, err := extractREADMEPowerShellFunction(windows[3], name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		functions = append(functions, function)
+	}
+	identityOutput, err := runREADMEPowerShell(t, `[Security.Principal.WindowsIdentity]::GetCurrent().Name`)
+	if err != nil {
+		t.Fatalf("resolve current Windows identity: %v output=%q", err, identityOutput)
+	}
+	identity := strings.TrimSpace(string(identityOutput))
+	if identity == "" || strings.ContainsAny(identity, "\r\n") {
+		t.Fatalf("current Windows identity is not one line: %q", identityOutput)
+	}
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	runtimeDir := filepath.Join(root, "runtime")
+	for _, path := range []string{configDir, runtimeDir} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatalf("create private directory fixture: %v", err)
+		}
+	}
+	configFile := filepath.Join(configDir, "config.toml")
+	keyFile := filepath.Join(configDir, "gateway.key")
+	for _, path := range []string{configFile, keyFile} {
+		if err := os.WriteFile(path, []byte("fixture\n"), 0o600); err != nil {
+			t.Fatalf("create private file fixture: %v", err)
+		}
+	}
+	targets := []struct {
+		name      string
+		path      string
+		grant     string
+		directory bool
+	}{
+		{name: "config directory", path: configDir, grant: grants.directory, directory: true},
+		{name: "runtime directory", path: runtimeDir, grant: grants.directory, directory: true},
+		{name: "config file", path: configFile, grant: grants.config},
+		{name: "key file", path: keyFile, grant: grants.key},
+	}
+	for _, target := range targets {
+		t.Run(target.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, "icacls.exe", target.path, "/inheritance:r", "/grant:r", identity+":"+target.grant) //nolint:gosec // Fixed Windows utility and test-owned targets.
+			output, err := command.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatal("icacls exceeded its local execution deadline")
+			}
+			if err != nil {
+				t.Fatalf("documented icacls grant failed: %v output=%q", err, output)
+			}
+			kind := "file"
+			readmeAssertion := "Assert-ExactPrivateFileACL $env:README_ACL_PATH"
+			if target.directory {
+				kind = "directory"
+				readmeAssertion = "Assert-ExactPrivateDirectoryACL $env:README_ACL_PATH"
+			}
+			script := "$ErrorActionPreference = 'Stop'\n" +
+				"$CurrentSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value\n" +
+				strings.Join(functions, "\n") + "\n" + readmeAssertion + "\n" + readmeWindowsIndependentACLAssertion
+			output, err = runREADMEPowerShell(t, script,
+				"README_ACL_PATH="+target.path,
+				"README_ACL_KIND="+kind,
+			)
+			if err != nil {
+				t.Fatalf("documented ACL assertion or independent Get-Acl check failed: %v output=%q", err, output)
+			}
+		})
+	}
+}
+
+func extractREADMEWindowsChecksumProgram(block string) (string, error) {
+	const startMarker = `$ArchivePattern = '^[0-9a-f]{64} \*' + [regex]::Escape($ArchiveName) + '$'`
+	const endMarker = "if (-not [String]::Equals($ExpectedSHA, $ActualSHA, [StringComparison]::OrdinalIgnoreCase)) {\n  throw 'archive checksum mismatch'\n}"
+	start := strings.Index(block, startMarker)
+	end := strings.Index(block, endMarker)
+	if start < 0 || end < start || strings.Count(block, startMarker) != 1 || strings.Count(block, endMarker) != 1 {
+		return "", errors.New("PowerShell checksum comparison program is missing or not unique")
+	}
+	return block[start : end+len(endMarker)], nil
+}
+
+func extractREADMEPowerShellFunction(block, name string) (string, error) {
+	marker := "function " + name
+	start := strings.Index(block, marker)
+	if start < 0 || strings.Count(block, marker) != 1 {
+		return "", fmt.Errorf("PowerShell function %s is missing or not unique", name)
+	}
+	opening := strings.Index(block[start:], "{")
+	if opening < 0 {
+		return "", fmt.Errorf("PowerShell function %s has no body", name)
+	}
+	depth := 0
+	for index := start + opening; index < len(block); index++ {
+		switch block[index] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return block[start : index+1], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("PowerShell function %s has an unclosed body", name)
+}
+
+func runREADMEPowerShell(t *testing.T, script string, environment ...string) ([]byte, error) {
+	t.Helper()
+	powerShell := ""
+	for _, candidate := range []string{"pwsh.exe", "powershell.exe"} {
+		path, err := exec.LookPath(candidate)
+		if err == nil {
+			powerShell = path
+			break
+		}
+	}
+	if powerShell == "" {
+		t.Fatal("Windows CI must provide pwsh.exe or powershell.exe")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, powerShell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script) //nolint:gosec // Fixed PowerShell runtime and repository-owned scripts.
+	command.Env = append(os.Environ(), environment...)
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatal("PowerShell README contract exceeded its local execution deadline")
+	}
+	return output, err
+}
+
+const readmeWindowsIndependentACLAssertion = `$ACL = Get-Acl -LiteralPath $env:README_ACL_PATH
+if (-not $ACL.AreAccessRulesProtected) { throw 'independent check: inherited DACL' }
+$OwnerSID = $ACL.GetOwner([Security.Principal.SecurityIdentifier]).Value
+$CurrentSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+if ($OwnerSID -ne $CurrentSID) { throw 'independent check: wrong owner' }
+$Rules = @($ACL.Access)
+if ($Rules.Count -ne 1) { throw 'independent check: rule count' }
+$Rule = $Rules[0]
+$RuleSID = $Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+if ($RuleSID -ne $CurrentSID) { throw 'independent check: wrong rule identity' }
+if ($Rule.IsInherited) { throw 'independent check: inherited rule' }
+if ($Rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw 'independent check: non-allow rule' }
+if ($env:README_ACL_KIND -eq 'directory') {
+  $ExpectedRights = [Security.AccessControl.FileSystemRights]::FullControl
+  $ExpectedInheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+} else {
+  $ExpectedRights = [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Synchronize
+  $ExpectedInheritance = [Security.AccessControl.InheritanceFlags]::None
+}
+if ($Rule.FileSystemRights -ne $ExpectedRights) { throw 'independent check: wrong rights' }
+if ($Rule.InheritanceFlags -ne $ExpectedInheritance) { throw 'independent check: wrong inheritance' }
+if ($Rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw 'independent check: wrong propagation' }
+`
 
 func TestREADMEExactAPISubsetExamplesAndErrors(t *testing.T) {
 	readme := string(readRepositoryFile(t, "README.md"))
