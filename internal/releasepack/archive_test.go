@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package releasepack
 
 import (
@@ -13,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -185,6 +188,256 @@ func TestWriteArchivesDoesNotClobberOrCleanAttackerFinal(t *testing.T) {
 	}
 }
 
+func TestWriteArchivesPreservesFinalReplacedAfterLink(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	hooks := defaultArchiveFileHooks()
+	const attackerContents = "post-link attacker\n"
+	var finalPath string
+	hooks.link = func(oldPath, newPath string) error {
+		if err := os.Link(oldPath, newPath); err != nil {
+			return err
+		}
+		if err := os.Remove(newPath); err != nil {
+			return err
+		}
+		finalPath = newPath
+		return os.WriteFile(newPath, []byte(attackerContents), 0o600)
+	}
+	withArchiveFileHooks(t, hooks)
+
+	assets, err := WriteArchives(fixture.options)
+	if len(assets) != 0 {
+		t.Fatalf("assets = %#v, want none", assets)
+	}
+	assertCategory(t, err, categoryArchiveFailure)
+	if got := string(mustReadFile(t, finalPath)); got != attackerContents {
+		t.Fatalf("post-link replacement contents = %q, want preserved %q", got, attackerContents)
+	}
+}
+
+func TestWriteArchivesAcceptsExistingPrivateOutputRoot(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	mustMkdir(t, fixture.outputRoot)
+	if err := os.Chmod(fixture.outputRoot, 0o700); err != nil {
+		t.Fatalf("Chmod(output, 0700): %v", err)
+	}
+
+	assets, err := WriteArchives(fixture.options)
+	if err != nil {
+		t.Fatalf("WriteArchives() error = %v", err)
+	}
+	if len(assets) != len(releaseTargets) {
+		t.Fatalf("len(assets) = %d, want %d", len(assets), len(releaseTargets))
+	}
+}
+
+func TestWriteArchivesRejectsExistingOutputRootWithoutMode0700(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	mustMkdir(t, fixture.outputRoot)
+	if err := os.Chmod(fixture.outputRoot, 0o755); err != nil {
+		t.Fatalf("Chmod(output, 0755): %v", err)
+	}
+
+	assets, err := WriteArchives(fixture.options)
+	if len(assets) != 0 {
+		t.Fatalf("assets = %#v, want none", assets)
+	}
+	assertCategory(t, err, categoryUnsafePath)
+	if entries := mustReadDir(t, fixture.outputRoot); len(entries) != 0 {
+		t.Fatalf("output entries = %v, want empty", entries)
+	}
+}
+
+func TestWriteArchivesRejectsWritableNonStickyOutputAncestor(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	unsafeAncestor := filepath.Join(filepath.Dir(fixture.outputRoot), "unsafe-ancestor")
+	mustMkdir(t, unsafeAncestor)
+	if err := os.Chmod(unsafeAncestor, 0o777); err != nil {
+		t.Fatalf("Chmod(unsafe ancestor, 0777): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unsafeAncestor, 0o700) })
+	fixture.options.OutputRoot = filepath.Join(unsafeAncestor, "output")
+
+	assets, err := WriteArchives(fixture.options)
+	if len(assets) != 0 {
+		t.Fatalf("assets = %#v, want none", assets)
+	}
+	assertCategory(t, err, categoryUnsafePath)
+	if _, statErr := os.Lstat(fixture.options.OutputRoot); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("unsafe output root stat error = %v, want not exist", statErr)
+	}
+}
+
+func TestWriteArchivesRejectsForeignOwnedOutputRoot(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	mustMkdir(t, fixture.outputRoot)
+	if err := os.Chmod(fixture.outputRoot, 0o700); err != nil {
+		t.Fatalf("Chmod(output, 0700): %v", err)
+	}
+	original := releasepackEffectiveUID
+	releasepackEffectiveUID = func() int { return os.Geteuid() + 1 }
+	t.Cleanup(func() { releasepackEffectiveUID = original })
+
+	assets, err := WriteArchives(fixture.options)
+	if len(assets) != 0 {
+		t.Fatalf("assets = %#v, want none", assets)
+	}
+	assertCategory(t, err, categoryUnsafePath)
+	if entries := mustReadDir(t, fixture.outputRoot); len(entries) != 0 {
+		t.Fatalf("output entries = %v, want empty", entries)
+	}
+}
+
+func TestWriteArchivesCreatesMode0700OutputDespiteRestrictiveUmask(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	hooks := defaultArchiveFileHooks()
+	descriptorChmodCalls := 0
+	realDescriptorChmod := hooks.chmodRoot
+	hooks.chmodRoot = func(file *os.File, mode fs.FileMode) error {
+		descriptorChmodCalls++
+		if mode != 0o700 {
+			t.Fatalf("output-root descriptor chmod mode = %04o, want 0700", mode)
+		}
+		return realDescriptorChmod(file, mode)
+	}
+	withArchiveFileHooks(t, hooks)
+	oldUmask := syscall.Umask(0o777)
+	restored := false
+	t.Cleanup(func() {
+		if !restored {
+			syscall.Umask(oldUmask)
+		}
+	})
+
+	assets, err := WriteArchives(fixture.options)
+	syscall.Umask(oldUmask)
+	restored = true
+
+	if err != nil {
+		t.Fatalf("WriteArchives() error = %v", err)
+	}
+	if len(assets) != len(releaseTargets) {
+		t.Fatalf("len(assets) = %d, want %d", len(assets), len(releaseTargets))
+	}
+	if descriptorChmodCalls != 1 {
+		t.Fatalf("output-root descriptor chmod calls = %d, want 1", descriptorChmodCalls)
+	}
+	if mode := mustStat(t, fixture.outputRoot).Mode(); mode.Perm() != 0o700 || mode&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+		t.Fatalf("created output mode = %v, want exact 0700", mode)
+	}
+}
+
+func TestWriteArchivesTarAndZIPPayloadsEqualFixtureSources(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	assertPackagedFixturePayloadsAreDistinct(t, fixture)
+	assets, err := WriteArchives(fixture.options)
+	if err != nil {
+		t.Fatalf("WriteArchives() error = %v", err)
+	}
+
+	for _, asset := range assets {
+		data := mustReadFile(t, asset.Path)
+		base, format := archiveBaseAndFormat(t, asset.Name)
+		if format == formatTarGzip {
+			gzipReader, err := gzip.NewReader(strings.NewReader(string(data)))
+			if err != nil {
+				t.Fatalf("gzip.NewReader(%q): %v", asset.Name, err)
+			}
+			tarReader := tar.NewReader(gzipReader)
+			for {
+				header, err := tarReader.Next()
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				if err != nil {
+					t.Fatalf("tar.Next(%q): %v", asset.Name, err)
+				}
+				if header.Typeflag != tar.TypeReg {
+					continue
+				}
+				got, err := io.ReadAll(tarReader)
+				if err != nil {
+					t.Fatalf("ReadAll(%q): %v", header.Name, err)
+				}
+				assertFixturePayload(t, fixture, asset.Name, base, header.Name, got)
+			}
+			if err := gzipReader.Close(); err != nil {
+				t.Fatalf("Close(gzip %q): %v", asset.Name, err)
+			}
+			continue
+		}
+
+		zipReader, err := zip.NewReader(strings.NewReader(string(data)), int64(len(data)))
+		if err != nil {
+			t.Fatalf("zip.NewReader(%q): %v", asset.Name, err)
+		}
+		for _, file := range zipReader.File {
+			if file.FileInfo().IsDir() {
+				continue
+			}
+			opened, err := file.Open()
+			if err != nil {
+				t.Fatalf("Open(%q): %v", file.Name, err)
+			}
+			got, readErr := io.ReadAll(opened)
+			closeErr := opened.Close()
+			if readErr != nil || closeErr != nil {
+				t.Fatalf("ReadAll(%q): read=%v close=%v", file.Name, readErr, closeErr)
+			}
+			assertFixturePayload(t, fixture, asset.Name, base, file.Name, got)
+		}
+	}
+}
+
+func assertPackagedFixturePayloadsAreDistinct(t *testing.T, fixture releaseFixture) {
+	t.Helper()
+	seen := make(map[string]string)
+	for _, relative := range fixtureSourcePaths[1:] {
+		name := filepath.Join(fixture.repositoryRoot, relative)
+		contents := string(mustReadFile(t, name))
+		if previous, duplicate := seen[contents]; duplicate {
+			t.Fatalf("fixture payloads %q and %q are identical; correspondence test requires distinct bytes", previous, name)
+		}
+		seen[contents] = name
+	}
+	for _, releaseTarget := range releaseTargets {
+		name := filepath.Join(fixture.stagingRoot, releaseTarget.Directory, releaseTarget.Executable)
+		contents := string(mustReadFile(t, name))
+		if previous, duplicate := seen[contents]; duplicate {
+			t.Fatalf("fixture payloads %q and %q are identical; correspondence test requires distinct bytes", previous, name)
+		}
+		seen[contents] = name
+	}
+}
+
+func assertFixturePayload(t *testing.T, fixture releaseFixture, assetName, base, entryName string, got []byte) {
+	t.Helper()
+	type fixtureTarget struct {
+		directory  string
+		executable string
+	}
+	targets := map[string]fixtureTarget{
+		"ai-cli-gateway_0.1.0_linux_amd64.tar.gz":  {directory: "linux_amd64", executable: "ai-cli-gateway"},
+		"ai-cli-gateway_0.1.0_linux_arm64.tar.gz":  {directory: "linux_arm64", executable: "ai-cli-gateway"},
+		"ai-cli-gateway_0.1.0_darwin_amd64.tar.gz": {directory: "darwin_amd64", executable: "ai-cli-gateway"},
+		"ai-cli-gateway_0.1.0_darwin_arm64.tar.gz": {directory: "darwin_arm64", executable: "ai-cli-gateway"},
+		"ai-cli-gateway_0.1.0_windows_amd64.zip":   {directory: "windows_amd64", executable: "ai-cli-gateway.exe"},
+	}
+	releaseTarget, ok := targets[assetName]
+	if !ok {
+		t.Fatalf("unknown fixture asset %q", assetName)
+	}
+	relative := strings.TrimPrefix(entryName, base+"/")
+	sourcePath := filepath.Join(fixture.repositoryRoot, filepath.FromSlash(relative))
+	if relative == releaseTarget.executable {
+		sourcePath = filepath.Join(fixture.stagingRoot, releaseTarget.directory, releaseTarget.executable)
+	}
+	want := mustReadFile(t, sourcePath)
+	if !slices.Equal(got, want) {
+		t.Fatalf("archive payload %q = %q, want fixture source %q bytes %q", entryName, got, sourcePath, want)
+	}
+}
+
 func TestWriteArchivesCleansOnlyTrackedPaths(t *testing.T) {
 	fixture := newReleaseFixture(t)
 	hooks := defaultArchiveFileHooks()
@@ -208,6 +461,105 @@ func TestWriteArchivesCleansOnlyTrackedPaths(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != sentinel {
 		t.Fatalf("output entries = %v, want only %q", entries, sentinel)
+	}
+}
+
+func TestWriteArchivesRetriesOneShotCleanupUnlinkFailure(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	hooks := defaultArchiveFileHooks()
+	hooks.copyN = func(io.Writer, io.Reader, int64) (int64, error) {
+		return 0, errors.New("force rollback")
+	}
+	removeCalls := 0
+	hooks.removeOwned = func(name string) error {
+		removeCalls++
+		if removeCalls == 1 {
+			return errors.New("one-shot cleanup unlink failure")
+		}
+		return os.Remove(name)
+	}
+	withArchiveFileHooks(t, hooks)
+
+	assets, err := WriteArchives(fixture.options)
+	if len(assets) != 0 {
+		t.Fatalf("assets = %#v, want none", assets)
+	}
+	assertCategory(t, err, categoryArchiveFailure)
+	if removeCalls < 2 {
+		t.Fatalf("cleanup unlink calls = %d, want retry", removeCalls)
+	}
+	assertOutputAbsentOrEmpty(t, fixture.outputRoot)
+}
+
+func TestWriteArchivesPersistentCleanupUnlinkFailureTaintsRoot(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	hooks := defaultArchiveFileHooks()
+	hooks.copyN = func(io.Writer, io.Reader, int64) (int64, error) {
+		return 0, errors.New("force rollback")
+	}
+	hooks.removeOwned = func(string) error {
+		return errors.New("persistent cleanup unlink failure")
+	}
+	withArchiveFileHooks(t, hooks)
+
+	assets, err := WriteArchives(fixture.options)
+	if len(assets) != 0 {
+		t.Fatalf("assets = %#v, want none", assets)
+	}
+	assertCategory(t, err, categoryArchiveFailure)
+	entries := mustReadDir(t, fixture.outputRoot)
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), ".release-archive-") {
+		t.Fatalf("tainted output entries = %v, want only refused owned temporary", entries)
+	}
+}
+
+func TestWriteArchivesRetriesOneShotOutputRootRemovalFailure(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	hooks := defaultArchiveFileHooks()
+	hooks.createTemp = func(string, string) (*os.File, error) {
+		return nil, errors.New("force rollback")
+	}
+	removeCalls := 0
+	hooks.removeRoot = func(name string) error {
+		removeCalls++
+		if removeCalls == 1 {
+			return errors.New("one-shot output root removal failure")
+		}
+		return os.Remove(name)
+	}
+	withArchiveFileHooks(t, hooks)
+
+	assets, err := WriteArchives(fixture.options)
+	if len(assets) != 0 {
+		t.Fatalf("assets = %#v, want none", assets)
+	}
+	assertCategory(t, err, categoryArchiveFailure)
+	if removeCalls < 2 {
+		t.Fatalf("output-root removal calls = %d, want retry", removeCalls)
+	}
+	if _, statErr := os.Lstat(fixture.outputRoot); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("output root stat error = %v, want not exist", statErr)
+	}
+}
+
+func TestWriteArchivesPersistentOutputRootRemovalFailureTaintsRoot(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	hooks := defaultArchiveFileHooks()
+	hooks.createTemp = func(string, string) (*os.File, error) {
+		return nil, errors.New("force rollback")
+	}
+	hooks.removeRoot = func(string) error {
+		return errors.New("persistent output root removal failure")
+	}
+	withArchiveFileHooks(t, hooks)
+
+	assets, err := WriteArchives(fixture.options)
+	if len(assets) != 0 {
+		t.Fatalf("assets = %#v, want none", assets)
+	}
+	assertCategory(t, err, categoryArchiveFailure)
+	if entries := mustReadDir(t, fixture.outputRoot); len(entries) != 0 {
+		t.Fatalf("tainted output entries = %v, want empty retained root", entries)
 	}
 }
 
@@ -267,8 +619,8 @@ func TestWriteArchivesRejectsTempReplacementBeforeLinkPublication(t *testing.T) 
 		t.Fatalf("replacement contents = %q, want preserved %q", got, attackerContents)
 	}
 	finalPath := filepath.Join(fixture.outputRoot, "ai-cli-gateway_0.1.0_linux_amd64.tar.gz")
-	if _, statErr := os.Lstat(finalPath); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("published final stat error = %v, want not exist", statErr)
+	if got := string(mustReadFile(t, finalPath)); got != attackerContents {
+		t.Fatalf("unexpected published final contents = %q, want preserved %q", got, attackerContents)
 	}
 }
 
@@ -588,4 +940,13 @@ func mustStat(t *testing.T, name string) os.FileInfo {
 		t.Fatalf("Stat(%q): %v", name, err)
 	}
 	return info
+}
+
+func mustReadDir(t *testing.T, name string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(name)
+	if err != nil {
+		t.Fatalf("ReadDir(%q): %v", name, err)
+	}
+	return entries
 }

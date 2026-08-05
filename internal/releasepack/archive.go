@@ -31,24 +31,30 @@ type plannedArchive struct {
 }
 
 type archiveFileHooks struct {
-	createTemp func(string, string) (*os.File, error)
-	openFile   func(string) (*os.File, error)
-	copyN      func(io.Writer, io.Reader, int64) (int64, error)
-	closeFile  func(*os.File) error
-	chmod      func(*os.File, fs.FileMode) error
-	link       func(string, string) error
-	removeTemp func(string) error
+	createTemp  func(string, string) (*os.File, error)
+	openFile    func(string) (*os.File, error)
+	copyN       func(io.Writer, io.Reader, int64) (int64, error)
+	closeFile   func(*os.File) error
+	chmod       func(*os.File, fs.FileMode) error
+	chmodRoot   func(*os.File, fs.FileMode) error
+	link        func(string, string) error
+	removeTemp  func(string) error
+	removeOwned func(string) error
+	removeRoot  func(string) error
 }
 
 func defaultArchiveFileHooks() archiveFileHooks {
 	return archiveFileHooks{
-		createTemp: os.CreateTemp,
-		openFile:   os.Open,
-		copyN:      io.CopyN,
-		closeFile:  (*os.File).Close,
-		chmod:      (*os.File).Chmod,
-		link:       os.Link,
-		removeTemp: os.Remove,
+		createTemp:  os.CreateTemp,
+		openFile:    os.Open,
+		copyN:       io.CopyN,
+		closeFile:   (*os.File).Close,
+		chmod:       (*os.File).Chmod,
+		chmodRoot:   (*os.File).Chmod,
+		link:        os.Link,
+		removeTemp:  os.Remove,
+		removeOwned: os.Remove,
+		removeRoot:  os.Remove,
 	}
 }
 
@@ -56,7 +62,7 @@ var archiveFiles = defaultArchiveFileHooks()
 
 // WriteArchives validates the fixed release inputs and publishes exactly one
 // deterministic archive for every supported target.
-func WriteArchives(options ArchiveOptions) ([]Asset, error) {
+func WriteArchives(options ArchiveOptions) (assets []Asset, resultErr error) {
 	plan, err := newArchivePlan(options)
 	if err != nil {
 		return nil, err
@@ -71,6 +77,7 @@ func WriteArchives(options ArchiveOptions) ([]Asset, error) {
 		return nil, newArchiveFailure()
 	}
 
+	hooks := archiveFiles
 	rootInfo, createdRoot, err := prepareArchiveOutputRoot(plan.OutputRoot)
 	if err != nil {
 		return nil, newArchiveFailure()
@@ -79,12 +86,21 @@ func WriteArchives(options ArchiveOptions) ([]Asset, error) {
 	succeeded := false
 	defer func() {
 		if !succeeded {
-			owned.cleanup()
+			assets = nil
+			if cleanupSucceeded := owned.cleanup(hooks); !cleanupSucceeded || resultErr == nil {
+				resultErr = newArchiveFailure()
+			}
 		}
 	}()
+	if createdRoot {
+		rootInfo, err = secureCreatedArchiveOutputRoot(plan.OutputRoot, rootInfo, hooks)
+		if err != nil {
+			return nil, newArchiveFailure()
+		}
+		owned.rootInfo = rootInfo
+	}
 
-	hooks := archiveFiles
-	assets := make([]Asset, 0, len(archives))
+	assets = make([]Asset, 0, len(archives))
 	for _, archive := range archives {
 		if !sameArchiveOutputRoot(plan.OutputRoot, rootInfo) {
 			return nil, newArchiveFailure()
@@ -135,11 +151,11 @@ func WriteArchives(options ArchiveOptions) ([]Asset, error) {
 			return nil, newArchiveFailure()
 		}
 		finalInfo, statErr := os.Lstat(archive.Asset.Path)
-		if statErr != nil {
+		if statErr != nil || !os.SameFile(temporaryInfo, finalInfo) {
 			return nil, newArchiveFailure()
 		}
-		owned.track(archive.Asset.Path, finalInfo)
-		if !os.SameFile(temporaryInfo, finalInfo) || !owned.same(temporaryPath) || !sameArchiveOutputRoot(plan.OutputRoot, rootInfo) {
+		owned.track(archive.Asset.Path, temporaryInfo)
+		if !owned.same(temporaryPath) || !sameArchiveOutputRoot(plan.OutputRoot, rootInfo) {
 			return nil, newArchiveFailure()
 		}
 		if err := hooks.removeTemp(temporaryPath); err != nil {
@@ -300,18 +316,44 @@ func prepareArchiveOutputRoot(outputRoot string) (os.FileInfo, bool, error) {
 		}
 		info, err := os.Lstat(outputRoot)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return nil, false, errors.New("created output root changed")
+			return nil, true, errors.New("created output root changed")
 		}
 		return info, true, nil
 	}
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, false, errors.New("output root changed")
 	}
+	if err := validateOutputAuthority(outputRoot, info); err != nil {
+		return nil, false, errors.New("output root authority changed")
+	}
 	entries, err := os.ReadDir(outputRoot)
 	if err != nil || len(entries) != 0 {
 		return nil, false, errors.New("output root changed")
 	}
 	return info, false, nil
+}
+
+func secureCreatedArchiveOutputRoot(outputRoot string, createdInfo os.FileInfo, hooks archiveFileHooks) (os.FileInfo, error) {
+	if err := os.Chmod(outputRoot, 0o700); err != nil {
+		return nil, err
+	}
+	directory, err := os.Open(outputRoot)
+	if err != nil {
+		return nil, err
+	}
+	if err := hooks.chmodRoot(directory, 0o700); err != nil {
+		_ = directory.Close()
+		return nil, err
+	}
+	descriptorInfo, statErr := directory.Stat()
+	closeErr := directory.Close()
+	pathInfo, pathErr := os.Lstat(outputRoot)
+	if statErr != nil || closeErr != nil || pathErr != nil || !os.SameFile(createdInfo, descriptorInfo) ||
+		!os.SameFile(descriptorInfo, pathInfo) || validateOutputAuthority(outputRoot, descriptorInfo) != nil ||
+		validateOutputAuthority(outputRoot, pathInfo) != nil {
+		return nil, errors.New("created output root changed")
+	}
+	return descriptorInfo, nil
 }
 
 func writePlannedArchive(output io.Writer, archive plannedArchive, sourceTime time.Time, sources map[string]archiveSource, hooks archiveFileHooks) error {
@@ -381,16 +423,53 @@ func (owned *ownedArchivePaths) untrack(name string) {
 	delete(owned.ownedByPath, name)
 }
 
-func (owned *ownedArchivePaths) cleanup() {
-	for i := len(owned.order) - 1; i >= 0; i-- {
-		name := owned.order[i]
-		if owned.same(name) {
-			_ = os.Remove(name)
+func (owned *ownedArchivePaths) cleanup(hooks archiveFileHooks) bool {
+	rootRemoved := !owned.removeRoot
+	complete := true
+	for pass := 0; pass < 2; pass++ {
+		for i := len(owned.order) - 1; i >= 0; i-- {
+			name := owned.order[i]
+			want, exists := owned.ownedByPath[name]
+			if !exists {
+				continue
+			}
+			current, err := os.Lstat(name)
+			if errors.Is(err, os.ErrNotExist) {
+				owned.untrack(name)
+				continue
+			}
+			if err != nil {
+				complete = false
+				continue
+			}
+			if !os.SameFile(want, current) {
+				complete = false
+				owned.untrack(name)
+				continue
+			}
+			if err := hooks.removeOwned(name); err == nil || errors.Is(err, os.ErrNotExist) {
+				owned.untrack(name)
+			}
+		}
+
+		if owned.removeRoot && len(owned.ownedByPath) == 0 {
+			current, err := os.Lstat(owned.outputRoot)
+			switch {
+			case errors.Is(err, os.ErrNotExist):
+				rootRemoved = true
+			case err == nil && os.SameFile(owned.rootInfo, current):
+				if err := hooks.removeRoot(owned.outputRoot); err == nil || errors.Is(err, os.ErrNotExist) {
+					rootRemoved = true
+				}
+			}
 		}
 	}
-	if owned.removeRoot && sameArchiveOutputRoot(owned.outputRoot, owned.rootInfo) {
-		_ = os.Remove(owned.outputRoot)
+	if entries, err := os.ReadDir(owned.outputRoot); err == nil && len(entries) != 0 {
+		complete = false
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		complete = false
 	}
+	return complete && len(owned.ownedByPath) == 0 && rootRemoved
 }
 
 func (owned *ownedArchivePaths) same(name string) bool {
@@ -413,7 +492,7 @@ func (owned *ownedArchivePaths) allSame() bool {
 
 func sameArchiveOutputRoot(outputRoot string, want os.FileInfo) bool {
 	current, err := os.Lstat(outputRoot)
-	return err == nil && current.IsDir() && current.Mode()&os.ModeSymlink == 0 && os.SameFile(want, current)
+	return err == nil && os.SameFile(want, current) && validateOutputAuthority(outputRoot, current) == nil
 }
 
 func isDirectArchiveOutput(outputRoot, name string) bool {

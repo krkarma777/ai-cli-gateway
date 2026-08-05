@@ -97,6 +97,9 @@ func validateTagAndSourceTime(tag string, sourceTime time.Time) (string, time.Ti
 }
 
 func validateRootSet(repositoryRoot, stagingRoot, outputRoot string, allowAbsentOutput bool) error {
+	if err := validateReleasepackHost(); err != nil {
+		return err
+	}
 	if err := validateRequiredDirectoryRoot(repositoryRoot); err != nil {
 		return err
 	}
@@ -195,7 +198,7 @@ func validateOutputRoot(root string, allowAbsent bool) error {
 	info, err := os.Lstat(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && allowAbsent {
-			return nil
+			return validateOutputAuthority(root, nil)
 		}
 		if errors.Is(err, os.ErrNotExist) {
 			return newCategorizedError(categoryMissingInput)
@@ -205,7 +208,7 @@ func validateOutputRoot(root string, allowAbsent bool) error {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return newCategorizedError(categoryUnsafePath)
 	}
-	return nil
+	return validateOutputAuthority(root, info)
 }
 
 func validateAbsoluteCleanPath(path string) error {

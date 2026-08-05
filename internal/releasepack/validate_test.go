@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package releasepack
 
 import (
@@ -388,14 +390,15 @@ func newReleaseFixture(t *testing.T) releaseFixture {
 	mustMkdir(t, fixture.stagingRoot)
 
 	for _, relative := range fixtureSourcePaths {
-		contents := "fixture\n"
+		contents := "fixture:" + filepath.ToSlash(relative) + "\n"
 		if relative == "go.mod" {
 			contents = "module " + expectedModule + "\n\ngo 1.26.0\n"
 		}
 		mustWriteFile(t, filepath.Join(fixture.repositoryRoot, relative), contents)
 	}
 	for _, releaseTarget := range releaseTargets {
-		mustWriteFile(t, filepath.Join(fixture.stagingRoot, releaseTarget.Directory, releaseTarget.Executable), "binary\n")
+		contents := "binary:" + releaseTarget.Directory + "/" + releaseTarget.Executable + "\n"
+		mustWriteFile(t, filepath.Join(fixture.stagingRoot, releaseTarget.Directory, releaseTarget.Executable), contents)
 	}
 
 	fixture.options = ArchiveOptions{
