@@ -323,6 +323,9 @@ func removeMode(args []string) []string {
 }
 
 func validCodexPrompt(stdin io.Reader) bool {
+	if stdin == nil {
+		return false
+	}
 	prompt, err := io.ReadAll(io.LimitReader(stdin, codexPromptMaxBytes+1))
 	return err == nil && len(prompt) != 0 && len(prompt) <= codexPromptMaxBytes && utf8.Valid(prompt)
 }

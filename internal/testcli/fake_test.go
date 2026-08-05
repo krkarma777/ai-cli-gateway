@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,6 +137,51 @@ func TestCodexReadyRejectsNilFinalHandler(t *testing.T) {
 	}
 	if stdout.Len() != 0 || stderr.String() != "fake-codex-cli: unsupported command\n" {
 		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestCodexReadyRejectsNilStdin(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*bytes.Buffer, *bytes.Buffer) int
+	}{
+		{
+			name: "default final handler",
+			run: func(stdout, stderr *bytes.Buffer) int {
+				return CodexReadyMain(codexReadyFinalArgs(), nil, stdout, stderr)
+			},
+		},
+		{
+			name: "custom final handler",
+			run: func(stdout, stderr *bytes.Buffer) int {
+				called := false
+				code := CodexReadyMainWithFinal(
+					codexReadyFinalArgs(),
+					nil,
+					stdout,
+					stderr,
+					func(io.Reader, io.Writer, io.Writer) int {
+						called = true
+						return 0
+					},
+				)
+				if called {
+					t.Fatal("final handler was called")
+				}
+				return code
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := tt.run(&stdout, &stderr); code != 2 {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if stdout.Len() != 0 || stderr.String() != "fake-codex-cli: unsupported command\n" {
+				t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
 	}
 }
 
