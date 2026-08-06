@@ -117,9 +117,13 @@ type system interface {
 	RunClient(context.Context, string, []string, []string, time.Duration) ([]byte, error)
 }
 
+// Linux deliberately retains an exited process-group leader until cleanup is
+// proven safe. Gateway startup runs one containment self-test and five Codex
+// probes, so readiness needs scheduling headroom above that six-second floor.
+// Fifteen seconds still caps all eight startup attempts at two minutes.
 var productionPolicy = lifecyclePolicy{
 	PollInterval:      100 * time.Millisecond,
-	ReadinessDeadline: 5 * time.Second,
+	ReadinessDeadline: 15 * time.Second,
 	ProbeTimeout:      time.Second,
 	GatewayGrace:      10 * time.Second,
 	HelperGrace:       time.Second,

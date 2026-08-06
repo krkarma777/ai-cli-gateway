@@ -28,6 +28,28 @@ var testPolicy = lifecyclePolicy{
 	RegistryCleanup:   6 * time.Millisecond,
 }
 
+func TestProductionReadinessDeadlineCoversCodexStartupContainment(t *testing.T) {
+	// This mirrors the cross-package startup contract: doctor runs one
+	// containment self-test, then the Codex adapter runs five serial probes,
+	// using a one-second retained-leader grace on Linux. Keep this invariant in
+	// sync if that startup sequence or doctorProbeLimits changes.
+	const (
+		containmentSelfTests        = 1
+		codexReadinessCommands      = 5
+		retainedLeaderGracePerChild = time.Second
+		startupSchedulingMargin     = 5 * time.Second
+	)
+	minimum := time.Duration(containmentSelfTests+codexReadinessCommands)*retainedLeaderGracePerChild +
+		startupSchedulingMargin
+	if productionPolicy.ReadinessDeadline < minimum {
+		t.Fatalf(
+			"production readiness deadline = %s, want at least %s for contained Codex startup",
+			productionPolicy.ReadinessDeadline,
+			minimum,
+		)
+	}
+}
+
 func TestRunWithSystemSuccessOwnsOneRootRegistryAndGateway(t *testing.T) {
 	sys := newFakeSystem()
 	var output bytes.Buffer
