@@ -40,7 +40,7 @@ const response = await client.responses.create({
 console.log(response.output_text);
 ```
 
-This illustrative call assumes the gateway is running and `codex-local` is configured. The checked-in [JavaScript](examples/openai-sdk/javascript/main.mjs) and [Python](examples/openai-sdk/python/main.py) examples are the executable SDK contracts.
+This illustrative call assumes the gateway is running and `codex-local` is configured. The checked-in [JavaScript](examples/openai-sdk/javascript/main.mjs) and [Python](examples/openai-sdk/python/main.py) examples are the executable SDK contracts. Adapter integration tests use deterministic fake CLIs; optional live checks are operator-run and do not prove every provider, account, or model combination.
 
 ## Built for fast validation
 
