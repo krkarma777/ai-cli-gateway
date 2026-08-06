@@ -4,9 +4,9 @@
 
 **Goal:** Make the README and v0.1.0 release page immediately useful to developers validating AI-service MVPs with their existing locally authenticated AI CLIs, while preserving the project's exact compatibility and security boundaries.
 
-**Architecture:** Add a compact, test-protected product-introduction layer before the existing sealed README Quick Start. Keep the public v0.1.0 release body in `docs/releases/v0.1.0.md` as a reviewable source of truth, then publish only that body and a reviewed repository description after the documentation branch passes CI and merges.
+**Architecture:** Add a compact product-introduction layer before the existing sealed README Quick Start. Keep the public v0.1.0 release body in `docs/releases/v0.1.0.md` as a reviewable source of truth, then publish only that body and a reviewed repository description after the documentation branch passes CI and merges.
 
-**Tech Stack:** Markdown, Go 1.26.5 repository contract tests, Git, GitHub CLI, GitHub Releases.
+**Tech Stack:** Markdown, existing Go 1.26.5 repository contract tests, Git, GitHub CLI, GitHub Releases.
 
 ## Global Constraints
 
@@ -20,17 +20,18 @@
 - Preserve every existing Quick Start code fence byte-for-byte; the repository security tests seal their contents and semantics.
 - Keep the README free of raw HTML. Badges use Markdown image-link syntax.
 - Keep the gateway examples on `127.0.0.1`, use only environment-variable key placeholders, and disable SDK retries.
-- Do not change API behavior, provider adapters, `.github/workflows/release.yml`, the `v0.1.0` tag, or any of the seven immutable release assets.
+- Do not change API behavior, provider adapters, `internal/securitytest/repository_test.go`, `.github/workflows/release.yml`, the `v0.1.0` tag, or any of the seven immutable release assets.
 - State that adapter integration tests use deterministic fake CLIs and that optional live checks do not prove every provider/account/model combination.
 - Never add a real gateway key, provider credential, authentication file, prompt, model output, or private filesystem path.
 - The final repository description is exactly: “Build and validate AI MVPs with locally authenticated Codex, Claude Code, and Gemini CLIs through an OpenAI Responses-compatible endpoint.”
-- Each implementation task must show a semantic RED, pass its focused tests, receive specification and quality review, and end in its own commit.
+- Human-facing marketing prose does not receive exact-string tests. Such tests are brittle change detectors; the existing executable README/security contracts, repository hygiene scan, rendered review, and link checks provide the verification boundary.
+- Each documentation task ends in its own commit. Public metadata changes happen only after the branch is reviewed, green, and merged.
 
 ## File Structure
 
 - `README.md` — hero, badges, SDK proof of life, use cases, capability boundary, and trust summary before the existing Quick Start.
 - `docs/releases/v0.1.0.md` — reviewable source of truth for the public v0.1.0 GitHub release body.
-- `internal/securitytest/repository_test.go` — exact README introduction and v0.1.0 release-note marketing/accuracy contracts.
+- `internal/securitytest/repository_test.go` — unchanged executable README, security, release-workflow, and repository-hygiene contracts.
 - `docs/superpowers/specs/2026-08-06-open-source-marketing-design.md` — approved design and messaging guardrails; no implementation edits expected.
 - `docs/superpowers/plans/2026-08-06-open-source-marketing-refresh.md` — this execution plan.
 - GitHub repository metadata — remotely managed repository description; updated only after merge.
@@ -38,95 +39,29 @@
 
 ---
 
-### Task 1: Add a Test-Protected README Introduction
+### Task 1: Add the README Product Introduction
 
 **Files:**
-- Modify: `internal/securitytest/repository_test.go:1234`
 - Modify: `README.md:1`
-- Test: `internal/securitytest/repository_test.go`
+- Verify unchanged: `internal/securitytest/repository_test.go`
 
 **Interfaces:**
-- Consumes: `readRepositoryFile`, `requireContainsAll`, the existing exact first-two-prose-paragraph contract, and the existing sealed `## Quick Start` section.
-- Produces: `TestREADMEMarketingIntroduction`, which fixes the first-screen value proposition, SDK example, use cases, scope, trust facts, and forbidden-claim boundary.
+- Consumes: the existing exact first-two-prose-paragraph contract and the sealed `## Quick Start` section.
+- Produces: a first-screen value proposition, SDK example, use cases, scope snapshot, and trust summary without changing executable behavior.
 
-- [ ] **Step 1: Write the failing README marketing contract**
-
-Add this test immediately after `TestREADMEOpeningAndOfficialContractSources` without changing that existing test:
-
-```go
-func TestREADMEMarketingIntroduction(t *testing.T) {
-	readme := string(readRepositoryFile(t, "README.md"))
-	lines := strings.Split(strings.ReplaceAll(readme, "\r\n", "\n"), "\n")
-	if len(lines) < 80 {
-		t.Fatalf("README line count = %d, want at least 80", len(lines))
-	}
-	first20 := strings.Join(lines[:20], "\n")
-	first80 := strings.Join(lines[:80], "\n")
-	parts := strings.SplitN(readme, "\n## Quick Start\n", 2)
-	if len(parts) != 2 {
-		t.Fatal("README must contain one visible Quick Start boundary")
-	}
-	introduction := parts[0]
-
-	requireContainsAll(t, "README first screen", first20,
-		"## Build AI MVPs with the AI CLI access you already have.",
-		"AI CLI Gateway turns locally authenticated AI CLIs into an OpenAI Responses-compatible API.",
-		"**Responses API-compatible subset**",
-		"Your AI tools already work in the terminal. Your MVP expects an API. AI CLI Gateway bridges that gap locally.",
-		"actions/workflows/ci.yml/badge.svg",
-		"img.shields.io/github/v/release/krkarma777/ai-cli-gateway",
-		"img.shields.io/github/license/krkarma777/ai-cli-gateway",
-		"img.shields.io/github/go-mod/go-version/krkarma777/ai-cli-gateway",
-	)
-	requireContainsAll(t, "README SDK proof and use cases", first80,
-		"import OpenAI from \"openai\";",
-		"apiKey: process.env.AI_CLI_GATEWAY_API_KEY",
-		"baseURL: \"http://127.0.0.1:8080/v1\"",
-		"maxRetries: 0",
-		"client.responses.create",
-		"model: \"codex-local\"",
-		"console.log(response.output_text);",
-		"Vibe-coded AI-service MVPs",
-		"Product validation",
-		"Demos and hackathons",
-		"Local SDK integration tests",
-	)
-	requireContainsAll(t, "README introduction capability and trust", introduction,
-		"Codex CLI", "Claude Code", "Gemini CLI",
-		"POST /v1/responses", "GET /v1/models",
-		"final non-streaming text", "strict JSON Schema output",
-		"SSE streaming", "tool/function-call round trips", "stored conversations", "web UI", "external database",
-		"does not issue, extract, copy, or store provider login tokens",
-		"stdin", "temporary working directory", "timeouts", "bounded queues", "bounded output",
-		"does not log prompts, model output, or credentials",
-		"SHA256SUMS", "SPDX SBOM", "build-provenance attestations",
-		"may send request data to its upstream provider",
-	)
-
-	lower := strings.ToLower(readme)
-	for _, forbidden := range []string{
-		"free api", "unlimited", "subscription-to-api", "billing bypass", "prompts stay local",
-	} {
-		if strings.Contains(lower, forbidden) {
-			t.Fatalf("README contains forbidden marketing claim %q", forbidden)
-		}
-	}
-}
-```
-
-- [ ] **Step 2: Run the focused RED**
+- [ ] **Step 1: Record the clean README contract baseline**
 
 Run:
 
 ```bash
-go test -count=1 ./internal/securitytest -run '^TestREADMEMarketingIntroduction$'
+go test -count=1 ./internal/securitytest -run '^TestREADME'
 ```
 
-Expected: FAIL because the current first 80 lines have no approved hero, badges, SDK proof, or use-case summary.
+Expected: PASS before the documentation edit. This is baseline evidence, not a TDD RED: the task changes human-facing prose, not application behavior.
 
-- [ ] **Step 3: Insert the exact README introduction before Quick Start**
+- [ ] **Step 2: Replace the pre-Quick Start preamble with the approved introduction**
 
-Replace the current pre-Quick Start preamble with the following structure. It reuses the current title, exact identity sentence, exact subset paragraph, and contract-baseline paragraph; do not edit any existing Quick Start fence:
+Replace only the current pre-Quick Start preamble with the following structure. It reuses the current title, exact identity sentence, exact subset paragraph, and contract-baseline paragraph; do not edit any existing Quick Start fence:
 
 ````markdown
 # AI CLI Gateway
@@ -205,92 +140,55 @@ The gateway and CLI credential boundary are local. The selected CLI may send req
 The contract baseline is 2026-07-30, with the external provider transition notes below rechecked on 2026-08-02. The project supports locally prepared Codex CLI and Claude Code profiles, plus the three documented Gemini environment/external credential shapes; actual provider access remains an upstream decision.
 ````
 
-- [ ] **Step 4: Run the README GREEN and sealed Quick Start regression suite**
+- [ ] **Step 3: Verify the README contracts and unchanged Quick Start**
 
 Run:
 
 ```bash
 go test -count=1 ./internal/securitytest -run '^TestREADME'
+diff -u <(git show origin/main:README.md | sed -n '/^## Quick Start$/,$p') <(sed -n '/^## Quick Start$/,$p' README.md)
+sed -n '1,100p' README.md
 ```
 
-Expected: PASS, including `TestREADMEMarketingIntroduction`, the exact opening contract, all Quick Start semantic tests, and all POSIX/PowerShell command tests.
+Expected: the Go suite passes, `diff` prints nothing, and the first 100 rendered source lines show the hero, SDK request, four use cases, scope, trust boundary, and transition into Quick Start.
 
-- [ ] **Step 5: Review and commit Task 1**
+- [ ] **Step 4: Commit Task 1**
 
 Run:
 
 ```bash
 git diff --check
-git diff -- README.md internal/securitytest/repository_test.go
-git add -- README.md internal/securitytest/repository_test.go
+git diff -- README.md
+git add -- README.md
 git commit -m "docs: sharpen README for AI MVP builders"
 ```
 
-Expected: only the README introduction and its focused contract test are committed.
+Expected: only `README.md` is committed.
 
 ---
 
-### Task 2: Write and Protect the v0.1.0 Launch Notes
+### Task 2: Write the v0.1.0 Launch Notes
 
 **Files:**
 - Create: `docs/releases/v0.1.0.md`
-- Modify: `internal/securitytest/repository_test.go` beside the README documentation contracts
-- Test: `internal/securitytest/repository_test.go`
+- Verify unchanged: `.github/workflows/release.yml`
 
 **Interfaces:**
-- Consumes: the approved public messaging, the immutable public `v0.1.0` release with five platform archives, one SPDX SBOM, and one `SHA256SUMS` asset.
-- Produces: a Git-reviewed release-body source and `TestV010ReleaseNotesContract`; `gh release edit --notes-file` consumes the Markdown file after merge.
+- Consumes: the approved public messaging and the immutable public `v0.1.0` release with five platform archives, one SPDX SBOM, and one `SHA256SUMS` asset.
+- Produces: a Git-reviewed release-body source; `gh release edit --notes-file` consumes the Markdown file after merge.
 
-- [ ] **Step 1: Write the failing release-note contract**
-
-Add this test immediately after `TestREADMEMarketingIntroduction`:
-
-```go
-func TestV010ReleaseNotesContract(t *testing.T) {
-	notes := string(readRepositoryFile(t, "docs/releases/v0.1.0.md"))
-	requireContainsAll(t, "v0.1.0 release notes", notes,
-		"# AI CLI Gateway v0.1.0",
-		"Build AI MVPs with the AI CLI access you already have.",
-		"AI CLI Gateway turns locally authenticated AI CLIs into an OpenAI Responses-compatible API.",
-		"Responses API-compatible subset",
-		"Vibe-coded AI-service MVPs", "Product validation", "Demos and hackathons", "Local integration testing",
-		"Codex CLI", "Claude Code", "Gemini CLI",
-		"POST /v1/responses", "GET /v1/models", "strict JSON Schema output", "doctor",
-		"SSE streaming", "tool/function-call round trips", "stored conversations", "web UI", "external database",
-		"deterministic fake CLIs", "optional live checks",
-		"does not issue, extract, copy, or store provider login tokens",
-		"may send request data to its upstream provider",
-		"five platform archives", "SHA256SUMS", "SPDX SBOM", "build-provenance attestations", "immutable release",
-		"https://github.com/krkarma777/ai-cli-gateway#quick-start",
-		"https://github.com/krkarma777/ai-cli-gateway#from-sdk-to-local-cli",
-		"https://github.com/krkarma777/ai-cli-gateway/blob/main/SECURITY.md",
-		"https://github.com/krkarma777/ai-cli-gateway/blob/main/CONTRIBUTING.md",
-		"https://github.com/krkarma777/ai-cli-gateway/commits/v0.1.0",
-	)
-
-	lower := strings.ToLower(notes)
-	for _, forbidden := range []string{
-		"full openai api compatibility", "drop-in replacement", "free api", "unlimited",
-		"subscription-to-api", "billing bypass", "prompts stay local", "live-verified on every provider",
-	} {
-		if strings.Contains(lower, forbidden) {
-			t.Fatalf("v0.1.0 release notes contain forbidden claim %q", forbidden)
-		}
-	}
-}
-```
-
-- [ ] **Step 2: Run the focused RED**
+- [ ] **Step 1: Record the current release-note baseline**
 
 Run:
 
 ```bash
-go test -count=1 ./internal/securitytest -run '^TestV010ReleaseNotesContract$'
+test ! -e docs/releases/v0.1.0.md
+gh release view v0.1.0 --repo krkarma777/ai-cli-gateway --json body,url,assets
 ```
 
-Expected: FAIL because `docs/releases/v0.1.0.md` does not exist.
+Expected: the tracked source does not exist and the public body contains only generated change/contributor notes while the release has seven assets.
 
-- [ ] **Step 3: Create the exact reviewable release body**
+- [ ] **Step 2: Create the exact reviewable release body**
 
 Create `docs/releases/v0.1.0.md` with this content:
 
@@ -358,28 +256,34 @@ The immutable release contains five platform archives plus:
 - [Full v0.1.0 changelog](https://github.com/krkarma777/ai-cli-gateway/commits/v0.1.0)
 ````
 
-- [ ] **Step 4: Run the release-note GREEN and repository hygiene tests**
+- [ ] **Step 3: Verify hygiene, copy boundaries, and public links**
 
 Run:
 
 ```bash
-go test -count=1 ./internal/securitytest -run '^(TestV010ReleaseNotesContract|TestRepositoryHygiene)$'
+go test -count=1 ./internal/securitytest -run '^TestRepositoryHygiene$'
+sed -n '1,220p' docs/releases/v0.1.0.md
+rg -n -i 'free api|unlimited|subscription-to-api|billing bypass|prompts stay local|full openai api compatibility|drop-in replacement' README.md docs/releases/v0.1.0.md
+curl --disable --fail --silent --show-error --location --head https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.1.0
+curl --disable --fail --silent --show-error --location --head https://github.com/krkarma777/ai-cli-gateway/blob/main/SECURITY.md
+curl --disable --fail --silent --show-error --location --head https://github.com/krkarma777/ai-cli-gateway/blob/main/CONTRIBUTING.md
+curl --disable --fail --silent --show-error --location --head https://github.com/krkarma777/ai-cli-gateway/commits/v0.1.0
 ```
 
-Expected: PASS; the source is present, contains the exact launch facts and absolute public links, and introduces no secret-like or generated artifact.
+Expected: hygiene passes; the rendered source contains every approved section; `rg` exits 1 with no matches; every `curl` exits zero.
 
-- [ ] **Step 5: Review and commit Task 2**
+- [ ] **Step 4: Commit Task 2**
 
 Run:
 
 ```bash
 git diff --check
-git diff -- docs/releases/v0.1.0.md internal/securitytest/repository_test.go
-git add -- docs/releases/v0.1.0.md internal/securitytest/repository_test.go
+git diff -- docs/releases/v0.1.0.md
+git add -- docs/releases/v0.1.0.md
 git commit -m "docs: write v0.1.0 launch notes"
 ```
 
-Expected: only the release-note source and its focused repository contract are committed.
+Expected: only `docs/releases/v0.1.0.md` is committed.
 
 ---
 
@@ -388,13 +292,14 @@ Expected: only the release-note source and its focused repository contract are c
 **Files:**
 - Verify: `README.md`
 - Verify: `docs/releases/v0.1.0.md`
-- Verify: `internal/securitytest/repository_test.go`
+- Verify unchanged: `internal/securitytest/repository_test.go`
+- Verify unchanged: `.github/workflows/release.yml`
 
 **Interfaces:**
-- Consumes: the README and release-note contracts produced by Tasks 1 and 2.
-- Produces: a review-ready branch with no formatting, security, unit, race, integration, lint, build, or documentation-contract regressions.
+- Consumes: the README and release-note source produced by Tasks 1 and 2.
+- Produces: a review-ready branch with no formatting, security, unit, race, integration, lint, build, documentation-contract, or release-package regressions.
 
-- [ ] **Step 1: Run the focused documentation and release-package tests**
+- [ ] **Step 1: Run focused repository documentation tests**
 
 Run:
 
@@ -422,7 +327,7 @@ git diff --check
 
 Expected: every command exits zero. No real provider CLI or live inference is invoked.
 
-- [ ] **Step 3: Check the rendered information hierarchy and links**
+- [ ] **Step 3: Verify the rendered hierarchy and unchanged sealed content**
 
 Run:
 
@@ -431,30 +336,19 @@ sed -n '1,100p' README.md
 sed -n '1,220p' docs/releases/v0.1.0.md
 rg -n '^## (From SDK to local CLI|Built for fast validation|What v0\.1\.0 supports|Local control, explicit boundaries|Quick Start|Architecture and scope|Request contract)$' README.md
 diff -u <(git show origin/main:README.md | sed -n '/^## Quick Start$/,$p') <(sed -n '/^## Quick Start$/,$p' README.md)
-curl --disable --fail --silent --show-error --location --head https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.1.0
-curl --disable --fail --silent --show-error --location --head https://github.com/krkarma777/ai-cli-gateway/blob/main/SECURITY.md
-curl --disable --fail --silent --show-error --location --head https://github.com/krkarma777/ai-cli-gateway/blob/main/CONTRIBUTING.md
-curl --disable --fail --silent --show-error --location --head https://github.com/krkarma777/ai-cli-gateway/commits/v0.1.0
+git diff --exit-code origin/main -- internal/securitytest/repository_test.go .github/workflows/release.yml
 ```
 
-Inspect the rendered text output and confirm:
-
-- the first screen states the audience, value, exact identity sentence, and compatibility subset;
-- the JavaScript block renders as code and uses only the environment variable placeholder;
-- Get Started, API, scope, release, example, license, Go module, Security, Contributing, and changelog links resolve to the intended local anchor or public GitHub page;
-- the existing Quick Start begins after the new product layer and all its commands remain unchanged;
-- no statement implies complete compatibility, guaranteed access, local-only prompt handling, or cost avoidance.
-
-Expected: no copy or link correction is needed. If a correction is required, apply the smallest patch and rerun Steps 1 and 2 before committing it as `docs: correct marketing documentation`.
+Expected: the hierarchy is complete, the Quick Start diff is empty, and the repository contract test plus release workflow are unchanged.
 
 - [ ] **Step 4: Request independent specification and quality reviews**
 
 Use `superpowers:requesting-code-review` twice:
 
 - first reviewer checks exact coverage of `docs/superpowers/specs/2026-08-06-open-source-marketing-design.md` and public-claim accuracy;
-- second reviewer checks readability, code-example correctness, test quality, and preservation of the sealed Quick Start.
+- second reviewer checks readability, SDK example correctness, link targets, and preservation of the sealed Quick Start.
 
-Expected: no unresolved critical, high, or medium findings. Fix valid findings with TDD and rerun the complete verification chain.
+Expected: no unresolved critical, high, or medium findings. A valid copy or link correction receives the smallest documentation-only patch, its applicable focused tests, and a separate `docs: correct marketing documentation` commit.
 
 ---
 
@@ -478,7 +372,7 @@ git push --set-upstream origin docs/marketing-readme-release-notes
 gh pr create --repo krkarma777/ai-cli-gateway --base main --head docs/marketing-readme-release-notes --title "docs: sharpen AI CLI Gateway launch messaging" --body "Refresh the README for AI MVP builders, add reviewed v0.1.0 launch notes, and preserve the exact Responses-compatible subset and security boundaries."
 ```
 
-Expected: one public PR containing the design, plan, README, release-note source, and contract tests.
+Expected: one public PR containing the design, plan, README, and release-note source.
 
 - [ ] **Step 2: Require green hosted checks and merge**
 
@@ -530,8 +424,6 @@ test "$(gh api repos/krkarma777/ai-cli-gateway/git/ref/tags/v0.1.0 --jq '{ref,ob
 test "$(gh api repos/krkarma777/ai-cli-gateway/releases/tags/v0.1.0 --jq '[.assets[] | {id,name,size,digest}] | sort_by(.name)')" = "${AICLI_MARKETING_ASSETS_BEFORE}"
 gh api repos/krkarma777/ai-cli-gateway/releases/tags/v0.1.0 --jq '{tag_name,draft,prerelease,immutable,asset_count:(.assets|length)}'
 ```
-
-The `diff` compares the public body with `docs/releases/v0.1.0.md`; the `test` commands compare the tag and sorted asset JSON with the retained Step 3 values and compare the description with the Global Constraints value.
 
 Expected final release state:
 
