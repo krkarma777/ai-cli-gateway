@@ -167,13 +167,13 @@ jobs:
             local current="$1" owner mode permissions
             while :; do
               case "${current}" in /*) ;; *) return 1 ;; esac
-              test -d "${current}"
-              test ! -L "${current}"
-              owner="$(stat -c '%u' -- "${current}")"
-              mode="$(stat -c '%a' -- "${current}")"
-              test "${owner}" = 0 || test "${owner}" = "${effective_uid}"
+              test -d "${current}" || return 1
+              test ! -L "${current}" || return 1
+              owner="$(stat -c '%u' -- "${current}")" || return 1
+              mode="$(stat -c '%a' -- "${current}")" || return 1
+              test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1
               permissions=$((8#${mode}))
-              if (( (permissions & 0022) != 0 )); then (( (permissions & 01000) != 0 )); fi
+              if (( (permissions & 0022) != 0 )); then (( (permissions & 01000) != 0 )) || return 1; fi
               test "${current}" != / || break
               current="${current%/*}"
               test -n "${current}" || current=/
@@ -181,27 +181,45 @@ jobs:
           }
           resolve_binary() {
             local candidate link directory count=0
-            candidate="$(command -v -- "$1")"
+            candidate="$(command -v -- "$1")" || return 1
             case "${candidate}" in /*) ;; *) return 1 ;; esac
             while test -L "${candidate}"; do
-              count=$((count + 1)); test "${count}" -le 32
-              link="$(readlink -- "${candidate}")"
+              count=$((count + 1)); test "${count}" -le 32 || return 1
+              link="$(readlink -- "${candidate}")" || return 1
               case "${link}" in /*) candidate="${link}" ;; *) candidate="${candidate%/*}/${link}" ;; esac
             done
-            directory="$(CDPATH=; cd -P -- "${candidate%/*}" && pwd -P)"
+            directory="$(CDPATH=; cd -P -- "${candidate%/*}" && pwd -P)" || return 1
             printf '%s/%s\n' "${directory}" "${candidate##*/}"
+          }
+          validate_build_tool() {
+            local binary="$1" expected="${2:-}" owner mode permissions identity
+            case "${binary}" in /*) ;; *) return 1 ;; esac
+            test -f "${binary}" || return 1
+            test ! -L "${binary}" || return 1
+            test -x "${binary}" || return 1
+            owner="$(stat -c '%u' -- "${binary}")" || return 1
+            test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1
+            mode="$(stat -c '%a' -- "${binary}")" || return 1
+            permissions=$((8#${mode}))
+            (( (permissions & 07000) == 0 )) || return 1
+            identity="$(stat -c '%d:%i' -- "${binary}")" || return 1
+            test -z "${expected}" || test "${identity}" = "${expected}" || return 1
+            printf '%s\n' "${identity}"
           }
           validate_binary() {
             local binary="$1" expected="${2:-}" owner mode permissions identity
             case "${binary}" in /*) ;; *) return 1 ;; esac
-            test -f "${binary}"; test ! -L "${binary}"; test -x "${binary}"
-            owner="$(stat -c '%u' -- "${binary}")"
-            test "${owner}" = 0 || test "${owner}" = "${effective_uid}"
-            mode="$(stat -c '%a' -- "${binary}")"; permissions=$((8#${mode}))
-            (( (permissions & 0022) == 0 ))
-            validate_authority "${binary%/*}"
-            identity="$(stat -c '%d:%i' -- "${binary}")"
-            test -z "${expected}" || test "${identity}" = "${expected}"
+            test -f "${binary}" || return 1
+            test ! -L "${binary}" || return 1
+            test -x "${binary}" || return 1
+            owner="$(stat -c '%u' -- "${binary}")" || return 1
+            test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1
+            mode="$(stat -c '%a' -- "${binary}")" || return 1
+            permissions=$((8#${mode}))
+            (( (permissions & 07022) == 0 )) || return 1
+            validate_authority "${binary%/*}" || return 1
+            identity="$(stat -c '%d:%i' -- "${binary}")" || return 1
+            test -z "${expected}" || test "${identity}" = "${expected}" || return 1
             printf '%s\n' "${identity}"
           }
           validate_roots() {
@@ -222,12 +240,12 @@ jobs:
           }
 
           GO_BIN="$(resolve_binary go)"
-          GO_IDENTITY="$(validate_binary "${GO_BIN}")"
+          GO_IDENTITY="$(validate_build_tool "${GO_BIN}")"
           ENV_BIN=/usr/bin/env
           ENV_IDENTITY="$(validate_binary "${ENV_BIN}")"
           revalidate_go() {
             validate_roots
-            test "$(validate_binary "${GO_BIN}" "${GO_IDENTITY}")" = "${GO_IDENTITY}"
+            test "$(validate_build_tool "${GO_BIN}" "${GO_IDENTITY}")" = "${GO_IDENTITY}"
             test "$(validate_binary "${ENV_BIN}" "${ENV_IDENTITY}")" = "${ENV_IDENTITY}"
           }
           run_clean_go() {

@@ -225,10 +225,19 @@ func resolveBuildTool(lookup func(string) (string, error)) (string, error) {
 		return "", newError(categoryFailed)
 	}
 	info, err := os.Lstat(resolved)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 || info.Mode().Perm()&0o022 != 0 || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+	// scripts/sdk-contract.sh is itself launched through the caller's Go
+	// toolchain. Treat that host toolchain as a caller-authorized prerequisite
+	// rather than applying the provider executable authority policy to one leaf
+	// while the same Go installation executes additional tools from GOROOT.
+	if err != nil || !validBuildToolInfo(info) {
 		return "", newError(categoryFailed)
 	}
 	return resolved, nil
+}
+
+func validBuildToolInfo(info fs.FileInfo) bool {
+	return info != nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 &&
+		info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) == 0
 }
 
 func minimalBuildEnvironment() []string {

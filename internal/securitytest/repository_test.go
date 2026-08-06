@@ -4019,7 +4019,7 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	requireContainsAll(t, "lint job", jobs["lint"],
 		"runs-on: ubuntu-latest", "gofmt -l .", "go vet ./...",
 		golangciAction, "version: v2.12.2")
-	if err := validateCIActionlintStep(jobs["lint"]); err != nil {
+	if err := validateCIActionlintStep(workflow, jobs["lint"]); err != nil {
 		t.Fatalf("CI actionlint contract: %v", err)
 	}
 	requireContainsAll(t, "Linux job", jobs["linux"],
@@ -4080,7 +4080,7 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	}
 }
 
-func validateCIActionlintStep(lintJob string) error {
+func validateCIActionlintStep(workflow, lintJob string) error {
 	steps, err := parseYAMLSteps(lintJob)
 	if err != nil {
 		return err
@@ -4097,12 +4097,28 @@ func validateCIActionlintStep(lintJob string) error {
 	if actionlintStep == "" {
 		return errors.New("missing parsed Validate workflow syntax step")
 	}
+	if err := requireExactTextSHA256("parsed actionlint step metadata", actionlintStep, "a931acb732b7b1ff34549eb83f61795e502e014023bd6c7b7f4f962af0d84597"); err != nil {
+		return err
+	}
+	actionlintRun, err := decodedWorkflowStepRun([]byte(workflow), "lint", "Validate workflow syntax")
+	if err != nil {
+		return fmt.Errorf("decode actionlint run: %w", err)
+	}
+	if err := requireExactTextSHA256("decoded actionlint run", actionlintRun, "fb19e602eee29370c9ca45392e5178b91ee76c181e05c2368984ae8de95cf5d3"); err != nil {
+		return err
+	}
 	for _, required := range []string{
 		"  shell: bash",
 		"set -euo pipefail",
 		"umask 077",
 		`ACTIONLINT_ROOT="${RUNNER_TEMP}/actionlint-tools"`,
 		`ENV_BIN=/usr/bin/env`,
+		`validate_build_tool() {`,
+		`GO_IDENTITY="$(validate_build_tool "${GO_BIN}")"`,
+		`test "$(validate_build_tool "${GO_BIN}" "${GO_IDENTITY}")" = "${GO_IDENTITY}"`,
+		`(( (permissions & 07000) == 0 )) || return 1`,
+		`(( (permissions & 07022) == 0 )) || return 1`,
+		`validate_authority "${binary%/*}" || return 1`,
 		`"${ENV_BIN}" -i`,
 		`GOTOOLCHAIN=local`,
 		`GOPROXY=https://proxy.golang.org`,
@@ -4124,6 +4140,9 @@ func validateCIActionlintStep(lintJob string) error {
 		if !strings.Contains(actionlintStep, required) {
 			return fmt.Errorf("parsed actionlint step is missing %q", required)
 		}
+	}
+	if err := validateCommandSubstitutionGuards(actionlintStep, "expected_identity", false); err != nil {
+		return fmt.Errorf("actionlint binary validation: %w", err)
 	}
 	if strings.Contains(actionlintStep, "curl ") || strings.Contains(actionlintStep, "wget ") {
 		return errors.New("actionlint step uses a mutable downloader")
@@ -4222,10 +4241,36 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		mutate func(string) string
 	}{
 		{name: "actionlint missing env isolation", mutate: replaceCIOnce(`            "${ENV_BIN}" -i \`, `            "${ENV_BIN}" \`)},
+		{name: "actionlint blank line breaks env isolation", mutate: replaceCIOnce("            \"${ENV_BIN}\" -i \\\n              HOME=\"${ACTIONLINT_ROOT}/home\" \\\n", "            \"${ENV_BIN}\" -i \\\n\n              HOME=\"${ACTIONLINT_ROOT}/home\" \\\n")},
+		{name: "actionlint step BASH_ENV injection", mutate: replaceCIOnce("      - name: Validate workflow syntax\n        shell: bash\n", "      - name: Validate workflow syntax\n        env:\n          BASH_ENV: /tmp/actionlint-env\n        shell: bash\n")},
+		{name: "actionlint custom shell template", mutate: replaceCIOnce("      - name: Validate workflow syntax\n        shell: bash\n", "      - name: Validate workflow syntax\n        shell: bash -e {0}\n")},
 		{name: "actionlint Go child receives PATH", mutate: replaceCIOnce(`              HOME="${ACTIONLINT_ROOT}/home" \`, "              PATH=/usr/bin \\\n"+`              HOME="${ACTIONLINT_ROOT}/home" \`)},
 		{name: "actionlint Go policy omitted", mutate: replaceCIOnce(" GOINSECURE= GOENV=off GOFLAGS= GOWORK=off CGO_ENABLED=0 \\\n", " GOINSECURE= GOFLAGS= GOWORK=off CGO_ENABLED=0 \\\n")},
 		{name: "actionlint Go child extra environment", mutate: replaceCIOnce(" GOINSECURE= GOENV=off GOFLAGS= GOWORK=off CGO_ENABLED=0 \\\n", " GOINSECURE= GOENV=off GOFLAGS= GOWORK=off CGO_ENABLED=0 ATTACKER=value \\\n")},
 		{name: "actionlint uses relative Go", mutate: replaceCIOnce(`              "${GO_BIN}" "$@"`, `              go "$@"`)},
+		{name: "actionlint Go uses strict generated-binary policy", mutate: replaceCIOnce(`GO_IDENTITY="$(validate_build_tool "${GO_BIN}")"`, `GO_IDENTITY="$(validate_binary "${GO_BIN}")"`)},
+		{name: "actionlint Go special-bit guard removed", mutate: replaceCIOnce(`            (( (permissions & 07000) == 0 )) || return 1`+"\n", "")},
+		{name: "actionlint Go ancestor authority added", mutate: replaceShellFunctionOnce("validate_build_tool", `(( (permissions & 07000) == 0 )) || return 1`, "(( (permissions & 07000) == 0 )) || return 1\n            validate_authority \"${binary%/*}\" || return 1")},
+		{name: "actionlint authority early success", mutate: replaceShellFunctionOnce("validate_authority", "validate_authority() {", "validate_authority() {\n            return 0")},
+		{name: "actionlint authority directory failure masked", mutate: replaceShellFunctionOnce("validate_authority", `test -d "${current}" || return 1`, `test -d "${current}"`)},
+		{name: "actionlint authority mode conversion removed", mutate: replaceShellFunctionOnce("validate_authority", `permissions=$((8#${mode}))`, `permissions=0`)},
+		{name: "actionlint resolver command failure masked", mutate: replaceShellFunctionOnce("resolve_binary", `candidate="$(command -v -- "$1")" || return 1`, `candidate="$(command -v -- "$1")"`)},
+		{name: "actionlint resolver early success", mutate: replaceShellFunctionOnce("resolve_binary", "resolve_binary() {", "resolve_binary() {\n            return 0")},
+		{name: "actionlint resolver identity output removed", mutate: replaceShellFunctionOnce("resolve_binary", `printf '%s\n' "${candidate}"`, `: "${candidate}"`)},
+		{name: "actionlint Go symlink failure masked", mutate: replaceShellFunctionOnce("validate_build_tool", `test ! -L "${binary}" || return 1`, `test ! -L "${binary}"`)},
+		{name: "actionlint Go early success", mutate: replaceShellFunctionOnce("validate_build_tool", "validate_build_tool() {", "validate_build_tool() {\n            return 0")},
+		{name: "actionlint Go owner failure masked", mutate: replaceShellFunctionOnce("validate_build_tool", `owner="$(stat -c '%u' -- "${binary}")" || return 1`, `owner="$(stat -c '%u' -- "${binary}")"`)},
+		{name: "actionlint Go mode conversion removed", mutate: replaceShellFunctionOnce("validate_build_tool", `permissions=$((8#${mode}))`, `permissions=0`)},
+		{name: "actionlint Go identity failure masked", mutate: replaceShellFunctionOnce("validate_build_tool", `identity="$(stat -c '%d:%i' -- "${binary}")" || return 1`, `identity="$(stat -c '%d:%i' -- "${binary}")"`)},
+		{name: "actionlint Go identity output removed", mutate: replaceShellFunctionOnce("validate_build_tool", `printf '%s\n' "${identity}"`, `: "${identity}"`)},
+		{name: "actionlint strict executable failure masked", mutate: replaceShellFunctionOnce("validate_binary", `test -x "${binary}" || return 1`, `test -x "${binary}"`)},
+		{name: "actionlint strict early success", mutate: replaceShellFunctionOnce("validate_binary", "validate_binary() {", "validate_binary() {\n            return 0")},
+		{name: "actionlint strict mode conversion removed", mutate: replaceShellFunctionOnce("validate_binary", `permissions=$((8#${mode}))`, `permissions=0`)},
+		{name: "actionlint strict identity failure masked", mutate: replaceShellFunctionOnce("validate_binary", `identity="$(stat -c '%d:%i' -- "${binary}")" || return 1`, `identity="$(stat -c '%d:%i' -- "${binary}")"`)},
+		{name: "actionlint strict identity output removed", mutate: replaceShellFunctionOnce("validate_binary", `printf '%s\n' "${identity}"`, `: "${identity}"`)},
+		{name: "actionlint alternate strict function redefinition", mutate: insertAfterShellFunction("validate_binary", "          function validate_binary { return 0; }\n")},
+		{name: "actionlint strict mode failure masked", mutate: replaceCIOnce(`            (( (permissions & 07022) == 0 )) || return 1`, `            (( (permissions & 07022) == 0 ))`)},
+		{name: "actionlint strict authority failure masked", mutate: replaceCIOnce(`            validate_authority "${binary%/*}" || return 1`, `            validate_authority "${binary%/*}"`)},
 		{name: "actionlint runtime receives Go variable", mutate: replaceCIOnce("          run_clean_actionlint() {\n            \"${ENV_BIN}\" -i \\\n              HOME=\"${ACTIONLINT_ROOT}/home\" \\\n", "          run_clean_actionlint() {\n            \"${ENV_BIN}\" -i \\\n              GOFLAGS=attacker \\\n              HOME=\"${ACTIONLINT_ROOT}/home\" \\\n")},
 		{name: "actionlint build identity revalidation omitted", mutate: replaceCIOnce("          revalidate_build_tools\n          test \"$(run_clean_go env GOVERSION)\" = go1.26.5\n", "          test \"$(run_clean_go env GOVERSION)\" = go1.26.5\n")},
 		{
@@ -4726,7 +4771,7 @@ func validateSDKCIWorkflowContract(workflow string) error {
 			return fmt.Errorf("job %s steps: %w", name, parseErr)
 		}
 		if name == "lint" {
-			if parseErr = validateCIActionlintStep(job); parseErr != nil {
+			if parseErr = validateCIActionlintStep(workflow, job); parseErr != nil {
 				return fmt.Errorf("job %s actionlint: %w", name, parseErr)
 			}
 			filtered := make([]string, 0, len(steps)-1)
@@ -5473,6 +5518,29 @@ func TestReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "Syft install moving module", mutate: replaceReleaseOnce("github.com/anchore/syft/cmd/syft@v1.50.0", "github.com/anchore/syft/cmd/syft@latest")},
 		{name: "Syft Go missing env isolation", mutate: replaceReleaseOnce(`            "${ENV_BIN}" -i \`, `            "${ENV_BIN}" \`)},
 		{name: "Syft Go receives PATH", mutate: replaceReleaseOnce(`              HOME="${tools_root}/home" XDG_CONFIG_HOME="${tools_root}/xdg" \`, "              PATH=/usr/bin \\\n"+`              HOME="${tools_root}/home" XDG_CONFIG_HOME="${tools_root}/xdg" \`)},
+		{name: "Syft Go uses strict generated-binary policy", mutate: replaceReleaseOnce(`GO_IDENTITY="$(validate_build_tool "${GO_BIN}")"`, `GO_IDENTITY="$(validate_binary "${GO_BIN}")"`)},
+		{name: "Syft Go special-bit guard removed", mutate: replaceReleaseOnce(`            (( (permissions & 07000) == 0 )) || return 1`+"\n", "")},
+		{name: "Syft Go ancestor authority added", mutate: replaceShellFunctionOnce("validate_build_tool", `(( (permissions & 07000) == 0 )) || return 1`, "(( (permissions & 07000) == 0 )) || return 1\n            validate_authority \"${binary%/*}\" || return 1")},
+		{name: "Syft authority early success", mutate: replaceShellFunctionOnce("validate_authority", "validate_authority() {", "validate_authority() {\n            return 0")},
+		{name: "Syft authority directory failure masked", mutate: replaceShellFunctionOnce("validate_authority", `test -d "${current}" || return 1`, `test -d "${current}"`)},
+		{name: "Syft authority mode conversion removed", mutate: replaceShellFunctionOnce("validate_authority", `permissions=$((8#${mode}))`, `permissions=0`)},
+		{name: "Syft resolver command failure masked", mutate: replaceShellFunctionOnce("resolve_binary", `candidate="$(command -v -- "$1")" || return 1`, `candidate="$(command -v -- "$1")"`)},
+		{name: "Syft resolver early success", mutate: replaceShellFunctionOnce("resolve_binary", "resolve_binary() {", "resolve_binary() {\n            return 0")},
+		{name: "Syft resolver identity output removed", mutate: replaceShellFunctionOnce("resolve_binary", `printf '%s/%s\n' "${directory}" "${candidate##*/}"`, `: "${directory}/${candidate##*/}"`)},
+		{name: "Syft Go symlink failure masked", mutate: replaceShellFunctionOnce("validate_build_tool", `test ! -L "${binary}" || return 1`, `test ! -L "${binary}"`)},
+		{name: "Syft Go early success", mutate: replaceShellFunctionOnce("validate_build_tool", "validate_build_tool() {", "validate_build_tool() {\n            return 0")},
+		{name: "Syft Go owner failure masked", mutate: replaceShellFunctionOnce("validate_build_tool", `owner="$(stat -c '%u' -- "${binary}")" || return 1`, `owner="$(stat -c '%u' -- "${binary}")"`)},
+		{name: "Syft Go mode conversion removed", mutate: replaceShellFunctionOnce("validate_build_tool", `permissions=$((8#${mode}))`, `permissions=0`)},
+		{name: "Syft Go identity failure masked", mutate: replaceShellFunctionOnce("validate_build_tool", `identity="$(stat -c '%d:%i' -- "${binary}")" || return 1`, `identity="$(stat -c '%d:%i' -- "${binary}")"`)},
+		{name: "Syft Go identity output removed", mutate: replaceShellFunctionOnce("validate_build_tool", `printf '%s\n' "${identity}"`, `: "${identity}"`)},
+		{name: "Syft strict executable failure masked", mutate: replaceShellFunctionOnce("validate_binary", `test -x "${binary}" || return 1`, `test -x "${binary}"`)},
+		{name: "Syft strict early success", mutate: replaceShellFunctionOnce("validate_binary", "validate_binary() {", "validate_binary() {\n            return 0")},
+		{name: "Syft strict mode conversion removed", mutate: replaceShellFunctionOnce("validate_binary", `permissions=$((8#${mode}))`, `permissions=0`)},
+		{name: "Syft strict identity failure masked", mutate: replaceShellFunctionOnce("validate_binary", `identity="$(stat -c '%d:%i' -- "${binary}")" || return 1`, `identity="$(stat -c '%d:%i' -- "${binary}")"`)},
+		{name: "Syft strict identity output removed", mutate: replaceShellFunctionOnce("validate_binary", `printf '%s\n' "${identity}"`, `: "${identity}"`)},
+		{name: "Syft alternate strict function redefinition", mutate: insertAfterShellFunction("validate_binary", "          function validate_binary { return 0; }\n")},
+		{name: "Syft strict mode failure masked", mutate: replaceReleaseOnce(`            (( (permissions & 07022) == 0 )) || return 1`, `            (( (permissions & 07022) == 0 ))`)},
+		{name: "Syft strict authority failure masked", mutate: replaceReleaseOnce(`            validate_authority "${binary%/*}" || return 1`, `            validate_authority "${binary%/*}"`)},
 		{name: "Syft runtime relative binary", mutate: replaceReleaseOnce(`              SYFT_CHECK_FOR_APP_UPDATE=false "${SYFT_BIN}" "$@"`, `              SYFT_CHECK_FOR_APP_UPDATE=false syft "$@"`)},
 		{name: "Syft update check enabled", mutate: replaceReleaseOnce("SYFT_CHECK_FOR_APP_UPDATE=false", "SYFT_CHECK_FOR_APP_UPDATE=true")},
 		{name: "Syft compliance altered", mutate: replaceReleaseOnce("SYFT_COMPLIANCE_MISSING_NAME=drop", "SYFT_COMPLIANCE_MISSING_NAME=keep")},
@@ -5549,6 +5617,211 @@ func replaceReleaseOnce(old, replacement string) func(string) string {
 	return func(document string) string {
 		return strings.Replace(document, old, replacement, 1)
 	}
+}
+
+func replaceShellFunctionOnce(name, old, replacement string) func(string) string {
+	return func(document string) string {
+		start, end, ok := shellFunctionSpan(document, name)
+		if !ok {
+			return document
+		}
+		body := document[start:end]
+		mutated := strings.Replace(body, old, replacement, 1)
+		if mutated == body {
+			return document
+		}
+		return document[:start] + mutated + document[end:]
+	}
+}
+
+func insertAfterShellFunction(name, insertion string) func(string) string {
+	return func(document string) string {
+		_, end, ok := shellFunctionSpan(document, name)
+		if !ok {
+			return document
+		}
+		return document[:end] + insertion + document[end:]
+	}
+}
+
+func shellFunctionSpan(script, name string) (int, int, bool) {
+	opener := name + "() {"
+	if strings.Count(script, opener) != 1 {
+		return 0, 0, false
+	}
+	start := strings.Index(script, opener)
+	for cursor := start + len(opener); cursor < len(script); {
+		lineEnd := strings.IndexByte(script[cursor:], '\n')
+		if lineEnd < 0 {
+			lineEnd = len(script)
+		} else {
+			lineEnd += cursor
+		}
+		if strings.TrimSpace(script[cursor:lineEnd]) == "}" {
+			if lineEnd < len(script) {
+				lineEnd++
+			}
+			return start, lineEnd, true
+		}
+		if lineEnd == len(script) {
+			break
+		}
+		cursor = lineEnd + 1
+	}
+	return 0, 0, false
+}
+
+func validateCommandSubstitutionGuards(script, expectedName string, compact bool) error {
+	if compact != (expectedName == "expected") {
+		return errors.New("binary validation flavor and expected-identity name differ")
+	}
+	authority := []string{
+		`validate_authority() {`,
+		`local current="$1" owner mode permissions`,
+		`case "${current}" in /*) ;; *) return 1 ;; esac`,
+		`while :; do`,
+		`test -d "${current}" || return 1`,
+		`test ! -L "${current}" || return 1`,
+		`owner="$(stat -c '%u' -- "${current}")" || return 1`,
+		`mode="$(stat -c '%a' -- "${current}")" || return 1`,
+		`test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1`,
+		`permissions=$((8#${mode}))`,
+		`if (( (permissions & 0022) != 0 )); then`,
+		`(( (permissions & 01000) != 0 )) || return 1`,
+		`fi`,
+		`test "${current}" != / || break`,
+		`current="${current%/*}"`,
+		`test -n "${current}" || current=/`,
+		`done`,
+		`}`,
+	}
+	if compact {
+		authority = []string{
+			`validate_authority() {`,
+			`local current="$1" owner mode permissions`,
+			`while :; do`,
+			`case "${current}" in /*) ;; *) return 1 ;; esac`,
+			`test -d "${current}" || return 1`,
+			`test ! -L "${current}" || return 1`,
+			`owner="$(stat -c '%u' -- "${current}")" || return 1`,
+			`mode="$(stat -c '%a' -- "${current}")" || return 1`,
+			`test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1`,
+			`permissions=$((8#${mode}))`,
+			`if (( (permissions & 0022) != 0 )); then (( (permissions & 01000) != 0 )) || return 1; fi`,
+			`test "${current}" != / || break`,
+			`current="${current%/*}"`,
+			`test -n "${current}" || current=/`,
+			`done`,
+			`}`,
+		}
+	}
+	if err := requireExactShellFunction(script, "validate_authority", authority); err != nil {
+		return err
+	}
+
+	resolver := []string{
+		`resolve_binary() {`,
+		`local candidate link directory count=0`,
+		`candidate="$(command -v -- "$1")" || return 1`,
+		`case "${candidate}" in /*) ;; *) return 1 ;; esac`,
+		`while test -L "${candidate}"; do`,
+		`count=$((count + 1))`,
+		`test "${count}" -le 32 || return 1`,
+		`link="$(readlink -- "${candidate}")" || return 1`,
+		`case "${link}" in`,
+		`/*) candidate="${link}" ;;`,
+		`*) candidate="${candidate%/*}/${link}" ;;`,
+		`esac`,
+		`done`,
+		`directory="$(CDPATH=; cd -P -- "${candidate%/*}" && pwd -P)" || return 1`,
+		`candidate="${directory}/${candidate##*/}"`,
+		`case "${candidate}" in /*) ;; *) return 1 ;; esac`,
+		`printf '%s\n' "${candidate}"`,
+		`}`,
+	}
+	if compact {
+		resolver = []string{
+			`resolve_binary() {`,
+			`local candidate link directory count=0`,
+			`candidate="$(command -v -- "$1")" || return 1`,
+			`case "${candidate}" in /*) ;; *) return 1 ;; esac`,
+			`while test -L "${candidate}"; do`,
+			`count=$((count + 1)); test "${count}" -le 32 || return 1`,
+			`link="$(readlink -- "${candidate}")" || return 1`,
+			`case "${link}" in /*) candidate="${link}" ;; *) candidate="${candidate%/*}/${link}" ;; esac`,
+			`done`,
+			`directory="$(CDPATH=; cd -P -- "${candidate%/*}" && pwd -P)" || return 1`,
+			`printf '%s/%s\n' "${directory}" "${candidate##*/}"`,
+			`}`,
+		}
+	}
+	if err := requireExactShellFunction(script, "resolve_binary", resolver); err != nil {
+		return err
+	}
+
+	expectedGuard := `test -z "${` + expectedName + `}" || test "${identity}" = "${` + expectedName + `}" || return 1`
+	buildTool := []string{
+		`validate_build_tool() {`,
+		`local binary="$1" ` + expectedName + `="${2:-}" owner mode permissions identity`,
+		`case "${binary}" in /*) ;; *) return 1 ;; esac`,
+		`test -f "${binary}" || return 1`,
+		`test ! -L "${binary}" || return 1`,
+		`test -x "${binary}" || return 1`,
+		`owner="$(stat -c '%u' -- "${binary}")" || return 1`,
+		`test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1`,
+		`mode="$(stat -c '%a' -- "${binary}")" || return 1`,
+		`permissions=$((8#${mode}))`,
+		`(( (permissions & 07000) == 0 )) || return 1`,
+		`identity="$(stat -c '%d:%i' -- "${binary}")" || return 1`,
+		expectedGuard,
+		`printf '%s\n' "${identity}"`,
+		`}`,
+	}
+	if err := requireExactShellFunction(script, "validate_build_tool", buildTool); err != nil {
+		return err
+	}
+	strictBinary := []string{
+		`validate_binary() {`,
+		`local binary="$1" ` + expectedName + `="${2:-}" owner mode permissions identity`,
+		`case "${binary}" in /*) ;; *) return 1 ;; esac`,
+		`test -f "${binary}" || return 1`,
+		`test ! -L "${binary}" || return 1`,
+		`test -x "${binary}" || return 1`,
+		`owner="$(stat -c '%u' -- "${binary}")" || return 1`,
+	}
+	if compact {
+		strictBinary = append(strictBinary,
+			`test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1`,
+			`mode="$(stat -c '%a' -- "${binary}")" || return 1`,
+		)
+	} else {
+		strictBinary = append(strictBinary,
+			`mode="$(stat -c '%a' -- "${binary}")" || return 1`,
+			`test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1`,
+		)
+	}
+	strictBinary = append(strictBinary,
+		`permissions=$((8#${mode}))`,
+		`(( (permissions & 07022) == 0 )) || return 1`,
+		`validate_authority "${binary%/*}" || return 1`,
+		`identity="$(stat -c '%d:%i' -- "${binary}")" || return 1`,
+		expectedGuard,
+		`printf '%s\n' "${identity}"`,
+		`}`,
+	)
+	return requireExactShellFunction(script, "validate_binary", strictBinary)
+}
+
+func requireExactShellFunction(script, name string, want []string) error {
+	start, end, ok := shellFunctionSpan(script, name)
+	if !ok {
+		return fmt.Errorf("function %s must occur exactly once and have a closing brace", name)
+	}
+	got := trimmedShellLines(script[start:end])
+	if !reflect.DeepEqual(got, want) {
+		return fmt.Errorf("function %s body differs from the exact executable contract", name)
+	}
+	return nil
 }
 
 func replaceReleaseNth(old, replacement string, occurrence int) func(string) string {
@@ -5887,6 +6160,9 @@ func TestWorkflowActionlintIsolationScript(t *testing.T) {
 		t.Fatalf("create fixture bin: %v", err)
 	}
 	writeCleanToolWrapper(t, filepath.Join(binRoot, "go"), testBinary, "actionlint-go", cleanGoEnvironmentNames())
+	if err := os.Chmod(filepath.Join(binRoot, "go"), 0o777); err != nil { // #nosec G302 -- models the caller-authorized GitHub hosted toolchain.
+		t.Fatalf("chmod hosted Go fixture: %v", err)
+	}
 	writePortableStatWrapper(t, filepath.Join(binRoot, "stat"))
 	poisonMarker := filepath.Join(root, "poison-ran")
 	poisonHelper := filepath.Join(root, "poison-helper")
@@ -5922,6 +6198,56 @@ func TestWorkflowActionlintIsolationScript(t *testing.T) {
 		{"-config-file", filepath.Join(actionlintRoot, "config", "actionlint.yaml"), "-shellcheck=", "-pyflakes=", "-no-color", ".github/workflows/ci.yml", ".github/workflows/release.yml"},
 	}) {
 		t.Fatalf("actionlint argv trace = %q", calls)
+	}
+}
+
+func TestWorkflowActionlintIsolationRejectsWritableInstalledTool(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("decoded actionlint shell fixture requires macOS or Linux")
+	}
+	document := readRepositoryFile(t, ".github/workflows/ci.yml")
+	script, err := decodedWorkflowStepRun(document, "lint", "Validate workflow syntax")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test binary: %v", err)
+	}
+	root := secureExternalFixtureRoot(t, "spawngate-actionlint-writable-fixture-")
+	binRoot := filepath.Join(root, "fixture-bin")
+	if err := os.Mkdir(binRoot, 0o700); err != nil {
+		t.Fatalf("create fixture bin: %v", err)
+	}
+	writeCleanToolWrapper(t, filepath.Join(binRoot, "go"), testBinary, "actionlint-go-writable-install", cleanGoEnvironmentNames())
+	writePortableStatWrapper(t, filepath.Join(binRoot, "stat"))
+	poisonHelper := filepath.Join(root, "poison-helper")
+	writeFixtureFile(t, root, "poison-helper", []byte("#!/bin/sh\nexit 97\n"))
+	if err := os.Chmod(poisonHelper, 0o700); err != nil { //nolint:gosec // Test-only failing helper must be executable.
+		t.Fatalf("chmod poison helper: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "/bin/bash", "-c", script) //nolint:gosec // Executes the decoded repository-owned CI shell with fixed fake tools.
+	command.Dir = repositoryRootForTest(t)
+	command.Env = poisonedToolParentEnvironment(root, binRoot, poisonHelper)
+	output, runErr := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("decoded actionlint shell exceeded 30s: %v", ctx.Err())
+	}
+	if runErr == nil {
+		t.Fatalf("decoded actionlint shell accepted a writable installed binary: %s", output)
+	}
+	actionlintRoot := filepath.Join(root, "actionlint-tools")
+	installed, err := os.Stat(filepath.Join(actionlintRoot, "bin", "actionlint"))
+	if err != nil {
+		t.Fatalf("stat writable actionlint fixture: %v", err)
+	}
+	if installed.Mode().Perm()&0o022 == 0 {
+		t.Fatalf("actionlint rejection fixture mode = %04o, want group/other writable", installed.Mode().Perm())
+	}
+	if calls := readFakeGHCalls(t, filepath.Join(actionlintRoot, "actionlint.argv")); len(calls) != 0 {
+		t.Fatalf("writable actionlint executed before rejection: %q", calls)
 	}
 }
 
@@ -5981,6 +6307,7 @@ func TestReleaseSyftIsolationScript(t *testing.T) {
 		{name: "same-mode root replacement", mode: "syft-go-replace-root"},
 		{name: "same-mode config replacement between Syft calls", mode: "syft-go-replace-config-at-syft"},
 		{name: "same-mode root replacement after scan", mode: "syft-go-replace-root-after-scan"},
+		{name: "writable installed Syft", mode: "syft-go-writable-install"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -5990,6 +6317,9 @@ func TestReleaseSyftIsolationScript(t *testing.T) {
 				t.Fatalf("create fixture bin: %v", err)
 			}
 			writeCleanToolWrapper(t, filepath.Join(binRoot, "go"), testBinary, test.mode, cleanGoEnvironmentNames())
+			if err := os.Chmod(filepath.Join(binRoot, "go"), 0o777); err != nil { // #nosec G302 -- models the caller-authorized GitHub hosted toolchain.
+				t.Fatalf("chmod hosted Go fixture: %v", err)
+			}
 			writePortableStatWrapper(t, filepath.Join(binRoot, "stat"))
 			if err := os.Mkdir(filepath.Join(root, "release-staging"), 0o700); err != nil {
 				t.Fatalf("create staging: %v", err)
@@ -6029,6 +6359,18 @@ func TestReleaseSyftIsolationScript(t *testing.T) {
 				t.Fatalf("poisoned GOFLAGS helper was observed: %v", err)
 			}
 			toolsRoot := filepath.Join(root, "release-tools")
+			if test.mode == "syft-go-writable-install" {
+				installed, statErr := os.Stat(filepath.Join(toolsRoot, "bin", "syft"))
+				if statErr != nil {
+					t.Fatalf("stat writable Syft fixture: %v", statErr)
+				}
+				if installed.Mode().Perm()&0o022 == 0 {
+					t.Fatalf("Syft rejection fixture mode = %04o, want group/other writable", installed.Mode().Perm())
+				}
+				if calls := readFakeGHCalls(t, filepath.Join(toolsRoot, "syft.argv")); len(calls) != 0 {
+					t.Fatalf("writable Syft executed before rejection: %q", calls)
+				}
+			}
 			if test.mode == "syft-go-replace-config" || test.mode == "syft-go-replace-root" {
 				if calls := readFakeGHCalls(t, filepath.Join(toolsRoot, "syft-go.argv")); !reflect.DeepEqual(calls, [][]string{{"env", "GOVERSION"}}) {
 					t.Fatalf("identity replacement Go argv = %q, want failure before the second external call", calls)
@@ -6215,8 +6557,14 @@ func runWorkflowToolFake(mode, testBinary string, args []string) int {
 				installedMode = "syft" + installedMode
 				environment = cleanSyftEnvironmentNames()
 			}
-			if err := writeCleanToolWrapperFile(filepath.Join(os.Getenv("GOBIN"), tool), testBinary, installedMode, environment); err != nil {
+			installedPath := filepath.Join(os.Getenv("GOBIN"), tool)
+			if err := writeCleanToolWrapperFile(installedPath, testBinary, installedMode, environment); err != nil {
 				return 82
+			}
+			if mode == "actionlint-go-writable-install" || mode == "syft-go-writable-install" {
+				if err := os.Chmod(installedPath, 0o777); err != nil { //nolint:gosec // Test-controlled path and writable rejection fixture.
+					return 82
+				}
 			}
 			return 0
 		}
@@ -7633,6 +7981,9 @@ ASSETS
 
 func validateReleaseSyftStep(step releaseWorkflowStep) error {
 	script := shellWithoutCommentOnlyLines(step.Run)
+	if err := requireExactTextSHA256("decoded Syft step", step.Run, "f178500f46c9c6100763ea98ac6b00c38fb22537fbd66c1b6746c5b5ef490be8"); err != nil {
+		return err
+	}
 	const (
 		versionFieldCheck = `test "$(grep -Ec '^Version:' <<<"${syft_version}")" = 1`
 		exactVersionCheck = `test "$(grep -Ec '^Version:[[:blank:]]+1[.]50[.]0$' <<<"${syft_version}")" = 1`
@@ -7641,6 +7992,12 @@ func validateReleaseSyftStep(step releaseWorkflowStep) error {
 		`tools_root="${RUNNER_TEMP}/release-tools"`,
 		`ENV_BIN=/usr/bin/env`,
 		`GO_BIN="$(resolve_binary go)"`,
+		`validate_build_tool() {`,
+		`GO_IDENTITY="$(validate_build_tool "${GO_BIN}")"`,
+		`test "$(validate_build_tool "${GO_BIN}" "${GO_IDENTITY}")" = "${GO_IDENTITY}"`,
+		`(( (permissions & 07000) == 0 )) || return 1`,
+		`(( (permissions & 07022) == 0 )) || return 1`,
+		`validate_authority "${binary%/*}" || return 1`,
 		`SYFT_BIN="${tools_root}/bin/syft"`,
 		`run_clean_go env GOVERSION`,
 		`run_clean_go install -ldflags '-X main.version=1.50.0' github.com/anchore/syft/cmd/syft@v1.50.0`,
@@ -7670,6 +8027,9 @@ func validateReleaseSyftStep(step releaseWorkflowStep) error {
 		if !strings.Contains(script, required) {
 			return fmt.Errorf("decoded shell is missing %q", required)
 		}
+	}
+	if err := validateCommandSubstitutionGuards(script, "expected", true); err != nil {
+		return fmt.Errorf("Syft binary validation: %w", err)
 	}
 	lines := trimmedShellLines(script)
 	if shellLineCount(lines, versionFieldCheck) != 1 || shellLineCount(lines, exactVersionCheck) != 1 {
@@ -7797,6 +8157,15 @@ func validateReleaseSyftStep(step releaseWorkflowStep) error {
 	wantScan := []string{"HOME", "LANG", "LC_ALL", "SYFT_CHECK_FOR_APP_UPDATE", "SYFT_COMPLIANCE_MISSING_NAME", "SYFT_COMPLIANCE_MISSING_VERSION", "SYFT_CONFIG", "TMPDIR", "TZ", "XDG_CONFIG_HOME"}
 	if !reflect.DeepEqual(scanNames, wantScan) {
 		return fmt.Errorf("Syft scan environment names = %v", scanNames)
+	}
+	return nil
+}
+
+func requireExactTextSHA256(name, value, want string) error {
+	sum := sha256.Sum256([]byte(value))
+	got := hex.EncodeToString(sum[:])
+	if got != want {
+		return fmt.Errorf("%s SHA-256 = %s, want exact reviewed digest %s", name, got, want)
 	}
 	return nil
 }

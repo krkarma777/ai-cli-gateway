@@ -736,19 +736,56 @@ func TestResolveBuildToolDoesNotApplyProviderAliasAuthorityPolicy(t *testing.T) 
 	if err := os.WriteFile(tool, []byte("fixture"), 0o600); err != nil {
 		t.Fatalf("write build tool: %v", err)
 	}
-	if err := os.Chmod(tool, 0o755); err != nil { // #nosec G302 -- the build-tool fixture must be executable.
-		t.Fatalf("chmod build tool: %v", err)
-	}
-	got, err := resolveBuildTool(func(name string) (string, error) {
-		if name != "go" {
-			t.Fatalf("lookup name = %q", name)
+	for _, mode := range []os.FileMode{0o755, 0o777} {
+		if err := os.Chmod(tool, mode); err != nil { // #nosec G302 -- caller-authorized host toolchains can use either mode.
+			t.Fatalf("chmod build tool to %04o: %v", mode, err)
 		}
-		return tool, nil
-	})
-	if err != nil || got != tool {
-		t.Fatalf("resolveBuildTool() = %q, %v", got, err)
+		got, err := resolveBuildTool(func(name string) (string, error) {
+			if name != "go" {
+				t.Fatalf("lookup name = %q", name)
+			}
+			return tool, nil
+		})
+		if err != nil || got != tool {
+			t.Fatalf("resolveBuildTool(mode %04o) = %q, %v", mode, got, err)
+		}
 	}
 }
+
+func TestValidBuildToolInfoRejectsNonExecutableOrSpecialBitLeaf(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		mode  os.FileMode
+		valid bool
+	}{
+		{name: "ordinary executable", mode: 0o755, valid: true},
+		{name: "hosted writable executable", mode: 0o777, valid: true},
+		{name: "not executable", mode: 0o600},
+		{name: "directory", mode: os.ModeDir | 0o755},
+		{name: "symlink", mode: os.ModeSymlink | 0o777},
+		{name: "setuid", mode: 0o755 | os.ModeSetuid},
+		{name: "setgid", mode: 0o755 | os.ModeSetgid},
+		{name: "sticky", mode: 0o755 | os.ModeSticky},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := validBuildToolInfo(buildToolFileInfo{mode: test.mode}); got != test.valid {
+				t.Fatalf("validBuildToolInfo(mode %v) = %t, want %t", test.mode, got, test.valid)
+			}
+		})
+	}
+	if validBuildToolInfo(nil) {
+		t.Fatal("validBuildToolInfo(nil) = true")
+	}
+}
+
+type buildToolFileInfo struct{ mode os.FileMode }
+
+func (info buildToolFileInfo) Name() string       { return "go" }
+func (info buildToolFileInfo) Size() int64        { return 1 }
+func (info buildToolFileInfo) Mode() os.FileMode  { return info.mode }
+func (info buildToolFileInfo) ModTime() time.Time { return time.Time{} }
+func (info buildToolFileInfo) IsDir() bool        { return info.mode.IsDir() }
+func (info buildToolFileInfo) Sys() any           { return nil }
 
 func TestRealSystemBuildNormalizesPermissiveUmask(t *testing.T) {
 	repository := moduleRootForUnitTest(t)
