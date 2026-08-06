@@ -1339,18 +1339,50 @@ func TestJanitorWideRootHonorsDeadlineAndReleasesLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Microsecond)
-	defer cancel()
-	started := time.Now()
-	err := root.Janitor(ctx)
-	elapsed := time.Since(started)
-	var runErr *RunError
-	if !errors.As(err, &runErr) || runErr.Kind != ErrorCleanup {
-		t.Fatalf("error=%T %v", err, err)
+	stalePath := filepath.Join(rootPathForTest(root), quarantinePrefix+"deadline1")
+	if err := os.Mkdir(stalePath, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if elapsed > time.Second {
-		t.Fatalf("wide janitor exceeded bound: %v", elapsed)
+
+	// Hold the stale-name gate so Janitor cannot finish before the deadline,
+	// regardless of filesystem or timer scheduling speed on the host.
+	root.recordsMu.Lock()
+	recordsLocked := true
+	defer func() {
+		if recordsLocked {
+			root.recordsMu.Unlock()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	bound := time.NewTimer(time.Second)
+	defer bound.Stop()
+	completed := make(chan error, 1)
+	go func() {
+		completed <- root.Janitor(ctx)
+	}()
+	select {
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			t.Fatalf("context error=%v", ctx.Err())
+		}
+	case <-bound.C:
+		t.Fatal("janitor deadline did not expire")
+	}
+	root.recordsMu.Unlock()
+	recordsLocked = false
+
+	var err error
+	select {
+	case err = <-completed:
+	case <-bound.C:
+		t.Fatal("janitor did not return after deadline")
+	}
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Kind != ErrorCleanup ||
+		!errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error=%T %v", err, err)
 	}
 	if !root.lifecycle.TryLock() {
 		t.Fatal("lifecycle lock remained held after janitor deadline")
