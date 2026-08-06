@@ -847,8 +847,11 @@ func TestSDKContractScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lstat sdk-contract script: %v", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o755 {
-		t.Fatalf("script mode = %v, want regular 0755", info.Mode())
+	if !info.Mode().IsRegular() {
+		t.Fatalf("script mode = %v, want a regular file", info.Mode())
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
+		t.Fatalf("script mode = %v, want regular 0755 on POSIX", info.Mode())
 	}
 	contents, err := os.ReadFile(path) //nolint:gosec // fixed repository-owned script.
 	if err != nil {
@@ -866,14 +869,16 @@ func TestSDKContractScript(t *testing.T) {
 	if strings.Count(text, "exec go run -trimpath ./internal/sdkcontract/cmd/sdk-contract") != 1 {
 		t.Fatal("script does not contain exactly one closed Go runner exec")
 	}
-	command := exec.CommandContext(context.Background(), path) //nolint:gosec // fixed repository-owned executable under test.
-	command.Env = []string{"PATH=" + os.Getenv("PATH")}
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
-	err = command.Run()
-	var exitError *exec.ExitError
-	if !errors.As(err, &exitError) || exitError.ExitCode() != 2 || stdout.Len() != 0 || stderr.String() != "usage: scripts/sdk-contract.sh PYTHON NODE JAVASCRIPT\n" {
-		t.Fatalf("zero-argument script result err=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	if runtime.GOOS != "windows" {
+		command := exec.CommandContext(context.Background(), path) //nolint:gosec // fixed repository-owned executable under test.
+		command.Env = []string{"PATH=" + os.Getenv("PATH")}
+		var stdout, stderr bytes.Buffer
+		command.Stdout, command.Stderr = &stdout, &stderr
+		err = command.Run()
+		var exitError *exec.ExitError
+		if !errors.As(err, &exitError) || exitError.ExitCode() != 2 || stdout.Len() != 0 || stderr.String() != "usage: scripts/sdk-contract.sh PYTHON NODE JAVASCRIPT\n" {
+			t.Fatalf("zero-argument script result err=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+		}
 	}
 }
 
@@ -973,8 +978,39 @@ func runSDKClientCases(t *testing.T, executable, source string, baseEnvironment 
 			if exitCode != test.exitCode {
 				t.Fatalf("exit code = %d, want %d", exitCode, test.exitCode)
 			}
-			if string(output) != test.output {
+			if !sdkClientOutputMatches(output, test.output, runtime.GOOS) {
 				t.Fatalf("combined output = %q, want exactly one fixed line %q", output, test.output)
+			}
+		})
+	}
+}
+
+func sdkClientOutputMatches(output []byte, want, goos string) bool {
+	if string(output) == want {
+		return true
+	}
+	return goos == "windows" && string(output) == strings.ReplaceAll(want, "\n", "\r\n")
+}
+
+func TestSDKClientOutputMatchesNativeLineEndings(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+		goos   string
+		match  bool
+	}{
+		{name: "POSIX LF", output: "fixed\n", want: "fixed\n", goos: "linux", match: true},
+		{name: "POSIX rejects CRLF", output: "fixed\r\n", want: "fixed\n", goos: "linux", match: false},
+		{name: "Windows LF", output: "fixed\n", want: "fixed\n", goos: "windows", match: true},
+		{name: "Windows CRLF", output: "fixed\r\n", want: "fixed\n", goos: "windows", match: true},
+		{name: "Windows rejects extra line", output: "fixed\r\nextra\r\n", want: "fixed\n", goos: "windows", match: false},
+		{name: "Windows rejects lone CR", output: "fixed\r", want: "fixed\n", goos: "windows", match: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sdkClientOutputMatches([]byte(test.output), test.want, test.goos); got != test.match {
+				t.Fatalf("sdkClientOutputMatches(%q, %q, %q) = %v, want %v", test.output, test.want, test.goos, got, test.match)
 			}
 		})
 	}
@@ -1317,7 +1353,16 @@ func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
 		{name: "PowerShell file basic rights parenthesized", mutate: replaceREADMENth(`(RD,REA,RA,RC,WD,AD,WEA,WA,S)`, `(R,W)`, 1)},
 		{name: "PowerShell file Synchronize omitted", mutate: replaceREADMENth(`(RD,REA,RA,RC,WD,AD,WEA,WA,S)`, `(RD,REA,RA,RC,WD,AD,WEA,WA)`, 1)},
 		{name: "PowerShell adds another ACE", mutate: replaceREADMEOnce(`& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null`, `& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null`+"\n"+`  & icacls.exe $PrivateDir /grant 'BUILTIN\Users:R' | Out-Null`)},
-		{name: "PowerShell omits exact ACL count", mutate: replaceREADMEOnce(`if ($Rules.Count -ne 1) { throw 'private ACL must contain exactly one rule' }`, `# if ($Rules.Count -ne 1) { throw 'private ACL must contain exactly one rule' }`)},
+		{name: "PowerShell omits nonempty ACL check", mutate: replaceREADMEOnce(`if ($Rules.Count -lt 1) { throw 'private ACL has no access rule' }`, `# if ($Rules.Count -lt 1) { throw 'private ACL has no access rule' }`)},
+		{name: "PowerShell key owner omitted", mutate: replaceREADMEOnce(`& icacls.exe $GatewayKeyPath /setowner "$CurrentIdentity" | Out-Null`, `# & icacls.exe $GatewayKeyPath /setowner "$CurrentIdentity" | Out-Null`)},
+		{name: "PowerShell key owner follows restrictive grant", mutate: replaceREADMEOnce(
+			"& icacls.exe $GatewayKeyPath /setowner \"$CurrentIdentity\" | Out-Null\n"+
+				"if ($LASTEXITCODE -ne 0) { throw 'failed to set gateway key owner' }\n"+
+				`& icacls.exe $GatewayKeyPath /inheritance:r /grant:r "${CurrentIdentity}:(RD,REA,RA,RC,WD,AD,WEA,WA,S)" | Out-Null`,
+			`& icacls.exe $GatewayKeyPath /inheritance:r /grant:r "${CurrentIdentity}:(RD,REA,RA,RC,WD,AD,WEA,WA,S)" | Out-Null`+"\n"+
+				"if ($LASTEXITCODE -ne 0) { throw 'failed to protect gateway key ACL' }\n"+
+				`& icacls.exe $GatewayKeyPath /setowner "$CurrentIdentity" | Out-Null`,
+		)},
 		{name: "PowerShell key ACL assertion is inert", mutate: replaceREADMEOnce(`Assert-ExactPrivateFileACL $GatewayKeyPath`, `$null = 'Assert-ExactPrivateFileACL $GatewayKeyPath'`)},
 		{name: "PowerShell key ACL assertion in dead branch", mutate: replaceREADMEOnce(`Assert-ExactPrivateFileACL $GatewayKeyPath`, "if ($false) {\n  Assert-ExactPrivateFileACL $GatewayKeyPath\n}")},
 		{name: "PowerShell TOML model assertion is inert", mutate: replaceREADMEOnce(`Assert-SafeTOMLValue $CodexModelTOML`, `$null = 'Assert-SafeTOMLValue $CodexModelTOML'`)},
@@ -1788,7 +1833,7 @@ func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) er
 		`Replace-ExactlyOnce $ConfigText '/var/lib/ai-cli-gateway/runtime' $GatewayRuntimeTOML`,
 		`Replace-ExactlyOnce $ConfigText 'configured-provider-model' $CodexModelTOML`,
 		`if (Test-Path -LiteralPath $FreshTarget) { throw 'private target already exists' }`,
-		`AreAccessRulesProtected`, `$Rules.Count -ne 1`,
+		`AreAccessRulesProtected`, `$Rules.Count -lt 1`, `$ExpectedRuleFound`,
 		`$Rule.IsInherited`, `$Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value`,
 		`$RuleSID -ne $CurrentSID`,
 		`[Security.AccessControl.AccessControlType]::Allow`,
@@ -2218,6 +2263,7 @@ func validateREADMEKeyUseContract(posixFences, windowsFences, sdkFences []string
 		`foreach ($FreshTarget in @($GatewayConfigDir, $GatewayRuntimeDir, $GatewayConfigFile, $GatewayKeyPath)) {`,
 		`$GatewayKey = [Convert]::ToHexString($RandomBytes).ToLowerInvariant()`,
 		`[IO.File]::WriteAllText($GatewayKeyPath, $GatewayKey, [Text.UTF8Encoding]::new($false))`,
+		`& icacls.exe $GatewayKeyPath /setowner "$CurrentIdentity" | Out-Null`,
 		`& icacls.exe $GatewayKeyPath /inheritance:r /grant:r "${CurrentIdentity}:(RD,REA,RA,RC,WD,AD,WEA,WA,S)" | Out-Null`,
 		`Assert-ExactPrivateFileACL $GatewayKeyPath`,
 		`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`,
@@ -2337,7 +2383,7 @@ func validateREADMEQuickStartFenceSources(document readmeQuickStartDocument) err
 		"055e3b1a0d12505f1f854879ebf0c0c1ffe52b10d94621aba03f63f81299aed7", // Windows download and checksum.
 		"67f363e541443c9275a1aacc834d1ce93c7ac7d638db764cd323b81d1fce7c3b", // Windows attestation.
 		"57b0a84d1b0fbd75264c24c4cbbc8f3807f28a3f3d0e0e5088ea001c69c9bc46", // Windows install.
-		"4533bc74fcd590a2ccbda847e3eee4af2a623180ef445ec9287e7f47570ec6d0", // Windows configuration.
+		"e070dcacca5efcd82aba4a52d4ad08130e1965cfb69de6981aa46b00dc92c24f", // Windows configuration.
 		"5b26c7ae1423bf83919abc35593accd9137111778cb21f641c473441e72cadc0", // Windows serve.
 		"ab30f260752be7690d82a380260d41ece4a6680c13d59755ea3d980447b679a0", // Windows requests.
 		"182d7dd2aba1e42acce798618dac0dc23f13051ad1c96a7190162ca18558ca6f", // SDK checks.
@@ -2606,8 +2652,10 @@ type readmeWindowsACLGrants struct {
 func extractREADMEWindowsACLGrants(block string) (readmeWindowsACLGrants, error) {
 	grantPattern := regexp.MustCompile(`(?m)^\s*& icacls\.exe \$(PrivateDir|GatewayConfigFile|GatewayKeyPath) /inheritance:r /grant:r "\$\{CurrentIdentity\}:([^"]+)" \| Out-Null\s*$`)
 	matches := grantPattern.FindAllStringSubmatch(block, -1)
-	if commandCount := strings.Count(block, "& icacls.exe"); commandCount != 3 || len(matches) != commandCount {
-		return readmeWindowsACLGrants{}, fmt.Errorf("found %d parsed grants among %d icacls commands, want three", len(matches), commandCount)
+	ownerPattern := regexp.MustCompile(`(?m)^\s*& icacls\.exe \$(PrivateDir|GatewayConfigFile|GatewayKeyPath) /setowner "\$CurrentIdentity" \| Out-Null\s*$`)
+	owners := ownerPattern.FindAllStringSubmatch(block, -1)
+	if commandCount := strings.Count(block, "& icacls.exe"); commandCount != 6 || len(matches) != 3 || len(owners) != 3 {
+		return readmeWindowsACLGrants{}, fmt.Errorf("found %d parsed grants and %d owner assignments among %d icacls commands, want three of each", len(matches), len(owners), commandCount)
 	}
 	values := make(map[string]string, len(matches))
 	for _, match := range matches {
@@ -2616,6 +2664,13 @@ func extractREADMEWindowsACLGrants(block string) (readmeWindowsACLGrants, error)
 		}
 		values[match[1]] = match[2]
 	}
+	ownerTargets := make(map[string]struct{}, len(owners))
+	for _, match := range owners {
+		if _, duplicate := ownerTargets[match[1]]; duplicate {
+			return readmeWindowsACLGrants{}, fmt.Errorf("duplicate owner target %s", match[1])
+		}
+		ownerTargets[match[1]] = struct{}{}
+	}
 	const directoryGrant = `(OI)(CI)F`
 	const fileGrant = `(RD,REA,RA,RC,WD,AD,WEA,WA,S)`
 	for target, expected := range map[string]string{
@@ -2623,6 +2678,14 @@ func extractREADMEWindowsACLGrants(block string) (readmeWindowsACLGrants, error)
 	} {
 		if values[target] != expected {
 			return readmeWindowsACLGrants{}, fmt.Errorf("grant for %s = %q, want %q", target, values[target], expected)
+		}
+		if _, exists := ownerTargets[target]; !exists {
+			return readmeWindowsACLGrants{}, fmt.Errorf("owner assignment for %s is missing", target)
+		}
+		ownerMarker := "$" + target + ` /setowner "$CurrentIdentity"`
+		grantMarker := "$" + target + " /inheritance:r /grant:r "
+		if strings.Count(block, ownerMarker) != 1 || strings.Count(block, grantMarker) != 1 || strings.Index(block, ownerMarker) > strings.Index(block, grantMarker) {
+			return readmeWindowsACLGrants{}, fmt.Errorf("owner assignment for %s must precede its restrictive grant", target)
 		}
 	}
 	return readmeWindowsACLGrants{directory: directoryGrant, config: fileGrant, key: fileGrant}, nil
@@ -2848,18 +2911,28 @@ func TestREADMEQuickStartTOMLSubstitutionValues(t *testing.T) {
 		"/var/lib/ai-cli-gateway/runtime":    "/var/lib/AI CLI Gateway/runtime",
 		"configured-provider-model":          "accessible-model_1",
 	})
-	if _, err := config.Decode(strings.NewReader(posixConfig)); err != nil {
-		t.Fatalf("safe POSIX substitutions do not pass the real config decoder: %v", err)
-	}
 	windowsConfig := replaceREADMEConfigMarkers(t, template, map[string]string{
 		"/opt/ai-cli-gateway/bin/codex":      "C:/Tools/Codex/codex.exe",
 		"/var/lib/ai-cli-gateway/codex-home": "C:/Gateway Service/codex-home",
 		"/var/lib/ai-cli-gateway/runtime":    "C:/Gateway Service/runtime",
 		"configured-provider-model":          "accessible-model_1",
 	})
-	var parsed map[string]any
-	if err := toml.Unmarshal([]byte(windowsConfig), &parsed); err != nil {
-		t.Fatalf("safe normalized Windows substitutions are not valid TOML: %v", err)
+	if runtime.GOOS == "windows" {
+		if _, err := config.Decode(strings.NewReader(windowsConfig)); err != nil {
+			t.Fatalf("safe Windows substitutions do not pass the real config decoder: %v", err)
+		}
+		var parsed map[string]any
+		if err := toml.Unmarshal([]byte(posixConfig), &parsed); err != nil {
+			t.Fatalf("safe POSIX substitutions are not valid TOML: %v", err)
+		}
+	} else {
+		if _, err := config.Decode(strings.NewReader(posixConfig)); err != nil {
+			t.Fatalf("safe POSIX substitutions do not pass the real config decoder: %v", err)
+		}
+		var parsed map[string]any
+		if err := toml.Unmarshal([]byte(windowsConfig), &parsed); err != nil {
+			t.Fatalf("safe normalized Windows substitutions are not valid TOML: %v", err)
+		}
 	}
 }
 
@@ -3077,10 +3150,18 @@ func TestREADMEWindowsACLCommandsNative(t *testing.T) {
 		t.Run(target.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			command := exec.CommandContext(ctx, "icacls.exe", target.path, "/inheritance:r", "/grant:r", identity+":"+target.grant) //nolint:gosec // Fixed Windows utility and test-owned targets.
+			command := exec.CommandContext(ctx, "icacls.exe", target.path, "/setowner", identity) //nolint:gosec // Fixed Windows utility and test-owned targets.
 			output, err := command.CombinedOutput()
 			if ctx.Err() != nil {
-				t.Fatal("icacls exceeded its local execution deadline")
+				t.Fatal("icacls owner assignment exceeded its local execution deadline")
+			}
+			if err != nil {
+				t.Fatalf("documented icacls owner assignment failed: %v output=%q", err, output)
+			}
+			command = exec.CommandContext(ctx, "icacls.exe", target.path, "/inheritance:r", "/grant:r", identity+":"+target.grant) //nolint:gosec // Fixed Windows utility and test-owned targets.
+			output, err = command.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatal("icacls grant exceeded its local execution deadline")
 			}
 			if err != nil {
 				t.Fatalf("documented icacls grant failed: %v output=%q", err, output)
@@ -3171,12 +3252,7 @@ $OwnerSID = $ACL.GetOwner([Security.Principal.SecurityIdentifier]).Value
 $CurrentSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if ($OwnerSID -ne $CurrentSID) { throw 'independent check: wrong owner' }
 $Rules = @($ACL.Access)
-if ($Rules.Count -ne 1) { throw 'independent check: rule count' }
-$Rule = $Rules[0]
-$RuleSID = $Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-if ($RuleSID -ne $CurrentSID) { throw 'independent check: wrong rule identity' }
-if ($Rule.IsInherited) { throw 'independent check: inherited rule' }
-if ($Rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw 'independent check: non-allow rule' }
+if ($Rules.Count -lt 1) { throw 'independent check: rule count' }
 if ($env:README_ACL_KIND -eq 'directory') {
   $ExpectedRights = [Security.AccessControl.FileSystemRights]::FullControl
   $ExpectedInheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
@@ -3184,9 +3260,19 @@ if ($env:README_ACL_KIND -eq 'directory') {
   $ExpectedRights = [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Synchronize
   $ExpectedInheritance = [Security.AccessControl.InheritanceFlags]::None
 }
-if ($Rule.FileSystemRights -ne $ExpectedRights) { throw 'independent check: wrong rights' }
-if ($Rule.InheritanceFlags -ne $ExpectedInheritance) { throw 'independent check: wrong inheritance' }
-if ($Rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw 'independent check: wrong propagation' }
+$ExpectedRuleFound = $false
+foreach ($Rule in $Rules) {
+  $RuleSID = $Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+  if ($RuleSID -ne $CurrentSID) { throw 'independent check: wrong rule identity' }
+  if ($Rule.IsInherited) { throw 'independent check: inherited rule' }
+  if ($Rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw 'independent check: non-allow rule' }
+  if ($Rule.FileSystemRights -eq $ExpectedRights -and
+      $Rule.InheritanceFlags -eq $ExpectedInheritance -and
+      $Rule.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None) {
+    $ExpectedRuleFound = $true
+  }
+}
+if (-not $ExpectedRuleFound) { throw 'independent check: expected rule missing' }
 `
 
 func TestREADMEExactAPISubsetExamplesAndErrors(t *testing.T) {
@@ -4308,6 +4394,23 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			},
 		},
 		{
+			name: "Node root below workspace",
+			mutate: func(document string) string {
+				return strings.ReplaceAll(document, "${RUNNER_TEMP}/sdk-node", "${GITHUB_WORKSPACE}/sdk-node")
+			},
+		},
+		{
+			name:   "Python venv follows hosted toolcache target",
+			mutate: replaceCIOnce(`python -m venv --copies`, `python -m venv`),
+		},
+		{
+			name: "Node argument uses hosted toolcache target",
+			mutate: replaceCIOnce(
+				`            "${RUNNER_TEMP}/sdk-node/node" \`,
+				`            "$(command -v node)" \`,
+			),
+		},
+		{
 			name: "Python root create mode weakened",
 			mutate: replaceCIOnce(
 				`install -d -m 0700 "${RUNNER_TEMP}/sdk-python"`,
@@ -4332,6 +4435,13 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			name: "JavaScript exact-mode check removed",
 			mutate: replaceCIOnce(
 				`          test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-javascript")" = "700"`+"\n",
+				"",
+			),
+		},
+		{
+			name: "Node exact-mode check removed",
+			mutate: replaceCIOnce(
+				`          test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-node/node")" = "700"`+"\n",
 				"",
 			),
 		},
@@ -4366,14 +4476,14 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		},
 		{
 			name:   "SDK argument removed",
-			mutate: replaceCIOnce(`            "$(command -v node)" \`+"\n", ""),
+			mutate: replaceCIOnce(`            "${RUNNER_TEMP}/sdk-node/node" \`+"\n", ""),
 		},
 		{
 			name: "SDK arguments reordered",
 			mutate: replaceCIOnce(
 				"            \"${RUNNER_TEMP}/sdk-python/bin/python\" \\\n"+
-					"            \"$(command -v node)\" \\\n",
-				"            \"$(command -v node)\" \\\n"+
+					"            \"${RUNNER_TEMP}/sdk-node/node\" \\\n",
+				"            \"${RUNNER_TEMP}/sdk-node/node\" \\\n"+
 					"            \"${RUNNER_TEMP}/sdk-python/bin/python\" \\\n",
 			),
 		},
@@ -4745,8 +4855,12 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 					"  run: |",
 					"    set -eu",
 					"    umask 077",
+					`    install -d -m 0700 "${RUNNER_TEMP}/sdk-node"`,
+					`    install -m 0700 "$(command -v node)" "${RUNNER_TEMP}/sdk-node/node"`,
+					`    test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-node")" = "700"`,
+					`    test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-node/node")" = "700"`,
 					`    install -d -m 0700 "${RUNNER_TEMP}/sdk-python"`,
-					`    python -m venv "${RUNNER_TEMP}/sdk-python"`,
+					`    python -m venv --copies "${RUNNER_TEMP}/sdk-python"`,
 					`    chmod 0700 "${RUNNER_TEMP}/sdk-python"`,
 					`    test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-python")" = "700"`,
 					`    "${RUNNER_TEMP}/sdk-python/bin/python" -m pip install --disable-pip-version-check --no-input --requirement "${GITHUB_WORKSPACE}/examples/openai-sdk/python/requirements.lock"`,
@@ -4759,7 +4873,7 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 					`    npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"`,
 					`    scripts/sdk-contract.sh \`,
 					`      "${RUNNER_TEMP}/sdk-python/bin/python" \`,
-					`      "$(command -v node)" \`,
+					`      "${RUNNER_TEMP}/sdk-node/node" \`,
 					`      "${RUNNER_TEMP}/sdk-javascript/main.mjs"`,
 				),
 			},

@@ -3,6 +3,7 @@ package sdkcontract
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"io/fs"
@@ -26,6 +27,7 @@ type pathIdentity struct {
 	aliasInfo  fs.FileInfo
 	target     string
 	targetInfo fs.FileInfo
+	targetHash [sha256.Size]byte
 	javascript bool
 }
 

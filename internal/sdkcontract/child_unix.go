@@ -5,6 +5,7 @@ package sdkcontract
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"io/fs"
@@ -294,7 +295,46 @@ func validatePathIdentity(path string, executable bool) (pathIdentity, error) {
 	if executable && targetInfo.Mode().Perm()&0o111 == 0 {
 		return pathIdentity{}, newError(categoryInvalid)
 	}
-	return pathIdentity{original: path, aliasInfo: aliasInfo, target: resolved, targetInfo: targetInfo}, nil
+	targetHash, err := hashStableFile(resolved, targetInfo)
+	if err != nil {
+		return pathIdentity{}, err
+	}
+	return pathIdentity{original: path, aliasInfo: aliasInfo, target: resolved, targetInfo: targetInfo, targetHash: targetHash}, nil
+}
+
+func hashStableFile(path string, expected fs.FileInfo) ([sha256.Size]byte, error) {
+	var digest [sha256.Size]byte
+	// #nosec G304 -- path is the absolute, normalized, validated symlink target.
+	file, err := os.Open(path)
+	if err != nil {
+		return digest, newError(categoryInvalid)
+	}
+	defer func() { _ = file.Close() }()
+	before, err := file.Stat()
+	if err != nil || !sameStableFile(before, expected) {
+		return digest, newError(categoryInvalid)
+	}
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return digest, newError(categoryInvalid)
+	}
+	after, err := file.Stat()
+	if err != nil || !sameStableFile(after, before) {
+		return digest, newError(categoryInvalid)
+	}
+	if err := file.Close(); err != nil {
+		return digest, newError(categoryInvalid)
+	}
+	pathInfo, err := os.Lstat(path)
+	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !sameStableFile(pathInfo, after) {
+		return digest, newError(categoryInvalid)
+	}
+	copy(digest[:], hasher.Sum(nil))
+	return digest, nil
+}
+
+func sameStableFile(left, right fs.FileInfo) bool {
+	return left != nil && right != nil && os.SameFile(left, right) && left.Mode() == right.Mode() && left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
 }
 
 func revalidateExecutableIdentity(identity pathIdentity) error {
@@ -316,7 +356,7 @@ func revalidatePathIdentity(identity pathIdentity, executable bool) error {
 	if err != nil {
 		return err
 	}
-	if current.target != identity.target || !os.SameFile(current.aliasInfo, identity.aliasInfo) || !os.SameFile(current.targetInfo, identity.targetInfo) {
+	if current.target != identity.target || !os.SameFile(current.aliasInfo, identity.aliasInfo) || !os.SameFile(current.targetInfo, identity.targetInfo) || current.targetHash != identity.targetHash {
 		return newError(categoryInvalid)
 	}
 	return nil

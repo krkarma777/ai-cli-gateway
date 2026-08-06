@@ -311,8 +311,12 @@ jobs:
         run: |
           set -eu
           umask 077
+          install -d -m 0700 "${RUNNER_TEMP}/sdk-node"
+          install -m 0700 "$(command -v node)" "${RUNNER_TEMP}/sdk-node/node"
+          test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-node")" = "700"
+          test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-node/node")" = "700"
           install -d -m 0700 "${RUNNER_TEMP}/sdk-python"
-          python -m venv "${RUNNER_TEMP}/sdk-python"
+          python -m venv --copies "${RUNNER_TEMP}/sdk-python"
           chmod 0700 "${RUNNER_TEMP}/sdk-python"
           test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-python")" = "700"
           "${RUNNER_TEMP}/sdk-python/bin/python" -m pip install --disable-pip-version-check --no-input --requirement "${GITHUB_WORKSPACE}/examples/openai-sdk/python/requirements.lock"
@@ -325,5 +329,5 @@ jobs:
           npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"
           scripts/sdk-contract.sh \
             "${RUNNER_TEMP}/sdk-python/bin/python" \
-            "$(command -v node)" \
+            "${RUNNER_TEMP}/sdk-node/node" \
             "${RUNNER_TEMP}/sdk-javascript/main.mjs"

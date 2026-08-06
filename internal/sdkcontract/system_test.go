@@ -293,6 +293,41 @@ func TestExecutableIdentityRevalidationRejectsResolvedTargetReplacement(t *testi
 	}
 }
 
+func TestExecutableIdentityRevalidationRejectsSameInodeContentReplacement(t *testing.T) {
+	root := trustedSiblingFixture(t)
+	target := filepath.Join(root, "runtime-bin")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Chmod(target, 0o700); err != nil { // #nosec G302 -- the fixture must be executable.
+		t.Fatalf("chmod target: %v", err)
+	}
+	identity, err := validateExecutableIdentity(target)
+	if err != nil {
+		t.Fatalf("validateExecutableIdentity() error = %v", err)
+	}
+	original, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("Lstat original: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("changed"), 0o600); err != nil {
+		t.Fatalf("overwrite target: %v", err)
+	}
+	if err := os.Chtimes(target, original.ModTime(), original.ModTime()); err != nil {
+		t.Fatalf("restore target times: %v", err)
+	}
+	replacement, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("Lstat replacement: %v", err)
+	}
+	if !os.SameFile(original, replacement) || original.Size() != replacement.Size() || original.Mode() != replacement.Mode() || !original.ModTime().Equal(replacement.ModTime()) {
+		t.Fatalf("fixture metadata changed: original=%#v replacement=%#v", original, replacement)
+	}
+	if err := revalidateExecutableIdentity(identity); err == nil {
+		t.Fatal("revalidateExecutableIdentity(same-inode content replacement) error = nil")
+	}
+}
+
 func TestJavaScriptIdentityRejectsLeafReplacement(t *testing.T) {
 	root := trustedSiblingFixture(t)
 	path := filepath.Join(root, "main.mjs")
