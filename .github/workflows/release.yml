@@ -1,0 +1,558 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  package:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
+      tag_commit: ${{ steps.metadata.outputs.tag_commit }}
+      source_epoch: ${{ steps.metadata.outputs.source_epoch }}
+      artifact_id: ${{ steps.artifact-metadata.outputs.artifact_id }}
+      artifact_digest: ${{ steps.artifact-metadata.outputs.artifact_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: 1.26.5
+          cache: true
+      - name: Validate release metadata
+        id: metadata
+        shell: bash
+        env:
+          EVENT_REF: ${{ github.ref }}
+          EVENT_TAG: ${{ github.ref_name }}
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          readonly semver_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          readonly commit_pattern='^[0-9a-f]{40}$'
+          readonly epoch_pattern='^[0-9]+$'
+          [[ "${EVENT_TAG}" =~ ${semver_pattern} ]]
+          test "${EVENT_REF}" = "refs/tags/${EVENT_TAG}"
+          [[ "${EVENT_SHA}" =~ ${commit_pattern} ]]
+          command -v git >/dev/null
+          git --version >/dev/null
+          tag_commit="$(git rev-parse "${EVENT_TAG}^{commit}")"
+          [[ "${tag_commit}" =~ ${commit_pattern} ]]
+          test "${tag_commit}" = "${EVENT_SHA}"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "${tag_commit}" refs/remotes/origin/main
+          source_epoch="$(git show -s --format=%ct "${tag_commit}")"
+          [[ "${source_epoch}" =~ ${epoch_pattern} ]]
+          version="${EVENT_TAG#v}"
+          test -n "${version}"
+          {
+            printf 'tag=%s\n' "${EVENT_TAG}"
+            printf 'version=%s\n' "${version}"
+            printf 'tag_commit=%s\n' "${tag_commit}"
+            printf 'source_epoch=%s\n' "${source_epoch}"
+          } >> "${GITHUB_OUTPUT}"
+      - name: Build and archive release assets
+        shell: bash
+        env:
+          TAG: ${{ steps.metadata.outputs.tag }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          TAG_COMMIT: ${{ steps.metadata.outputs.tag_commit }}
+          SOURCE_EPOCH: ${{ steps.metadata.outputs.source_epoch }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "${VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "${TAG_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${SOURCE_EPOCH}" =~ ^[0-9]+$ ]]
+          command -v go >/dev/null
+          command -v git >/dev/null
+          go env GOVERSION | grep -Fx go1.26.5 >/dev/null
+
+          staging_root="${RUNNER_TEMP}/release-staging"
+          output_root="${RUNNER_TEMP}/release-assets"
+          releasepack_bin="${RUNNER_TEMP}/releasepack"
+          test ! -e "${staging_root}"
+          test ! -e "${output_root}"
+          install -d -m 0700 "${staging_root}" "${output_root}"
+          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64; do
+            install -d -m 0700 "${staging_root}/${target}"
+          done
+          CGO_ENABLED=0 go build -trimpath -buildvcs=false -mod=readonly -o "${releasepack_bin}" ./internal/releasepack/cmd/releasepack
+
+          source_date="$(date -u -d "@${SOURCE_EPOCH}" '+%Y-%m-%dT%H:%M:%SZ')"
+          [[ "${source_date}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+          ldflags="-s -w -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Version=${TAG} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Commit=${TAG_COMMIT} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Date=${source_date}"
+          while read -r goos goarch directory executable; do
+            destination="${staging_root}/${directory}/${executable}"
+            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go build \
+              -trimpath -buildvcs=false -mod=readonly -ldflags "${ldflags}" \
+              -o "${destination}" ./cmd/ai-cli-gateway
+            build_info="$(go version -m "${destination}")"
+            grep -F $'path\tgithub.com/krkarma777/ai-cli-gateway/cmd/ai-cli-gateway' <<<"${build_info}" >/dev/null
+            grep -F "GOOS=${goos}" <<<"${build_info}" >/dev/null
+            grep -F "GOARCH=${goarch}" <<<"${build_info}" >/dev/null
+          done <<'TARGETS'
+          linux amd64 linux_amd64 ai-cli-gateway
+          linux arm64 linux_arm64 ai-cli-gateway
+          darwin amd64 darwin_amd64 ai-cli-gateway
+          darwin arm64 darwin_arm64 ai-cli-gateway
+          windows amd64 windows_amd64 ai-cli-gateway.exe
+          TARGETS
+          test "$("${staging_root}/linux_amd64/ai-cli-gateway" version)" = "ai-cli-gateway ${TAG} (${TAG_COMMIT}, ${source_date})"
+          "${releasepack_bin}" archives \
+            --repository-root "${GITHUB_WORKSPACE}" \
+            --staging-root "${staging_root}" \
+            --output-root "${output_root}" \
+            --tag "${TAG}" \
+            --source-epoch "${SOURCE_EPOCH}"
+      - name: Generate SBOM and checksums
+        shell: bash
+        env:
+          TAG: ${{ steps.metadata.outputs.tag }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          SOURCE_EPOCH: ${{ steps.metadata.outputs.source_epoch }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "${VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "${SOURCE_EPOCH}" =~ ^[0-9]+$ ]]
+          tools_root="${RUNNER_TEMP}/release-tools"
+          test ! -e "${tools_root}"
+          install -d -m 0700 "${tools_root}"
+          for directory in bin home xdg gopath gomodcache gocache tmp config; do
+            install -d -m 0700 "${tools_root}/${directory}"
+          done
+          : > "${tools_root}/config/syft.yaml"
+          chmod 0600 "${tools_root}/config/syft.yaml"
+          for directory in "${tools_root}" bin home xdg gopath gomodcache gocache tmp config; do
+            path="${directory}"
+            if test "${directory}" != "${tools_root}"; then path="${tools_root}/${directory}"; fi
+            test "$(stat -c '%a' -- "${path}")" = 700
+          done
+          test "$(stat -c '%a' -- "${tools_root}/config/syft.yaml")" = 600
+
+          effective_uid="$(id -u)"
+          test -d "${tools_root}"
+          test ! -L "${tools_root}"
+          test "$(stat -c '%u' -- "${tools_root}")" = "${effective_uid}"
+          test -f "${tools_root}/config/syft.yaml"
+          test ! -L "${tools_root}/config/syft.yaml"
+          test "$(stat -c '%u' -- "${tools_root}/config/syft.yaml")" = "${effective_uid}"
+          TOOLS_ROOT_IDENTITY="$(stat -c '%d:%i' -- "${tools_root}")"
+          SYFT_CONFIG_IDENTITY="$(stat -c '%d:%i' -- "${tools_root}/config/syft.yaml")"
+          validate_authority() {
+            local current="$1" owner mode permissions
+            while :; do
+              case "${current}" in /*) ;; *) return 1 ;; esac
+              test -d "${current}" || return 1
+              test ! -L "${current}" || return 1
+              owner="$(stat -c '%u' -- "${current}")" || return 1
+              mode="$(stat -c '%a' -- "${current}")" || return 1
+              test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1
+              permissions=$((8#${mode}))
+              if (( (permissions & 0022) != 0 )); then (( (permissions & 01000) != 0 )) || return 1; fi
+              test "${current}" != / || break
+              current="${current%/*}"
+              test -n "${current}" || current=/
+            done
+          }
+          resolve_binary() {
+            local candidate link directory count=0
+            candidate="$(command -v -- "$1")" || return 1
+            case "${candidate}" in /*) ;; *) return 1 ;; esac
+            while test -L "${candidate}"; do
+              count=$((count + 1)); test "${count}" -le 32 || return 1
+              link="$(readlink -- "${candidate}")" || return 1
+              case "${link}" in /*) candidate="${link}" ;; *) candidate="${candidate%/*}/${link}" ;; esac
+            done
+            directory="$(CDPATH=; cd -P -- "${candidate%/*}" && pwd -P)" || return 1
+            printf '%s/%s\n' "${directory}" "${candidate##*/}"
+          }
+          validate_build_tool() {
+            local binary="$1" expected="${2:-}" owner mode permissions identity
+            case "${binary}" in /*) ;; *) return 1 ;; esac
+            test -f "${binary}" || return 1
+            test ! -L "${binary}" || return 1
+            test -x "${binary}" || return 1
+            owner="$(stat -c '%u' -- "${binary}")" || return 1
+            test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1
+            mode="$(stat -c '%a' -- "${binary}")" || return 1
+            permissions=$((8#${mode}))
+            (( (permissions & 07000) == 0 )) || return 1
+            identity="$(stat -c '%d:%i' -- "${binary}")" || return 1
+            test -z "${expected}" || test "${identity}" = "${expected}" || return 1
+            printf '%s\n' "${identity}"
+          }
+          validate_binary() {
+            local binary="$1" expected="${2:-}" owner mode permissions identity
+            case "${binary}" in /*) ;; *) return 1 ;; esac
+            test -f "${binary}" || return 1
+            test ! -L "${binary}" || return 1
+            test -x "${binary}" || return 1
+            owner="$(stat -c '%u' -- "${binary}")" || return 1
+            test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1
+            mode="$(stat -c '%a' -- "${binary}")" || return 1
+            permissions=$((8#${mode}))
+            (( (permissions & 07022) == 0 )) || return 1
+            validate_authority "${binary%/*}" || return 1
+            identity="$(stat -c '%d:%i' -- "${binary}")" || return 1
+            test -z "${expected}" || test "${identity}" = "${expected}" || return 1
+            printf '%s\n' "${identity}"
+          }
+          validate_roots() {
+            local directory path
+            test -d "${tools_root}"; test ! -L "${tools_root}"
+            test "$(stat -c '%d:%i' -- "${tools_root}")" = "${TOOLS_ROOT_IDENTITY}"
+            for directory in "${tools_root}" bin home xdg gopath gomodcache gocache tmp config; do
+              path="${directory}"
+              if test "${directory}" != "${tools_root}"; then path="${tools_root}/${directory}"; fi
+              test -d "${path}"; test ! -L "${path}"
+              test "$(stat -c '%a' -- "${path}")" = 700
+              test "$(stat -c '%u' -- "${path}")" = "${effective_uid}"
+            done
+            test -f "${tools_root}/config/syft.yaml"; test ! -L "${tools_root}/config/syft.yaml"
+            test "$(stat -c '%a' -- "${tools_root}/config/syft.yaml")" = 600
+            test "$(stat -c '%u' -- "${tools_root}/config/syft.yaml")" = "${effective_uid}"
+            test "$(stat -c '%d:%i' -- "${tools_root}/config/syft.yaml")" = "${SYFT_CONFIG_IDENTITY}"
+          }
+
+          GO_BIN="$(resolve_binary go)"
+          GO_IDENTITY="$(validate_build_tool "${GO_BIN}")"
+          ENV_BIN=/usr/bin/env
+          ENV_IDENTITY="$(validate_binary "${ENV_BIN}")"
+          revalidate_go() {
+            validate_roots
+            test "$(validate_build_tool "${GO_BIN}" "${GO_IDENTITY}")" = "${GO_IDENTITY}"
+            test "$(validate_binary "${ENV_BIN}" "${ENV_IDENTITY}")" = "${ENV_IDENTITY}"
+          }
+          run_clean_go() {
+            "${ENV_BIN}" -i \
+              HOME="${tools_root}/home" XDG_CONFIG_HOME="${tools_root}/xdg" \
+              GOBIN="${tools_root}/bin" GOPATH="${tools_root}/gopath" \
+              GOMODCACHE="${tools_root}/gomodcache" GOCACHE="${tools_root}/gocache" \
+              TMPDIR="${tools_root}/tmp" GOTOOLCHAIN=local \
+              GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org \
+              GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= GOENV=off GOFLAGS= GOWORK=off \
+              CGO_ENABLED=0 LANG=C LC_ALL=C TZ=UTC \
+              "${GO_BIN}" "$@"
+          }
+          revalidate_go
+          test "$(run_clean_go env GOVERSION)" = go1.26.5
+          revalidate_go
+          run_clean_go install -ldflags '-X main.version=1.50.0' github.com/anchore/syft/cmd/syft@v1.50.0
+          SYFT_BIN="${tools_root}/bin/syft"
+          SYFT_IDENTITY="$(validate_binary "${SYFT_BIN}")"
+          revalidate_syft() {
+            validate_roots
+            test "$(validate_binary "${ENV_BIN}" "${ENV_IDENTITY}")" = "${ENV_IDENTITY}"
+            test "$(validate_binary "${SYFT_BIN}" "${SYFT_IDENTITY}")" = "${SYFT_IDENTITY}"
+          }
+          revalidate_go
+          build_info="$(run_clean_go version -m "${SYFT_BIN}")"
+          grep -F $'path\tgithub.com/anchore/syft/cmd/syft' <<<"${build_info}" >/dev/null
+          test "$(grep -Ec $'^\tmod\tgithub[.]com/anchore/syft\t' <<<"${build_info}")" = 1
+          test "$(grep -Ec $'^\tmod\tgithub[.]com/anchore/syft\tv1[.]50[.]0\th1:[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$' <<<"${build_info}")" = 1
+          grep -F -- '-X main.version=1.50.0' <<<"${build_info}" >/dev/null
+          run_clean_syft() {
+            "${ENV_BIN}" -i \
+              HOME="${tools_root}/home" XDG_CONFIG_HOME="${tools_root}/xdg" TMPDIR="${tools_root}/tmp" \
+              LANG=C LC_ALL=C TZ=UTC SYFT_CONFIG="${tools_root}/config/syft.yaml" \
+              SYFT_CHECK_FOR_APP_UPDATE=false "${SYFT_BIN}" "$@"
+          }
+          revalidate_syft; run_clean_syft help >/dev/null
+          revalidate_syft; run_clean_syft scan --help >/dev/null
+          revalidate_syft; run_clean_syft version --help >/dev/null
+          revalidate_syft
+          syft_version="$(run_clean_syft version)"
+          test "$(grep -Ec '^Version:' <<<"${syft_version}")" = 1
+          test "$(grep -Ec '^Version:[[:blank:]]+1[.]50[.]0$' <<<"${syft_version}")" = 1
+          revalidate_syft
+          "${ENV_BIN}" -i \
+            HOME="${tools_root}/home" XDG_CONFIG_HOME="${tools_root}/xdg" TMPDIR="${tools_root}/tmp" \
+            LANG=C LC_ALL=C TZ=UTC SYFT_CONFIG="${tools_root}/config/syft.yaml" \
+            SYFT_CHECK_FOR_APP_UPDATE=false SYFT_COMPLIANCE_MISSING_NAME=drop SYFT_COMPLIANCE_MISSING_VERSION=stub \
+            "${SYFT_BIN}" scan "dir:${RUNNER_TEMP}/release-staging" \
+            -c "${tools_root}/config/syft.yaml" -o "spdx-json=${RUNNER_TEMP}/raw-syft.spdx.json"
+          revalidate_syft
+          "${RUNNER_TEMP}/releasepack" sbom \
+            --repository-root "${GITHUB_WORKSPACE}" \
+            --staging-root "${RUNNER_TEMP}/release-staging" \
+            --output-root "${RUNNER_TEMP}/release-assets" \
+            --raw-sbom "${RUNNER_TEMP}/raw-syft.spdx.json" \
+            --tag "${TAG}" --source-epoch "${SOURCE_EPOCH}"
+          "${RUNNER_TEMP}/releasepack" checksums \
+            --repository-root "${GITHUB_WORKSPACE}" \
+            --staging-root "${RUNNER_TEMP}/release-staging" \
+            --output-root "${RUNNER_TEMP}/release-assets" \
+            --tag "${TAG}"
+      - name: Verify package checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v sha256sum >/dev/null
+          cd "${RUNNER_TEMP}/release-assets"
+          sha256sum --check --strict SHA256SUMS
+      - name: Attest release assets
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_linux_amd64.tar.gz
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_linux_arm64.tar.gz
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_darwin_amd64.tar.gz
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_darwin_arm64.tar.gz
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_windows_amd64.zip
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_sbom.spdx.json
+            ${{ runner.temp }}/release-assets/SHA256SUMS
+      - name: Upload verified release assets
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-${{ steps.metadata.outputs.tag }}
+          path: |
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_linux_amd64.tar.gz
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_linux_arm64.tar.gz
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_darwin_amd64.tar.gz
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_darwin_arm64.tar.gz
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_windows_amd64.zip
+            ${{ runner.temp }}/release-assets/ai-cli-gateway_${{ steps.metadata.outputs.version }}_sbom.spdx.json
+            ${{ runner.temp }}/release-assets/SHA256SUMS
+          overwrite: false
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+          retention-days: 1
+      - name: Validate artifact outputs
+        id: artifact-metadata
+        shell: bash
+        env:
+          RAW_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          RAW_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "${RAW_ARTIFACT_ID}" =~ ^[0-9]+$ ]]
+          [[ "${RAW_ARTIFACT_DIGEST}" =~ ^[0-9a-f]{64}$ ]]
+          {
+            printf 'artifact_id=%s\n' "${RAW_ARTIFACT_ID}"
+            printf 'artifact_digest=%s\n' "${RAW_ARTIFACT_DIGEST}"
+          } >> "${GITHUB_OUTPUT}"
+
+  asset-verification:
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - name: Download immutable release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          path: ${{ runner.temp }}/release-assets
+          digest-mismatch: error
+      - name: Verify checksums and attestations
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.package.outputs.tag }}
+          VERSION: ${{ needs.package.outputs.version }}
+          TAG_COMMIT: ${{ needs.package.outputs.tag_commit }}
+        run: |
+          set -euo pipefail
+          [[ "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "${VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "${TAG_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          command -v gh >/dev/null
+          command -v sha256sum >/dev/null
+          gh --version >/dev/null
+          gh attestation verify --help >/dev/null
+          cd "${RUNNER_TEMP}/release-assets"
+          sha256sum --check --strict SHA256SUMS
+          while IFS= read -r asset; do
+            test -f "${asset}"
+            gh attestation verify "${asset}" \
+              --repo krkarma777/ai-cli-gateway \
+              --predicate-type https://slsa.dev/provenance/v1 \
+              --signer-workflow github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml \
+              --source-digest "${TAG_COMMIT}" \
+              --source-ref "refs/tags/${TAG}"
+          done <<ASSETS
+          ai-cli-gateway_${VERSION}_linux_amd64.tar.gz
+          ai-cli-gateway_${VERSION}_linux_arm64.tar.gz
+          ai-cli-gateway_${VERSION}_darwin_amd64.tar.gz
+          ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz
+          ai-cli-gateway_${VERSION}_windows_amd64.zip
+          ai-cli-gateway_${VERSION}_sbom.spdx.json
+          SHA256SUMS
+          ASSETS
+
+  publish:
+    needs:
+      - package
+      - asset-verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download immutable release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          path: ${{ runner.temp }}/release-assets
+          digest-mismatch: error
+      - name: Reverify package checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v sha256sum >/dev/null
+          cd "${RUNNER_TEMP}/release-assets"
+          sha256sum --check --strict SHA256SUMS
+      - name: Publish verified release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.package.outputs.tag }}
+          VERSION: ${{ needs.package.outputs.version }}
+          TAG_COMMIT: ${{ needs.package.outputs.tag_commit }}
+        run: |
+          set -euo pipefail
+          umask 077
+          readonly repository=krkarma777/ai-cli-gateway
+          readonly owner=krkarma777
+          readonly name=ai-cli-gateway
+          readonly commit_pattern='^[0-9a-f]{40}$'
+          [[ "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "${VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "${VERSION}" = "${TAG#v}"
+          [[ "${TAG_COMMIT}" =~ ${commit_pattern} ]]
+          command -v gh >/dev/null
+          command -v jq >/dev/null
+          command -v sha256sum >/dev/null
+          gh --version >/dev/null
+          jq --version >/dev/null
+          sha256sum --version >/dev/null
+          gh api --help >/dev/null
+          gh release create --help >/dev/null
+          gh release edit --help >/dev/null
+
+          readonly asset_root="${RUNNER_TEMP}/release-assets"
+          cd "${asset_root}"
+          sha256sum --check --strict SHA256SUMS >/dev/null
+
+          readonly query='query($owner:String!,$name:String!,$tag:String!){
+            repository(owner:$owner,name:$name){
+              release(tagName:$tag){id}
+            }
+          }'
+          if ! release_response="$(gh api graphql \
+            -f "query=${query}" \
+            -F "owner=${owner}" \
+            -F "name=${name}" \
+            -F "tag=${TAG}" 2>/dev/null)"; then
+            printf '%s\n' release_preflight_invalid
+            exit 1
+          fi
+          if ! jq -e '
+            type == "object" and
+            (has("errors") | not) and
+            (.data | type == "object") and
+            (.data | has("repository")) and
+            (.data.repository | type == "object") and
+            (.data.repository | has("release"))
+          ' >/dev/null 2>&1 <<<"${release_response}"; then
+            printf '%s\n' release_preflight_invalid
+            exit 1
+          fi
+          release_kind="$(jq -r '.data.repository.release | type' <<<"${release_response}")"
+          if test "${release_kind}" = object; then
+            if jq -e '.data.repository.release | keys == ["id"] and (.id | type == "string" and length > 0)' >/dev/null 2>&1 <<<"${release_response}"; then
+              printf '%s\n' release_already_exists
+              exit 1
+            fi
+            printf '%s\n' release_preflight_invalid
+            exit 1
+          fi
+          if test "${release_kind}" != null; then
+            printf '%s\n' release_preflight_invalid
+            exit 1
+          fi
+
+          resolve_live_tag() {
+            local ref_endpoint ref_response object_type object_sha tag_endpoint tag_response resolved
+            ref_endpoint="repos/krkarma777/ai-cli-gateway/git/ref/tags/${TAG}"
+            ref_response="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "${ref_endpoint}" 2>/dev/null)" || return 1
+            jq -e --arg ref "refs/tags/${TAG}" '
+              type == "object" and
+              .ref == $ref and
+              (.object | type == "object") and
+              (.object.type == "commit" or .object.type == "tag") and
+              (.object.sha | type == "string" and test("^[0-9a-f]{40}$"))
+            ' >/dev/null 2>&1 <<<"${ref_response}" || return 1
+            object_type="$(jq -r '.object.type' <<<"${ref_response}")" || return 1
+            object_sha="$(jq -r '.object.sha' <<<"${ref_response}")" || return 1
+            if test "${object_type}" = commit; then
+              printf '%s\n' "${object_sha}"
+              return 0
+            fi
+            tag_endpoint="repos/krkarma777/ai-cli-gateway/git/tags/${object_sha}"
+            tag_response="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "${tag_endpoint}" 2>/dev/null)" || return 1
+            jq -e --arg requested "${object_sha}" '
+              type == "object" and
+              .sha == $requested and
+              (.object | type == "object") and
+              .object.type == "commit" and
+              (.object.sha | type == "string" and test("^[0-9a-f]{40}$"))
+            ' >/dev/null 2>&1 <<<"${tag_response}" || return 1
+            resolved="$(jq -r '.object.sha' <<<"${tag_response}")" || return 1
+            [[ "${resolved}" =~ ${commit_pattern} ]] || return 1
+            printf '%s\n' "${resolved}"
+          }
+
+          live_commit="$(resolve_live_tag)" || exit 1
+          test "${live_commit}" = "${TAG_COMMIT}"
+          gh release create "${TAG}" \
+            --repo "${repository}" \
+            --title "${TAG}" \
+            --verify-tag \
+            --draft \
+            --generate-notes \
+            "${asset_root}/ai-cli-gateway_${VERSION}_linux_amd64.tar.gz" \
+            "${asset_root}/ai-cli-gateway_${VERSION}_linux_arm64.tar.gz" \
+            "${asset_root}/ai-cli-gateway_${VERSION}_darwin_amd64.tar.gz" \
+            "${asset_root}/ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz" \
+            "${asset_root}/ai-cli-gateway_${VERSION}_windows_amd64.zip" \
+            "${asset_root}/ai-cli-gateway_${VERSION}_sbom.spdx.json" \
+            "${asset_root}/SHA256SUMS"
+          live_commit="$(resolve_live_tag)" || exit 1
+          test "${live_commit}" = "${TAG_COMMIT}"
+          gh release edit "${TAG}" --repo "${repository}" --draft=false

@@ -4,12 +4,212 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestCodexReadyProbeCommands(t *testing.T) {
+	features := []string{
+		"shell_tool",
+		"unified_exec",
+		"code_mode_host",
+		"apps",
+		"plugins",
+		"remote_plugin",
+		"hooks",
+		"multi_agent",
+		"browser_use",
+		"browser_use_external",
+		"computer_use",
+		"in_app_browser",
+		"image_generation",
+		"skill_search",
+		"skill_mcp_dependency_install",
+		"workspace_dependencies",
+	}
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "version", args: []string{"--version"}, want: "codex-cli 0.146.0\n"},
+		{
+			name: "exec help",
+			args: []string{"--ask-for-approval", "never", "exec", "--help"},
+			want: "PROMPT\n-\n--disable\n-c\n--strict-config\n--sandbox\n--model\n--output-schema\n--color\n--ephemeral\n--ignore-user-config\n--ignore-rules\n--skip-git-repo-check\n",
+		},
+		{
+			name: "features list",
+			args: []string{"features", "list"},
+			want: func() string {
+				lines := make([]string, 0, len(features))
+				for _, feature := range features {
+					lines = append(lines, feature+" stable false")
+				}
+				return strings.Join(lines, "\n") + "\n"
+			}(),
+		},
+		{name: "login status", args: []string{"login", "status"}, want: "Logged in\n"},
+		{
+			name: "doctor json",
+			args: []string{"doctor", "--json"},
+			want: "{\"schemaVersion\":1,\"overallStatus\":\"ok\",\"checks\":{\"auth.credentials\":{\"id\":\"auth.credentials\",\"status\":\"ok\"},\"config.load\":{\"id\":\"config.load\",\"status\":\"ok\"}}}\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := CodexReadyMain(tt.args, strings.NewReader("private prompt"), &stdout, &stderr); code != 0 {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if stdout.String() != tt.want || stderr.Len() != 0 {
+				t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestCodexReadyRejectsNonexactProbeCommands(t *testing.T) {
+	for _, args := range [][]string{
+		{"exec", "--ask-for-approval", "never", "--help"},
+		{"--ask-for-approval", "never", "exec"},
+		{"features", "list", "--extra"},
+		{"--version-extra"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := CodexReadyMain(args, strings.NewReader("private prompt"), &stdout, &stderr); code != 2 {
+			t.Fatalf("args=%q code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
+		}
+		if stdout.Len() != 0 || stderr.String() != "fake-codex-cli: unsupported command\n" {
+			t.Fatalf("args=%q stdout=%q stderr=%q", args, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestCodexReadyExactFinalExecution(t *testing.T) {
+	args := codexReadyFinalArgs()
+	const prompt = "private prompt marker 7fa6"
+	var stdout, stderr bytes.Buffer
+	code := CodexReadyMain(args, strings.NewReader(prompt), &stdout, &stderr)
+	if code != 0 || stdout.String() != "SDK_GATEWAY_OK\n" || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), prompt) || strings.Contains(stderr.String(), prompt) {
+		t.Fatalf("prompt exposed stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestCodexReadyRejectsInvalidFinalExecution(t *testing.T) {
+	base := codexReadyFinalArgs()
+	tests := []struct {
+		name  string
+		args  []string
+		stdin string
+	}{
+		{name: "empty stdin", args: base},
+		{name: "output schema", args: append(append([]string(nil), base[:len(base)-1]...), "--output-schema", "schema.json", "-"), stdin: "private prompt"},
+		{name: "other model", args: append(append([]string(nil), base[:len(base)-2]...), "other-model", "-"), stdin: "private prompt"},
+		{name: "missing terminal dash", args: base[:len(base)-1], stdin: "private prompt"},
+		{name: "mode flag", args: append([]string{"--mode=codex-ready"}, base...), stdin: "private prompt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := CodexReadyMain(tt.args, strings.NewReader(tt.stdin), &stdout, &stderr); code != 2 {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if stdout.Len() != 0 || stderr.String() != "fake-codex-cli: unsupported command\n" {
+				t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestCodexReadyRejectsNilFinalHandler(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := CodexReadyMainWithFinal(codexReadyFinalArgs(), strings.NewReader("private prompt"), &stdout, &stderr, nil); code != 2 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stdout.Len() != 0 || stderr.String() != "fake-codex-cli: unsupported command\n" {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestCodexReadyRejectsNilStdin(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*bytes.Buffer, *bytes.Buffer) int
+	}{
+		{
+			name: "default final handler",
+			run: func(stdout, stderr *bytes.Buffer) int {
+				return CodexReadyMain(codexReadyFinalArgs(), nil, stdout, stderr)
+			},
+		},
+		{
+			name: "custom final handler",
+			run: func(stdout, stderr *bytes.Buffer) int {
+				called := false
+				code := CodexReadyMainWithFinal(
+					codexReadyFinalArgs(),
+					nil,
+					stdout,
+					stderr,
+					func(io.Reader, io.Writer, io.Writer) int {
+						called = true
+						return 0
+					},
+				)
+				if called {
+					t.Fatal("final handler was called")
+				}
+				return code
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := tt.run(&stdout, &stderr); code != 2 {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if stdout.Len() != 0 || stderr.String() != "fake-codex-cli: unsupported command\n" {
+				t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestMainCodexReady(t *testing.T) {
+	args := append([]string{"--mode=codex-ready"}, codexReadyFinalArgs()...)
+	var stdout, stderr bytes.Buffer
+	if code := Main(args, strings.NewReader("private prompt"), &stdout, &stderr); code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stdout.String() != "SDK_GATEWAY_OK\n" || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestCodexReadyCommandBuilds(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", filepath.Join(t.TempDir(), "fake-codex-cli"), "./cmd/fake-codex-cli") //nolint:gosec // Fixed go/build/package argv; only the test-owned TempDir output path varies.
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, output)
+	}
+}
+
+func codexReadyFinalArgs() []string {
+	return []string{
+		"--ask-for-approval", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--strict-config", "--sandbox", "read-only", "--skip-git-repo-check", "--color", "never",
+		"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "code_mode_host", "--disable", "apps", "--disable", "plugins", "--disable", "remote_plugin", "--disable", "hooks", "--disable", "multi_agent", "--disable", "browser_use", "--disable", "browser_use_external", "--disable", "computer_use", "--disable", "in_app_browser", "--disable", "image_generation", "--disable", "skill_search", "--disable", "skill_mcp_dependency_install", "--disable", "workspace_dependencies",
+		"-c", `web_search="disabled"`, "--model", "sdk-contract-model", "-",
+	}
+}
 
 func TestMainRequiresExactlyOneExplicitMode(t *testing.T) {
 	tests := []struct {

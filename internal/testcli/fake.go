@@ -12,13 +12,103 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const floodBlockBytes = 64 * 1024
 const dualStreamPressureBytes = 512 * 1024
+const codexPromptMaxBytes = 8 * 1024 * 1024
+
+var codexReadyFeatures = [...]string{
+	"shell_tool",
+	"unified_exec",
+	"code_mode_host",
+	"apps",
+	"plugins",
+	"remote_plugin",
+	"hooks",
+	"multi_agent",
+	"browser_use",
+	"browser_use_external",
+	"computer_use",
+	"in_app_browser",
+	"image_generation",
+	"skill_search",
+	"skill_mcp_dependency_install",
+	"workspace_dependencies",
+}
+
+var (
+	codexVersionArgs  = [...]string{"--version"}
+	codexExecHelpArgs = [...]string{
+		"--ask-for-approval", "never", "exec", "--help",
+	}
+	codexFeaturesListArgs = [...]string{"features", "list"}
+	codexLoginStatusArgs  = [...]string{"login", "status"}
+	codexDoctorArgs       = [...]string{"doctor", "--json"}
+	codexFinalArgs        = [...]string{
+		"--ask-for-approval",
+		"never",
+		"exec",
+		"--ephemeral",
+		"--ignore-user-config",
+		"--ignore-rules",
+		"--strict-config",
+		"--sandbox",
+		"read-only",
+		"--skip-git-repo-check",
+		"--color",
+		"never",
+		"--disable",
+		"shell_tool",
+		"--disable",
+		"unified_exec",
+		"--disable",
+		"code_mode_host",
+		"--disable",
+		"apps",
+		"--disable",
+		"plugins",
+		"--disable",
+		"remote_plugin",
+		"--disable",
+		"hooks",
+		"--disable",
+		"multi_agent",
+		"--disable",
+		"browser_use",
+		"--disable",
+		"browser_use_external",
+		"--disable",
+		"computer_use",
+		"--disable",
+		"in_app_browser",
+		"--disable",
+		"image_generation",
+		"--disable",
+		"skill_search",
+		"--disable",
+		"skill_mcp_dependency_install",
+		"--disable",
+		"workspace_dependencies",
+		"-c",
+		`web_search="disabled"`,
+		"--model",
+		"sdk-contract-model",
+		"-",
+	}
+)
+
+const codexExecHelp = "PROMPT\n-\n--disable\n-c\n--strict-config\n--sandbox\n--model\n--output-schema\n--color\n--ephemeral\n--ignore-user-config\n--ignore-rules\n--skip-git-repo-check\n"
+const codexDoctorJSON = "{\"schemaVersion\":1,\"overallStatus\":\"ok\",\"checks\":{\"auth.credentials\":{\"id\":\"auth.credentials\",\"status\":\"ok\"},\"config.load\":{\"id\":\"config.load\",\"status\":\"ok\"}}}\n"
+
+// CodexFinalHandler runs after CodexReadyMainWithFinal has verified the final
+// execution argv and consumed a valid bounded prompt.
+type CodexFinalHandler func(io.Reader, io.Writer, io.Writer) int
 
 // Main runs one explicit deterministic fake mode and returns its process exit
 // code.
@@ -35,6 +125,8 @@ func Main(
 	}
 
 	switch mode {
+	case "codex-ready":
+		return CodexReadyMain(removeMode(args), stdin, stdout, stderr)
 	case "text":
 		return writeFixed(stdout, "hello\n")
 	case "echo-stdin":
@@ -182,6 +274,80 @@ func Main(
 	}
 }
 
+// CodexReadyMain emulates only the Codex probes and final SDK invocation that
+// the Codex provider adapter is allowed to issue.
+func CodexReadyMain(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) int {
+	return CodexReadyMainWithFinal(args, stdin, stdout, stderr, codexGatewayOK)
+}
+
+// CodexReadyMainWithFinal verifies the exact supported Codex argv forms. The
+// final callback is never called before the final invocation and prompt pass.
+func CodexReadyMainWithFinal(
+	args []string,
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+	final CodexFinalHandler,
+) int {
+	switch {
+	case slices.Equal(args, codexVersionArgs[:]):
+		return writeFixed(stdout, "codex-cli 0.146.0\n")
+	case slices.Equal(args, codexExecHelpArgs[:]):
+		return writeFixed(stdout, codexExecHelp)
+	case slices.Equal(args, codexFeaturesListArgs[:]):
+		return writeCodexFeatures(stdout)
+	case slices.Equal(args, codexLoginStatusArgs[:]):
+		return writeFixed(stdout, "Logged in\n")
+	case slices.Equal(args, codexDoctorArgs[:]):
+		return writeFixed(stdout, codexDoctorJSON)
+	case slices.Equal(args, codexFinalArgs[:]) && final != nil:
+		if !validCodexPrompt(stdin) {
+			return codexUnsupported(stderr)
+		}
+		return final(strings.NewReader(""), stdout, stderr)
+	default:
+		return codexUnsupported(stderr)
+	}
+}
+
+func removeMode(args []string) []string {
+	for index, arg := range args {
+		if arg == "--mode" {
+			return append(append([]string(nil), args[:index]...), args[index+2:]...)
+		}
+		if strings.HasPrefix(arg, "--mode=") {
+			return append(append([]string(nil), args[:index]...), args[index+1:]...)
+		}
+	}
+	return append([]string(nil), args...)
+}
+
+func validCodexPrompt(stdin io.Reader) bool {
+	if stdin == nil {
+		return false
+	}
+	prompt, err := io.ReadAll(io.LimitReader(stdin, codexPromptMaxBytes+1))
+	return err == nil && len(prompt) != 0 && len(prompt) <= codexPromptMaxBytes && utf8.Valid(prompt)
+}
+
+func writeCodexFeatures(stdout io.Writer) int {
+	for _, feature := range codexReadyFeatures {
+		if code := writeFixed(stdout, feature+" stable false\n"); code != 0 {
+			return code
+		}
+	}
+	return 0
+}
+
+func codexGatewayOK(_ io.Reader, stdout io.Writer, _ io.Writer) int {
+	return writeFixed(stdout, "SDK_GATEWAY_OK\n")
+}
+
+func codexUnsupported(stderr io.Writer) int {
+	_, _ = io.WriteString(stderr, "fake-codex-cli: unsupported command\n")
+	return 2
+}
+
 func parseMode(args []string) (string, error) {
 	var mode string
 	found := false
@@ -218,6 +384,7 @@ func parseMode(args []string) (string, error) {
 func knownMode(mode string) bool {
 	switch mode {
 	case "text",
+		"codex-ready",
 		"echo-stdin",
 		"empty-success",
 		"invalid-utf8",

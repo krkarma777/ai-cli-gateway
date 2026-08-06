@@ -1,10 +1,12 @@
 name: CI
 
-# checkout, setup-go, and golangci-lint-action use Node 24. Self-hosted
-# installations therefore require actions/runner 2.327.1 or later.
+# checkout, setup-go, setup-python, setup-node, and golangci-lint-action use
+# Node 24. Self-hosted installations therefore require actions/runner 2.327.1
+# or later.
 on:
   push:
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -14,11 +16,178 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: .go-version
           cache: true
+      - name: Validate workflow syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          ACTIONLINT_ROOT="${RUNNER_TEMP}/actionlint-tools"
+          test ! -e "${ACTIONLINT_ROOT}"
+          install -d -m 0700 "${ACTIONLINT_ROOT}"
+          for directory in bin home xdg gopath gomodcache gocache tmp config; do
+            install -d -m 0700 "${ACTIONLINT_ROOT}/${directory}"
+          done
+          : > "${ACTIONLINT_ROOT}/config/actionlint.yaml"
+          chmod 0600 "${ACTIONLINT_ROOT}/config/actionlint.yaml"
+
+          effective_uid="$(id -u)"
+
+          validate_authority() {
+            local current="$1" owner mode permissions
+            case "${current}" in /*) ;; *) return 1 ;; esac
+            while :; do
+              test -d "${current}" || return 1
+              test ! -L "${current}" || return 1
+              owner="$(stat -c '%u' -- "${current}")" || return 1
+              mode="$(stat -c '%a' -- "${current}")" || return 1
+              test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1
+              permissions=$((8#${mode}))
+              if (( (permissions & 0022) != 0 )); then
+                (( (permissions & 01000) != 0 )) || return 1
+              fi
+              test "${current}" != / || break
+              current="${current%/*}"
+              test -n "${current}" || current=/
+            done
+          }
+
+          resolve_binary() {
+            local candidate link directory count=0
+            candidate="$(command -v -- "$1")" || return 1
+            case "${candidate}" in /*) ;; *) return 1 ;; esac
+            while test -L "${candidate}"; do
+              count=$((count + 1))
+              test "${count}" -le 32 || return 1
+              link="$(readlink -- "${candidate}")" || return 1
+              case "${link}" in
+                /*) candidate="${link}" ;;
+                *) candidate="${candidate%/*}/${link}" ;;
+              esac
+            done
+            directory="$(CDPATH=; cd -P -- "${candidate%/*}" && pwd -P)" || return 1
+            candidate="${directory}/${candidate##*/}"
+            case "${candidate}" in /*) ;; *) return 1 ;; esac
+            printf '%s\n' "${candidate}"
+          }
+
+          validate_build_tool() {
+            local binary="$1" expected_identity="${2:-}" owner mode permissions identity
+            case "${binary}" in /*) ;; *) return 1 ;; esac
+            test -f "${binary}" || return 1
+            test ! -L "${binary}" || return 1
+            test -x "${binary}" || return 1
+            owner="$(stat -c '%u' -- "${binary}")" || return 1
+            test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1
+            mode="$(stat -c '%a' -- "${binary}")" || return 1
+            permissions=$((8#${mode}))
+            (( (permissions & 07000) == 0 )) || return 1
+            identity="$(stat -c '%d:%i' -- "${binary}")" || return 1
+            test -z "${expected_identity}" || test "${identity}" = "${expected_identity}" || return 1
+            printf '%s\n' "${identity}"
+          }
+
+          validate_binary() {
+            local binary="$1" expected_identity="${2:-}" owner mode permissions identity
+            case "${binary}" in /*) ;; *) return 1 ;; esac
+            test -f "${binary}" || return 1
+            test ! -L "${binary}" || return 1
+            test -x "${binary}" || return 1
+            owner="$(stat -c '%u' -- "${binary}")" || return 1
+            mode="$(stat -c '%a' -- "${binary}")" || return 1
+            test "${owner}" = 0 || test "${owner}" = "${effective_uid}" || return 1
+            permissions=$((8#${mode}))
+            (( (permissions & 07022) == 0 )) || return 1
+            validate_authority "${binary%/*}" || return 1
+            identity="$(stat -c '%d:%i' -- "${binary}")" || return 1
+            test -z "${expected_identity}" || test "${identity}" = "${expected_identity}" || return 1
+            printf '%s\n' "${identity}"
+          }
+
+          validate_roots() {
+            local path
+            test "$(stat -c '%a' -- "${ACTIONLINT_ROOT}")" = 700
+            test "$(stat -c '%u' -- "${ACTIONLINT_ROOT}")" = "${effective_uid}"
+            for directory in bin home xdg gopath gomodcache gocache tmp config; do
+              path="${ACTIONLINT_ROOT}/${directory}"
+              test -d "${path}"
+              test ! -L "${path}"
+              test "$(stat -c '%a' -- "${path}")" = 700
+              test "$(stat -c '%u' -- "${path}")" = "${effective_uid}"
+            done
+            test -f "${ACTIONLINT_ROOT}/config/actionlint.yaml"
+            test ! -L "${ACTIONLINT_ROOT}/config/actionlint.yaml"
+            test "$(stat -c '%a' -- "${ACTIONLINT_ROOT}/config/actionlint.yaml")" = 600
+            test "$(stat -c '%u' -- "${ACTIONLINT_ROOT}/config/actionlint.yaml")" = "${effective_uid}"
+          }
+
+          GO_BIN="$(resolve_binary go)"
+          GO_IDENTITY="$(validate_build_tool "${GO_BIN}")"
+          ENV_BIN=/usr/bin/env
+          ENV_IDENTITY="$(validate_binary "${ENV_BIN}")"
+
+          revalidate_build_tools() {
+            validate_roots
+            test "$(validate_build_tool "${GO_BIN}" "${GO_IDENTITY}")" = "${GO_IDENTITY}"
+            test "$(validate_binary "${ENV_BIN}" "${ENV_IDENTITY}")" = "${ENV_IDENTITY}"
+          }
+
+          run_clean_go() {
+            "${ENV_BIN}" -i \
+              HOME="${ACTIONLINT_ROOT}/home" \
+              XDG_CONFIG_HOME="${ACTIONLINT_ROOT}/xdg" \
+              GOBIN="${ACTIONLINT_ROOT}/bin" \
+              GOPATH="${ACTIONLINT_ROOT}/gopath" \
+              GOMODCACHE="${ACTIONLINT_ROOT}/gomodcache" \
+              GOCACHE="${ACTIONLINT_ROOT}/gocache" \
+              TMPDIR="${ACTIONLINT_ROOT}/tmp" \
+              GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org \
+              GOSUMDB=sum.golang.org GOPRIVATE= GONOPROXY= GONOSUMDB= \
+              GOINSECURE= GOENV=off GOFLAGS= GOWORK=off CGO_ENABLED=0 \
+              LANG=C LC_ALL=C TZ=UTC \
+              "${GO_BIN}" "$@"
+          }
+
+          revalidate_build_tools
+          test "$(run_clean_go env GOVERSION)" = go1.26.5
+          revalidate_build_tools
+          run_clean_go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+          ACTIONLINT_BIN="${ACTIONLINT_ROOT}/bin/actionlint"
+          ACTIONLINT_IDENTITY="$(validate_binary "${ACTIONLINT_BIN}")"
+
+          revalidate_actionlint() {
+            validate_roots
+            test "$(validate_binary "${ENV_BIN}" "${ENV_IDENTITY}")" = "${ENV_IDENTITY}"
+            test "$(validate_binary "${ACTIONLINT_BIN}" "${ACTIONLINT_IDENTITY}")" = "${ACTIONLINT_IDENTITY}"
+          }
+
+          run_clean_actionlint() {
+            "${ENV_BIN}" -i \
+              HOME="${ACTIONLINT_ROOT}/home" \
+              XDG_CONFIG_HOME="${ACTIONLINT_ROOT}/xdg" \
+              TMPDIR="${ACTIONLINT_ROOT}/tmp" \
+              LANG=C LC_ALL=C TZ=UTC \
+              "${ACTIONLINT_BIN}" "$@"
+          }
+
+          revalidate_actionlint
+          test "$(run_clean_actionlint -version | sed -n '1p')" = v1.7.12
+          revalidate_actionlint
+          actionlint_help="$(run_clean_actionlint -help 2>&1)"
+          for flag in -config-file -shellcheck -pyflakes -no-color; do
+            grep -F -- "${flag}" <<<"${actionlint_help}" >/dev/null
+          done
+          revalidate_actionlint
+          run_clean_actionlint \
+            -config-file "${ACTIONLINT_ROOT}/config/actionlint.yaml" \
+            -shellcheck= -pyflakes= -no-color \
+            .github/workflows/ci.yml .github/workflows/release.yml
       - name: Check formatting
         shell: bash
         run: |
@@ -26,7 +195,7 @@ jobs:
           test -z "$unformatted_files"
       - name: Vet
         run: go vet ./...
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a
         with:
           version: v2.12.2
 
@@ -34,8 +203,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: .go-version
           cache: true
@@ -44,7 +213,7 @@ jobs:
       - name: Unit tests
         run: go test -count=1 ./...
       - name: Race tests
-        run: go test -race -count=1 ./...
+        run: go test -race -timeout=20m -count=1 ./...
       - name: Fake CLI integration tests
         run: go test -tags=integration -count=1 ./...
       - name: Trimmed-path tests
@@ -62,15 +231,15 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: .go-version
           cache: true
       - name: Unit tests
         run: go test -count=1 ./...
       - name: Race tests
-        run: go test -race -count=1 ./...
+        run: go test -race -timeout=20m -count=1 ./...
       - name: Fake CLI integration tests
         run: go test -tags=integration -count=1 ./...
       - name: Trimmed-path tests
@@ -84,8 +253,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: .go-version
           cache: true
@@ -123,8 +292,8 @@ jobs:
             goarch: amd64
             extension: .exe
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: .go-version
           cache: true
@@ -137,3 +306,123 @@ jobs:
           go build -trimpath
           -o "${RUNNER_TEMP}/ai-cli-gateway-${GOOS}-${GOARCH}${{ matrix.extension }}"
           ./cmd/ai-cli-gateway
+
+  sdk-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: .go-version
+          cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+      - name: Prepare official SDK runtimes
+        shell: bash
+        run: |
+          set -eu
+          umask 077
+          install -d -m 0700 "${RUNNER_TEMP}/sdk-node"
+          install -m 0700 "$(command -v node)" "${RUNNER_TEMP}/sdk-node/node"
+          test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-node")" = "700"
+          test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-node/node")" = "700"
+          install -d -m 0700 "${RUNNER_TEMP}/sdk-python"
+          python -m venv --copies "${RUNNER_TEMP}/sdk-python"
+          chmod 0700 "${RUNNER_TEMP}/sdk-python"
+          test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-python")" = "700"
+          "${RUNNER_TEMP}/sdk-python/bin/python" -m pip install --disable-pip-version-check --no-input --requirement "${GITHUB_WORKSPACE}/examples/openai-sdk/python/requirements.lock"
+          install -d -m 0700 "${RUNNER_TEMP}/sdk-javascript"
+          cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/main.mjs" "${RUNNER_TEMP}/sdk-javascript/main.mjs"
+          cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/package.json" "${RUNNER_TEMP}/sdk-javascript/package.json"
+          cp "${GITHUB_WORKSPACE}/examples/openai-sdk/javascript/package-lock.json" "${RUNNER_TEMP}/sdk-javascript/package-lock.json"
+          chmod 0700 "${RUNNER_TEMP}/sdk-javascript"
+          test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-javascript")" = "700"
+          npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"
+      - name: Preflight isolated Python SDK runtime
+        shell: bash
+        run: |
+          set -eu
+          PORT_ALLOCATOR_CODE="import socket
+          s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+          s.bind(('127.0.0.1',0))
+          print(s.getsockname()[1])
+          s.close()
+          "
+          /usr/bin/env -i "${RUNNER_TEMP}/sdk-python/bin/python" -I -c 'import openai' >/dev/null 2>&1
+          PORT_OUTPUT="$(/usr/bin/env -i "${RUNNER_TEMP}/sdk-python/bin/python" -I -c "${PORT_ALLOCATOR_CODE}" 2>/dev/null)"
+          case "${PORT_OUTPUT}" in ''|*[!0-9]*) exit 1 ;; esac
+          test "${PORT_OUTPUT}" -ge 1
+          test "${PORT_OUTPUT}" -le 65535
+      - name: Preflight isolated Node SDK runtime
+        shell: bash
+        run: |
+          set -eu
+          cd "${RUNNER_TEMP}/sdk-javascript"
+          /usr/bin/env -i "${RUNNER_TEMP}/sdk-node/node" --input-type=module --eval 'await import("openai")' >/dev/null 2>&1
+      - name: Preflight SDK contract command build
+        shell: bash
+        run: |
+          set -eu
+          umask 077
+          SDK_BUILD_ROOT="${RUNNER_TEMP}/sdk-build-contract"
+          test ! -e "${SDK_BUILD_ROOT}"
+          for directory in bin gocache gomodcache gopath home tmp; do
+            install -d -m 0700 "${SDK_BUILD_ROOT}/${directory}"
+          done
+          HOME="${SDK_BUILD_ROOT}/home" \
+          GOPATH="${SDK_BUILD_ROOT}/gopath" \
+          GOMODCACHE="${SDK_BUILD_ROOT}/gomodcache" \
+          GOCACHE="${SDK_BUILD_ROOT}/gocache" \
+          TMPDIR="${SDK_BUILD_ROOT}/tmp" \
+          GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off CGO_ENABLED=0 \
+          GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= \
+          go build -trimpath -o "${SDK_BUILD_ROOT}/bin/sdk-contract" ./internal/sdkcontract/cmd/sdk-contract >/dev/null 2>&1
+      - name: Preflight gateway build
+        shell: bash
+        run: |
+          set -eu
+          umask 077
+          SDK_BUILD_ROOT="${RUNNER_TEMP}/sdk-build-gateway"
+          test ! -e "${SDK_BUILD_ROOT}"
+          for directory in bin gocache gomodcache gopath home tmp; do
+            install -d -m 0700 "${SDK_BUILD_ROOT}/${directory}"
+          done
+          HOME="${SDK_BUILD_ROOT}/home" \
+          GOPATH="${SDK_BUILD_ROOT}/gopath" \
+          GOMODCACHE="${SDK_BUILD_ROOT}/gomodcache" \
+          GOCACHE="${SDK_BUILD_ROOT}/gocache" \
+          TMPDIR="${SDK_BUILD_ROOT}/tmp" \
+          GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off CGO_ENABLED=0 \
+          GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= \
+          go build -trimpath -o "${SDK_BUILD_ROOT}/bin/ai-cli-gateway" ./cmd/ai-cli-gateway >/dev/null 2>&1
+      - name: Preflight fake CLI build
+        shell: bash
+        run: |
+          set -eu
+          umask 077
+          SDK_BUILD_ROOT="${RUNNER_TEMP}/sdk-build-fake"
+          test ! -e "${SDK_BUILD_ROOT}"
+          for directory in bin gocache gomodcache gopath home tmp; do
+            install -d -m 0700 "${SDK_BUILD_ROOT}/${directory}"
+          done
+          HOME="${SDK_BUILD_ROOT}/home" \
+          GOPATH="${SDK_BUILD_ROOT}/gopath" \
+          GOMODCACHE="${SDK_BUILD_ROOT}/gomodcache" \
+          GOCACHE="${SDK_BUILD_ROOT}/gocache" \
+          TMPDIR="${SDK_BUILD_ROOT}/tmp" \
+          GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off CGO_ENABLED=0 \
+          GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= \
+          go build -trimpath -o "${SDK_BUILD_ROOT}/bin/fake-codex-cli" ./internal/testcli/cmd/fake-codex-cli >/dev/null 2>&1
+      - name: Verify official SDK compatibility
+        shell: bash
+        run: |
+          set -eu
+          scripts/sdk-contract.sh \
+            "${RUNNER_TEMP}/sdk-python/bin/python" \
+            "${RUNNER_TEMP}/sdk-node/node" \
+            "${RUNNER_TEMP}/sdk-javascript/main.mjs"
