@@ -269,7 +269,7 @@ jobs:
           revalidate_syft; run_clean_syft version --help >/dev/null
           revalidate_syft
           syft_version="$(run_clean_syft version)"
-          test "$(grep -c '^Version: 1\.50\.0$' <<<"${syft_version}")" = 1
+          test "$(grep -Ec '^Version:[[:blank:]]+1[.]50[.]0$' <<<"${syft_version}")" = 1
           revalidate_syft
           "${ENV_BIN}" -i \
             HOME="${tools_root}/home" XDG_CONFIG_HOME="${tools_root}/xdg" TMPDIR="${tools_root}/tmp" \

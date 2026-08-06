@@ -5230,6 +5230,7 @@ func TestReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "Syft runtime relative binary", mutate: replaceReleaseOnce(`              SYFT_CHECK_FOR_APP_UPDATE=false "${SYFT_BIN}" "$@"`, `              SYFT_CHECK_FOR_APP_UPDATE=false syft "$@"`)},
 		{name: "Syft update check enabled", mutate: replaceReleaseOnce("SYFT_CHECK_FOR_APP_UPDATE=false", "SYFT_CHECK_FOR_APP_UPDATE=true")},
 		{name: "Syft compliance altered", mutate: replaceReleaseOnce("SYFT_COMPLIANCE_MISSING_NAME=drop", "SYFT_COMPLIANCE_MISSING_NAME=keep")},
+		{name: "Syft version accepts trailing data", mutate: replaceReleaseOnce(`^Version:[[:blank:]]+1[.]50[.]0$`, `^Version:[[:blank:]]+1[.]50[.]0`)},
 		{name: "Syft second config channel removed", mutate: replaceReleaseOnce(`            -c "${tools_root}/config/syft.yaml" -o`, `            -o`)},
 		{
 			name: "Syft pinned install hidden in dead string",
@@ -5714,6 +5715,8 @@ func TestReleaseSyftIsolationScript(t *testing.T) {
 		{name: "duplicate module record", mode: "syft-go-duplicate-module"},
 		{name: "wrong build setting", mode: "syft-go-wrong-build-setting"},
 		{name: "wrong reported version", mode: "syft-go-wrong-version"},
+		{name: "trailing reported version", mode: "syft-go-trailing-version"},
+		{name: "duplicate reported version", mode: "syft-go-duplicate-version"},
 		{name: "wrong SPDX creator", mode: "syft-go-wrong-creator"},
 		{name: "same-mode config replacement", mode: "syft-go-replace-config"},
 		{name: "same-mode root replacement", mode: "syft-go-replace-root"},
@@ -6025,7 +6028,14 @@ func runWorkflowToolFake(mode, testBinary string, args []string) int {
 			if mode == "syft-wrong-version" {
 				version = "1.49.0"
 			}
-			fmt.Println("Version: " + version)
+			reported := "Version:    " + version
+			if mode == "syft-trailing-version" {
+				reported += " trailing"
+			}
+			fmt.Println(reported)
+			if mode == "syft-duplicate-version" {
+				fmt.Println(reported)
+			}
 			return 0
 		}
 		if len(args) > 0 && args[0] == "scan" && !slicesContain(args, "--help") {
@@ -7344,6 +7354,7 @@ ASSETS
 
 func validateReleaseSyftStep(step releaseWorkflowStep) error {
 	script := shellWithoutCommentOnlyLines(step.Run)
+	const versionCheck = `test "$(grep -Ec '^Version:[[:blank:]]+1[.]50[.]0$' <<<"${syft_version}")" = 1`
 	for _, required := range []string{
 		`tools_root="${RUNNER_TEMP}/release-tools"`,
 		`ENV_BIN=/usr/bin/env`,
@@ -7363,7 +7374,7 @@ func validateReleaseSyftStep(step releaseWorkflowStep) error {
 		`run_clean_syft scan --help`,
 		`run_clean_syft version --help`,
 		`run_clean_syft version`,
-		`^Version: 1\.50\.0$`,
+		versionCheck,
 		`SYFT_CONFIG="${tools_root}/config/syft.yaml"`,
 		`SYFT_CHECK_FOR_APP_UPDATE=false`,
 		`SYFT_COMPLIANCE_MISSING_NAME=drop`,
@@ -7378,6 +7389,9 @@ func validateReleaseSyftStep(step releaseWorkflowStep) error {
 		}
 	}
 	lines := trimmedShellLines(script)
+	if shellLineCount(lines, versionCheck) != 1 {
+		return errors.New("Syft version check is not the one exact executable line")
+	}
 	if shellLineCount(lines, `run_clean_go install -ldflags '-X main.version=1.50.0' github.com/anchore/syft/cmd/syft@v1.50.0`) != 1 ||
 		shellLinePrefixCount(lines, "run_clean_go install ") != 1 {
 		return errors.New("Syft install invocation is not the one exact executable line")
