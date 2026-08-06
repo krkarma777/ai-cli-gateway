@@ -133,7 +133,8 @@ The detailed [request contract](#request-contract) is closed and authoritative: 
 - Prompts reach the selected CLI through stdin, never through a shell command string or prompt argument.
 - Each request gets a temporary working directory, timeouts, cancellation, process-tree cleanup, bounded queues, and bounded output.
 - Operational logs carry request metadata and stable errors; the gateway does not log prompts, model output, or credentials.
-- Release downloads include `SHA256SUMS`, an SPDX SBOM, and build-provenance attestations.
+- Release downloads include `SHA256SUMS` and an SPDX SBOM.
+  GitHub build-provenance attestations cover all seven release assets.
 
 The gateway and CLI credential boundary are local. The selected CLI may send request data to its upstream provider. This is not an isolation boundary between mutually untrusted users sharing one OS account.
 
@@ -240,11 +241,13 @@ The gateway and CLI credential boundary are local. The selected CLI may send req
 
 ## Release integrity
 
-The immutable release contains five platform archives plus:
+The immutable release contains exactly seven downloadable assets:
 
+- Five platform archives.
 - `SHA256SUMS` covering every archive and the SBOM.
-- An SPDX SBOM for the five shipped binaries.
-- GitHub build-provenance attestations produced by the pinned release workflow.
+- One SPDX SBOM for the five shipped binaries.
+
+GitHub stores build-provenance attestations separately for all seven assets; they were produced by the pinned release workflow.
 
 ## Get started
 

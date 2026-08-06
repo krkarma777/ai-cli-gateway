@@ -97,7 +97,7 @@ The introductory layer will include a short factual trust section:
 - prompts are passed to the selected CLI on stdin, not in shell command strings or command-line prompt arguments;
 - requests receive isolated temporary working directories, timeouts, cancellation, child-process cleanup, bounded concurrency/queues, and bounded output;
 - sensitive prompt, response, and credential contents are not logged;
-- release archives publish checksums, an SPDX SBOM, and build-provenance attestations.
+- release archives publish checksums and an SPDX SBOM; GitHub stores build-provenance attestations separately for all seven release assets.
 
 The copy must not say that prompts “stay local”: the gateway and CLI credentials are local, but the selected CLI can send prompt data to its upstream provider.
 
