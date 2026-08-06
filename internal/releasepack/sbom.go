@@ -574,17 +574,38 @@ func parseRawFile(object map[string]any) (rawFile, error) {
 		return rawFile{}, errors.New("not binary")
 	}
 	checksums, ok := object["checksums"].([]any)
-	if !ok || len(checksums) != 1 {
+	if !ok || len(checksums) != 2 {
 		return rawFile{}, errors.New("invalid checksum")
 	}
-	checksum, ok := checksums[0].(map[string]any)
-	if !ok || stringField(checksum, "algorithm") != "SHA256" {
+	sha1Seen := false
+	sha256 := ""
+	for _, value := range checksums {
+		checksum, ok := value.(map[string]any)
+		if !ok {
+			return rawFile{}, errors.New("invalid checksum")
+		}
+		digest := stringField(checksum, "checksumValue")
+		switch stringField(checksum, "algorithm") {
+		case "SHA1":
+			if sha1Seen || !isLowerHex(digest, 40) {
+				return rawFile{}, errors.New("invalid checksum")
+			}
+			sha1Seen = true
+		case "SHA256":
+			if sha256 != "" || !isLowerSHA256(digest) {
+				return rawFile{}, errors.New("invalid checksum")
+			}
+			sha256 = digest
+		default:
+			return rawFile{}, errors.New("invalid checksum")
+		}
+	}
+	if !sha1Seen || sha256 == "" {
 		return rawFile{}, errors.New("invalid checksum")
 	}
-	file.hash = stringField(checksum, "checksumValue")
-	if !isLowerSHA256(file.hash) {
-		return rawFile{}, errors.New("invalid checksum")
-	}
+	// Syft's SHA1 is validated only as part of the pinned raw structure. The
+	// independently computed SHA256 remains the sole trusted and projected hash.
+	file.hash = sha256
 	return file, nil
 }
 
@@ -821,7 +842,10 @@ func validSPDXID(id string) bool {
 	return true
 }
 func isLowerSHA256(value string) bool {
-	if len(value) != 64 {
+	return isLowerHex(value, 64)
+}
+func isLowerHex(value string, size int) bool {
+	if len(value) != size {
 		return false
 	}
 	_, err := hex.DecodeString(value)

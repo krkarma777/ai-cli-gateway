@@ -179,6 +179,13 @@ func TestFinalizeSPDXAcceptsCheckedSyft150Fixture(t *testing.T) {
 	if got := len(rawDocument["files"].([]any)); got != 5 {
 		t.Fatalf("checked fixture file count = %d, want 5", got)
 	}
+	for _, value := range rawDocument["files"].([]any) {
+		file := value.(map[string]any)
+		checksums := file["checksums"].([]any)
+		if len(checksums) != 2 || rawChecksum(checksums, "SHA1") == nil || rawChecksum(checksums, "SHA256") == nil {
+			t.Fatalf("checked fixture file %q checksums = %#v, want real Syft SHA1 and SHA256", file["fileName"], checksums)
+		}
+	}
 	if got := len(rawDocument["relationships"].([]any)); got != 88 {
 		t.Fatalf("checked fixture relationship count = %d, want real Syft count 88", got)
 	}
@@ -186,6 +193,88 @@ func TestFinalizeSPDXAcceptsCheckedSyft150Fixture(t *testing.T) {
 		if strings.Contains(string(finalized), rawID) {
 			t.Fatalf("finalized SPDX copied raw ID %q", rawID)
 		}
+	}
+}
+
+func TestFinalizeSPDXAcceptsReversedRawFileChecksumOrder(t *testing.T) {
+	options, catalog := testSBOMCatalog()
+	document := rawSPDXForCatalog(catalog, options.StagingRoot)
+	for _, value := range document["files"].([]any) {
+		checksums := value.(map[string]any)["checksums"].([]any)
+		slices.Reverse(checksums)
+	}
+
+	finalized, err := finalizeSPDX(marshalRawSPDX(t, document), catalog, options, "0.1.0")
+	if err != nil {
+		t.Fatalf("finalizeSPDX(reversed checksums) error = %v", err)
+	}
+	var finalDocument map[string]any
+	if err := json.Unmarshal(finalized, &finalDocument); err != nil {
+		t.Fatalf("Unmarshal(final SPDX): %v", err)
+	}
+	for _, value := range finalDocument["files"].([]any) {
+		checksums := value.(map[string]any)["checksums"].([]any)
+		if len(checksums) != 1 || checksums[0].(map[string]any)["algorithm"] != "SHA256" {
+			t.Fatalf("final checksums = %#v, want trusted SHA256 only", checksums)
+		}
+	}
+}
+
+func TestFinalizeSPDXRejectsInvalidRawFileChecksumSets(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func([]any) []any
+	}{
+		{"missing SHA1", func(values []any) []any { return removeRawChecksum(values, "SHA1") }},
+		{"missing SHA256", func(values []any) []any { return removeRawChecksum(values, "SHA256") }},
+		{"duplicate SHA1", func(values []any) []any {
+			checksum := cloneRawChecksum(rawChecksum(values, "SHA1"))
+			return []any{checksum, cloneRawChecksum(checksum)}
+		}},
+		{"duplicate SHA256", func(values []any) []any {
+			checksum := cloneRawChecksum(rawChecksum(values, "SHA256"))
+			return []any{checksum, cloneRawChecksum(checksum)}
+		}},
+		{"unknown algorithm", func(values []any) []any {
+			rawChecksum(values, "SHA1")["algorithm"] = "SHA512"
+			return values
+		}},
+		{"non object", func(values []any) []any { values[0] = true; return values }},
+		{"uppercase SHA1", func(values []any) []any {
+			rawChecksum(values, "SHA1")["checksumValue"] = strings.Repeat("A", 40)
+			return values
+		}},
+		{"uppercase SHA256", func(values []any) []any {
+			rawChecksum(values, "SHA256")["checksumValue"] = strings.Repeat("A", 64)
+			return values
+		}},
+		{"short SHA1", func(values []any) []any {
+			rawChecksum(values, "SHA1")["checksumValue"] = strings.Repeat("a", 39)
+			return values
+		}},
+		{"non hex SHA1", func(values []any) []any {
+			rawChecksum(values, "SHA1")["checksumValue"] = strings.Repeat("g", 40)
+			return values
+		}},
+		{"short SHA256", func(values []any) []any {
+			rawChecksum(values, "SHA256")["checksumValue"] = strings.Repeat("a", 63)
+			return values
+		}},
+		{"non hex SHA256", func(values []any) []any {
+			rawChecksum(values, "SHA256")["checksumValue"] = strings.Repeat("g", 64)
+			return values
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options, catalog := testSBOMCatalog()
+			document := rawSPDXForCatalog(catalog, options.StagingRoot)
+			file := document["files"].([]any)[0].(map[string]any)
+			file["checksums"] = test.mutate(file["checksums"].([]any))
+			if _, err := finalizeSPDX(marshalRawSPDX(t, document), catalog, options, "0.1.0"); err == nil {
+				t.Fatal("finalizeSPDX() error = nil")
+			}
+		})
 	}
 }
 
@@ -318,10 +407,11 @@ func TestFinalizeSPDXRejectsClosedWorldViolations(t *testing.T) {
 		}},
 		{"extra target file", func(doc map[string]any, _ *sbomCatalog, _ *SBOMOptions) {
 			files := doc["files"].([]any)
-			doc["files"] = append(files, map[string]any{"SPDXID": "SPDXRef-File-extra", "fileName": "extra/file", "fileTypes": []any{"BINARY"}, "checksums": []any{map[string]any{"algorithm": "SHA256", "checksumValue": strings.Repeat("f", 64)}}})
+			doc["files"] = append(files, map[string]any{"SPDXID": "SPDXRef-File-extra", "fileName": "extra/file", "fileTypes": []any{"BINARY"}, "checksums": rawFileChecksums(strings.Repeat("f", 40), strings.Repeat("f", 64))})
 		}},
 		{"raw hash mismatch", func(doc map[string]any, _ *sbomCatalog, _ *SBOMOptions) {
-			doc["files"].([]any)[0].(map[string]any)["checksums"].([]any)[0].(map[string]any)["checksumValue"] = strings.Repeat("f", 64)
+			checksums := doc["files"].([]any)[0].(map[string]any)["checksums"].([]any)
+			rawChecksum(checksums, "SHA256")["checksumValue"] = strings.Repeat("f", 64)
 		}},
 		{"missing per target dependency", func(doc map[string]any, _ *sbomCatalog, _ *SBOMOptions) {
 			removeEvidenceRelationship(doc, "SPDXRef-Package-dep-0")
@@ -642,7 +732,8 @@ func rawSPDXForCatalog(catalog sbomCatalog, stagingRoot string) map[string]any {
 	relationships := []any{map[string]any{"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES", "relatedSpdxElement": "SPDXRef-Package-root"}}
 	for i, targetCatalog := range catalog.Targets {
 		fileID := "SPDXRef-File-target-" + string(rune('0'+i))
-		files = append(files, map[string]any{"fileName": targetCatalog.RelativePath, "SPDXID": fileID, "fileTypes": []any{"BINARY"}, "checksums": []any{map[string]any{"algorithm": "SHA256", "checksumValue": targetCatalog.SHA256}}, "licenseConcluded": "NOASSERTION", "copyrightText": "NOASSERTION"})
+		sha1 := strings.Repeat(string(rune('1'+i)), 40)
+		files = append(files, map[string]any{"fileName": targetCatalog.RelativePath, "SPDXID": fileID, "fileTypes": []any{"BINARY"}, "checksums": rawFileChecksums(sha1, targetCatalog.SHA256), "licenseConcluded": "NOASSERTION", "copyrightText": "NOASSERTION"})
 		components := append([]sbomComponent{targetCatalog.Main}, targetCatalog.Dependencies...)
 		components = append(components, sbomComponent{Name: "stdlib", Version: targetCatalog.GoVersion})
 		for componentIndex, component := range components {
@@ -675,6 +766,39 @@ func rawSPDXForCatalog(catalog sbomCatalog, stagingRoot string) map[string]any {
 	packages = append(packages, map[string]any{"name": "ai-cli-gateway", "SPDXID": classifier, "versionInfo": "UNKNOWN", "downloadLocation": "NOASSERTION", "filesAnalyzed": false})
 	relationships = append(relationships, map[string]any{"spdxElementId": classifier, "relationshipType": "OTHER", "relatedSpdxElement": windowFile, "comment": "evident-by: indicates the package's existence is evident by the given file"}, map[string]any{"spdxElementId": "SPDXRef-Package-root", "relationshipType": "CONTAINS", "relatedSpdxElement": classifier})
 	return map[string]any{"spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT", "name": "fixture-root-marker", "documentNamespace": "https://example.invalid/fixture-root-marker", "creationInfo": map[string]any{"creators": []any{"Organization: ignored", "Tool: syft-1.50.0"}, "created": "2026-08-04T06:29:53Z"}, "packages": packages, "files": files, "relationships": relationships}
+}
+
+func rawFileChecksums(sha1, sha256 string) []any {
+	return []any{
+		map[string]any{"algorithm": "SHA1", "checksumValue": sha1},
+		map[string]any{"algorithm": "SHA256", "checksumValue": sha256},
+	}
+}
+
+func rawChecksum(values []any, algorithm string) map[string]any {
+	for _, value := range values {
+		checksum, ok := value.(map[string]any)
+		if ok && checksum["algorithm"] == algorithm {
+			return checksum
+		}
+	}
+	return nil
+}
+
+func removeRawChecksum(values []any, algorithm string) []any {
+	kept := make([]any, 0, len(values))
+	for _, value := range values {
+		checksum, ok := value.(map[string]any)
+		if ok && checksum["algorithm"] == algorithm {
+			continue
+		}
+		kept = append(kept, value)
+	}
+	return kept
+}
+
+func cloneRawChecksum(value map[string]any) map[string]any {
+	return map[string]any{"algorithm": value["algorithm"], "checksumValue": value["checksumValue"]}
 }
 
 func marshalRawSPDX(t *testing.T, document map[string]any) []byte {
