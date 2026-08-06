@@ -385,6 +385,23 @@ func startPlatformChild(executable, directory string, argv, environment []string
 func platformSupported() bool { return true }
 
 func startUnixCommand(executable, directory string, argv, environment []string, stdout, stderr io.Writer) (*unixChild, error) {
+	return startUnixCommandWithProcessGroupLookup(
+		executable,
+		directory,
+		argv,
+		environment,
+		stdout,
+		stderr,
+		unix.Getpgid,
+	)
+}
+
+func startUnixCommandWithProcessGroupLookup(
+	executable, directory string,
+	argv, environment []string,
+	stdout, stderr io.Writer,
+	processGroupLookup func(int) (int, error),
+) (*unixChild, error) {
 	if outputNil(stdout) || outputNil(stderr) {
 		return nil, newError(categoryFailed)
 	}
@@ -398,7 +415,9 @@ func startUnixCommand(executable, directory string, argv, environment []string, 
 	if err := cmd.Start(); err != nil {
 		return nil, newError(categoryFailed)
 	}
-	child := &unixChild{cmd: cmd, pid: cmd.Process.Pid, pgid: cmd.Process.Pid, exited: make(chan struct{})}
+	pid := cmd.Process.Pid
+	pgid, pgidErr := expectedUnixChildProcessGroup(pid, processGroupLookup)
+	child := &unixChild{cmd: cmd, pid: pid, pgid: pgid, exited: make(chan struct{})}
 	go func() {
 		err := cmd.Wait()
 		child.waitMu.Lock()
@@ -406,11 +425,30 @@ func startUnixCommand(executable, directory string, argv, environment []string, 
 		child.waitMu.Unlock()
 		close(child.exited)
 	}()
-	pgid, err := unix.Getpgid(child.pid)
-	if err != nil || pgid != child.pid {
+	if pgidErr != nil {
 		return child, newCleanupError(false)
 	}
 	return child, nil
+}
+
+func expectedUnixChildProcessGroup(
+	pid int,
+	lookup func(int) (int, error),
+) (int, error) {
+	if pid <= 0 || lookup == nil {
+		return pid, newError(categoryFailed)
+	}
+	observed, err := lookup(pid)
+	switch {
+	case err == nil && observed == pid:
+		return pid, nil
+	case errors.Is(err, unix.ESRCH):
+		return pid, nil
+	case err != nil:
+		return pid, err
+	default:
+		return pid, newError(categoryFailed)
+	}
 }
 
 func outputNil(writer io.Writer) bool { return writer == nil }
@@ -439,19 +477,33 @@ func (c *unixChild) StopAndWait(grace time.Duration) cleanupResult {
 }
 
 func (c *unixChild) stopAndWait(grace time.Duration) cleanupResult {
-	termErr := signalGroup(c.pgid, unix.SIGTERM)
-	if termErr != nil && !errors.Is(termErr, unix.ESRCH) {
-		_ = signalGroup(c.pgid, unix.SIGKILL)
+	return c.stopAndWaitWith(grace, signalGroup, groupAbsent)
+}
+
+func (c *unixChild) stopAndWaitWith(
+	grace time.Duration,
+	signal func(int, unix.Signal) error,
+	absent func(int) bool,
+) cleanupResult {
+	if signal == nil || absent == nil {
+		return cleanupResult{SafeToRemove: false, Err: newError(categoryCleanup)}
 	}
-	if waitForGroupAndChild(c, grace) {
+	if childWaitJoined(c) && absent(c.pgid) {
+		return cleanupResult{SafeToRemove: true}
+	}
+	termErr := signal(c.pgid, unix.SIGTERM)
+	if termErr != nil && !errors.Is(termErr, unix.ESRCH) {
+		_ = signal(c.pgid, unix.SIGKILL)
+	}
+	if waitForGroupAndChildWith(c, grace, absent) {
 		if termErr != nil && !errors.Is(termErr, unix.ESRCH) {
 			return cleanupResult{SafeToRemove: true, Err: newError(categoryCleanup)}
 		}
 		return cleanupResult{SafeToRemove: true}
 	}
-	killErr := signalGroup(c.pgid, unix.SIGKILL)
+	killErr := signal(c.pgid, unix.SIGKILL)
 	c.killSent = true
-	if waitForGroupAndChild(c, grace) {
+	if waitForGroupAndChildWith(c, grace, absent) {
 		if killErr != nil && !errors.Is(killErr, unix.ESRCH) {
 			return cleanupResult{SafeToRemove: true, Err: newError(categoryCleanup)}
 		}
@@ -472,7 +524,22 @@ func groupAbsent(pgid int) bool {
 	return errors.Is(err, unix.ESRCH)
 }
 
-func waitForGroupAndChild(child *unixChild, grace time.Duration) bool {
+func childWaitJoined(child *unixChild) bool {
+	if child == nil || child.exited == nil {
+		return false
+	}
+	select {
+	case <-child.exited:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitForGroupAndChildWith(child *unixChild, grace time.Duration, absent func(int) bool) bool {
+	if child == nil || child.exited == nil || grace <= 0 || absent == nil {
+		return false
+	}
 	deadline := time.NewTimer(grace)
 	defer deadline.Stop()
 	interval := grace / 32
@@ -490,7 +557,7 @@ func waitForGroupAndChild(child *unixChild, grace time.Duration) bool {
 			default:
 			}
 		}
-		if waited && groupAbsent(child.pgid) {
+		if waited && absent(child.pgid) {
 			return true
 		}
 		select {

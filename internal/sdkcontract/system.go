@@ -126,11 +126,84 @@ func (s *realSystem) Build(ctx context.Context, repositoryRoot, output, packageP
 	if err != nil {
 		return err
 	}
-	info, err := os.Lstat(output)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 || info.Mode().Perm()&0o022 != 0 {
+	return normalizeBuiltExecutable(output)
+}
+
+type builtExecutableHandle interface {
+	Chmod(fs.FileMode) error
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
+
+func normalizeBuiltExecutable(path string) error {
+	return normalizeBuiltExecutableWith(
+		path,
+		os.Lstat,
+		func(candidate string) (builtExecutableHandle, error) {
+			return os.Open(candidate) //nolint:gosec // candidate is the fixed build output in the owned private root.
+		},
+	)
+}
+
+func normalizeBuiltExecutableWith(
+	path string,
+	lstat func(string) (fs.FileInfo, error),
+	open func(string) (builtExecutableHandle, error),
+) (result error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || lstat == nil || open == nil {
+		return newError(categoryFailed)
+	}
+	initial, err := lstat(path)
+	if err != nil || !validBuiltExecutableBeforeNormalization(initial) {
+		return newError(categoryFailed)
+	}
+	if err := os.Chmod(path, 0o700); err != nil { // #nosec G302 -- bootstrap access is revalidated by descriptor and path identity below.
+		return newError(categoryFailed)
+	}
+	bootstrapped, err := lstat(path)
+	if err != nil || !validNormalizedBuiltExecutable(bootstrapped) ||
+		!os.SameFile(initial, bootstrapped) {
+		return newError(categoryFailed)
+	}
+	handle, err := open(path)
+	if err != nil || handle == nil {
+		return newError(categoryFailed)
+	}
+	defer func() {
+		if err := handle.Close(); err != nil {
+			result = newError(categoryFailed)
+		}
+	}()
+
+	before, err := handle.Stat()
+	if err != nil || !validNormalizedBuiltExecutable(before) ||
+		!os.SameFile(bootstrapped, before) {
+		return newError(categoryFailed)
+	}
+	if err := handle.Chmod(0o700); err != nil { // #nosec G302 -- the private build output is deliberately normalized to owner-only execution.
+		return newError(categoryFailed)
+	}
+	after, err := handle.Stat()
+	if err != nil || !validNormalizedBuiltExecutable(after) ||
+		!os.SameFile(before, after) {
+		return newError(categoryFailed)
+	}
+	pathInfo, err := lstat(path)
+	if err != nil || !validNormalizedBuiltExecutable(pathInfo) ||
+		!os.SameFile(after, pathInfo) {
 		return newError(categoryFailed)
 	}
 	return nil
+}
+
+func validBuiltExecutableBeforeNormalization(info fs.FileInfo) bool {
+	return info != nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 &&
+		info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) == 0
+}
+
+func validNormalizedBuiltExecutable(info fs.FileInfo) bool {
+	return info != nil && info.Mode().IsRegular() && info.Mode().Perm() == 0o700 &&
+		info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) == 0
 }
 
 func resolveBuildTool(lookup func(string) (string, error)) (string, error) {

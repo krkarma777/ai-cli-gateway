@@ -22,6 +22,8 @@ import (
 )
 
 func TestRealForcedGatewayKillRegistryCleanup(t *testing.T) {
+	previousUmask := setProcessUmask(0o002)
+	t.Cleanup(func() { setProcessUmask(previousUmask) })
 	repository := moduleRootForIntegration(t)
 	python := trustedIntegrationPython(t)
 	testExecutable, err := os.Executable()
@@ -43,12 +45,16 @@ func TestRealForcedGatewayKillRegistryCleanup(t *testing.T) {
 		runDone <- runWithSystem(ctx, options, &output, sys, productionPolicy)
 	}()
 
+	const registryStartDeadline = time.Minute
+	registryStartTimer := time.NewTimer(registryStartDeadline)
+	defer registryStartTimer.Stop()
 	var registry *forcedKillRegistry
 	select {
 	case registry = <-sys.registryStarted:
 	case err := <-runDone:
-		t.Fatalf("run ended before registry start: %v", err)
-	case <-time.After(productionPolicy.ReadinessDeadline):
+		started, completed := sys.buildProgress()
+		t.Fatalf("run ended before registry start: %v (builds started=%d completed=%d)", err, started, completed)
+	case <-registryStartTimer.C:
 		cancel()
 		<-runDone
 		t.Fatal("run did not start fixture registry")
@@ -148,6 +154,8 @@ type forcedKillRunSystem struct {
 	slowPath        string
 	root            *forcedKillRoot
 	events          []string
+	buildStarted    int
+	buildCompleted  int
 }
 
 func newForcedKillRunSystem(testExecutable string) *forcedKillRunSystem {
@@ -172,10 +180,16 @@ func (s *forcedKillRunSystem) MkdirTemp(parent, pattern string) (ownedRoot, erro
 }
 
 func (s *forcedKillRunSystem) Build(ctx context.Context, repositoryRoot, output, packagePath string, grace time.Duration) error {
+	s.mu.Lock()
+	s.buildStarted++
+	s.mu.Unlock()
 	if err := s.realSystem.Build(ctx, repositoryRoot, output, packagePath, grace); err != nil {
 		return err
 	}
 	if packagePath != "./internal/testcli/cmd/fake-codex-cli" {
+		s.mu.Lock()
+		s.buildCompleted++
+		s.mu.Unlock()
 		return nil
 	}
 	goExecutable, err := resolveBuildTool(exec.LookPath)
@@ -191,13 +205,23 @@ func (s *forcedKillRunSystem) Build(ctx context.Context, repositoryRoot, output,
 	if len(result.stderr) != 0 {
 		return newError(categoryFailed)
 	}
+	if err := normalizeBuiltExecutable(output); err != nil {
+		return err
+	}
 	if _, err := validateExecutableIdentity(output); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.slowPath = output
+	s.buildCompleted++
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *forcedKillRunSystem) buildProgress() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buildStarted, s.buildCompleted
 }
 
 func (s *forcedKillRunSystem) StartFixtureRegistry(path string, grace time.Duration) (fixtureRegistry, error) {

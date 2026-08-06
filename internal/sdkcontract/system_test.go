@@ -649,13 +649,38 @@ func TestRunSDKClientCommandRejectsAnyStderr(t *testing.T) {
 		t.Fatalf("os.Executable: %v", err)
 	}
 	output, err := runSDKClientCommand(context.Background(), executable, "",
-		[]string{"-test.run=TestSDKContractNoisyClientHelperProcess"}, []string{}, 50*time.Millisecond)
+		[]string{"-test.run=TestSDKContractNoisyClientHelperProcess"},
+		[]string{"SDK_CONTRACT_NOISY_CLIENT=1"}, 50*time.Millisecond)
 	if ErrorCategory(err) != categoryFailed || len(output) != 0 {
 		t.Fatalf("runSDKClientCommand = %q, %v", output, err)
 	}
 }
 
+func TestSDKContractNoisyClientHelperRequiresExplicitOptIn(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	command := exec.CommandContext( //nolint:gosec // current test executable and fixed argv.
+		context.Background(),
+		executable,
+		"-test.run=^TestSDKContractNoisyClientHelperProcess$",
+	)
+	command.Env = []string{}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run unarmed noisy helper: %v", err)
+	}
+	if bytes.Contains(output, []byte("python_sdk_contract_ok")) ||
+		bytes.Contains(output, []byte("sensitive debug output")) {
+		t.Fatalf("unarmed noisy helper emitted guarded payload: %q", output)
+	}
+}
+
 func TestSDKContractNoisyClientHelperProcess(_ *testing.T) {
+	if os.Getenv("SDK_CONTRACT_NOISY_CLIENT") != "1" {
+		return
+	}
 	_, _ = io.WriteString(os.Stdout, "python_sdk_contract_ok\n")
 	_, _ = io.WriteString(os.Stderr, "sensitive debug output")
 }
@@ -723,6 +748,139 @@ func TestResolveBuildToolDoesNotApplyProviderAliasAuthorityPolicy(t *testing.T) 
 	if err != nil || got != tool {
 		t.Fatalf("resolveBuildTool() = %q, %v", got, err)
 	}
+}
+
+func TestRealSystemBuildNormalizesPermissiveUmask(t *testing.T) {
+	repository := moduleRootForUnitTest(t)
+	repositoryInfo, moduleInfo, err := validateRepository(repository)
+	if err != nil {
+		t.Fatalf("validate repository: %v", err)
+	}
+	sys := &realSystem{
+		options:    Options{RepositoryRoot: repository},
+		repository: repositoryInfo,
+		module:     moduleInfo,
+		validated:  true,
+	}
+	root := trustedSiblingFixture(t)
+	for attempt := 1; attempt <= 2; attempt++ {
+		output := filepath.Join(root, fmt.Sprintf("fake-codex-cli-%d", attempt))
+		err = func() error {
+			previousUmask := setProcessUmask(0o002)
+			defer setProcessUmask(previousUmask)
+			return sys.Build(
+				context.Background(),
+				repository,
+				output,
+				"./internal/testcli/cmd/fake-codex-cli",
+				30*time.Second,
+			)
+		}()
+		if err != nil {
+			t.Fatalf("Build() attempt %d error = %v", attempt, err)
+		}
+		info, err := os.Lstat(output)
+		if err != nil {
+			t.Fatalf("inspect build output %d: %v", attempt, err)
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o700 ||
+			info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+			t.Fatalf("build output %d mode = %v", attempt, info.Mode())
+		}
+	}
+}
+
+func TestNormalizeBuiltExecutableRejectsSymlink(t *testing.T) {
+	root := trustedSiblingFixture(t)
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Chmod(target, 0o700); err != nil { // #nosec G302 -- executable fixture mode is intentional.
+		t.Fatalf("chmod target: %v", err)
+	}
+	path := filepath.Join(root, "build-output")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatalf("create build-output symlink: %v", err)
+	}
+
+	if err := normalizeBuiltExecutable(path); ErrorCategory(err) != categoryFailed {
+		t.Fatalf("normalizeBuiltExecutable(symlink) error = %v", err)
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("inspect target: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("symlink target mode changed to %v", info.Mode())
+	}
+}
+
+func TestNormalizeBuiltExecutableRejectsIdentityReplacement(t *testing.T) {
+	root := trustedSiblingFixture(t)
+	path := filepath.Join(root, "build-output")
+	replacement := filepath.Join(root, "replacement")
+	for _, candidate := range []string{path, replacement} {
+		if err := os.WriteFile(candidate, []byte("fixture"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", filepath.Base(candidate), err)
+		}
+		if err := os.Chmod(candidate, 0o775); err != nil { // #nosec G302 -- permissive mode is the regression condition.
+			t.Fatalf("chmod %s: %v", filepath.Base(candidate), err)
+		}
+	}
+	openReplacingPath := func(candidate string) (builtExecutableHandle, error) {
+		file, err := os.Open(candidate) //nolint:gosec // test-owned fixed path.
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Rename(replacement, candidate); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		return file, nil
+	}
+
+	err := normalizeBuiltExecutableWith(path, os.Lstat, openReplacingPath)
+	if ErrorCategory(err) != categoryFailed {
+		t.Fatalf("normalizeBuiltExecutableWith(replacement) error = %v", err)
+	}
+	info, statErr := os.Lstat(path)
+	if statErr != nil {
+		t.Fatalf("inspect replacement: %v", statErr)
+	}
+	if info.Mode().Perm() != 0o775 {
+		t.Fatalf("replacement mode changed to %v", info.Mode())
+	}
+}
+
+func TestNormalizeBuiltExecutableFailsClosedOnCloseError(t *testing.T) {
+	root := trustedSiblingFixture(t)
+	path := filepath.Join(root, "build-output")
+	if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write build output: %v", err)
+	}
+	if err := os.Chmod(path, 0o775); err != nil { // #nosec G302 -- permissive mode is the regression condition.
+		t.Fatalf("chmod build output: %v", err)
+	}
+	openWithCloseError := func(candidate string) (builtExecutableHandle, error) {
+		file, err := os.Open(candidate) //nolint:gosec // test-owned fixed path.
+		if err != nil {
+			return nil, err
+		}
+		return &closeErrorBuiltExecutable{File: file}, nil
+	}
+
+	err := normalizeBuiltExecutableWith(path, os.Lstat, openWithCloseError)
+	if ErrorCategory(err) != categoryFailed {
+		t.Fatalf("normalizeBuiltExecutableWith(close error) error = %v", err)
+	}
+}
+
+type closeErrorBuiltExecutable struct{ *os.File }
+
+func (f *closeErrorBuiltExecutable) Close() error {
+	_ = f.File.Close()
+	return os.ErrPermission
 }
 
 func trustedSiblingFixture(t *testing.T) string {

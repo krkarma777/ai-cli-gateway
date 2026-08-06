@@ -5943,6 +5943,12 @@ func TestReleaseSyftIsolationScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve test binary: %v", err)
 	}
+	// The success fixtures exercise the full decoded release pipeline. Race
+	// instrumentation on GitHub's macOS runner can take close to a minute. The
+	// rejected fixtures still need enough headroom to distinguish a real policy
+	// rejection from a slow instrumented shell.
+	const rejectedFixtureTimeout = 25 * time.Second
+	const successFixtureTimeout = 90 * time.Second
 	tests := []struct {
 		name   string
 		mode   string
@@ -5998,13 +6004,21 @@ func TestReleaseSyftIsolationScript(t *testing.T) {
 			if err := os.Chmod(poisonHelper, 0o700); err != nil { //nolint:gosec // Test-only failing helper must be executable.
 				t.Fatalf("chmod poison helper: %v", err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
+			fixtureTimeout := rejectedFixtureTimeout
+			if test.wantOK {
+				fixtureTimeout = successFixtureTimeout
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
 			command := exec.CommandContext(ctx, "/bin/bash", "-c", step.Run) //nolint:gosec // Executes the decoded repository-owned Syft shell with fixed fake tools.
 			command.Dir = repositoryRootForTest(t)
 			command.Env = append(poisonedToolParentEnvironment(root, binRoot, poisonHelper),
 				"TAG=v0.1.0", "VERSION=0.1.0", "SOURCE_EPOCH=1785805793", "GITHUB_WORKSPACE="+repositoryRootForTest(t))
 			output, runErr := command.CombinedOutput()
+			contextErr := ctx.Err()
+			cancel()
+			if contextErr != nil {
+				t.Fatalf("decoded Syft shell exceeded %s: %v", fixtureTimeout, contextErr)
+			}
 			if test.wantOK && runErr != nil {
 				t.Fatalf("decoded Syft shell: %v: %s", runErr, output)
 			}
