@@ -59,7 +59,32 @@ func TestRealForcedGatewayKillRegistryCleanup(t *testing.T) {
 		<-runDone
 		t.Fatal("run did not start fixture registry")
 	}
-	readyTimer := time.NewTimer(productionPolicy.RegistryProtocol)
+	// Each test watchdog includes one complete production readiness window of
+	// scheduling slack, so it cannot preempt the later production timer merely
+	// because gateway ownership is published just before StartGateway returns.
+	milestoneDeadline := 2 * productionPolicy.ReadinessDeadline
+	gatewayTimer := time.NewTimer(milestoneDeadline)
+	var gateway *forcedKillChild
+	select {
+	case gateway = <-sys.gatewayStarted:
+		if !gatewayTimer.Stop() {
+			<-gatewayTimer.C
+		}
+	case err := <-runDone:
+		if !gatewayTimer.Stop() {
+			<-gatewayTimer.C
+		}
+		t.Fatalf("run ended before gateway ownership: %v", err)
+	case <-gatewayTimer.C:
+		cancel()
+		<-runDone
+		t.Fatal("run did not establish gateway ownership")
+	}
+
+	// RegistryProtocol bounds a partial record after the first byte arrives; it
+	// is not an end-to-end process startup deadline. StartGateway has recorded
+	// cleanup liability, while this deadline covers helper-tree scheduling.
+	readyTimer := time.NewTimer(milestoneDeadline)
 	select {
 	case <-registry.ready:
 		if !readyTimer.Stop() {
@@ -81,15 +106,6 @@ func TestRealForcedGatewayKillRegistryCleanup(t *testing.T) {
 		t.Fatalf("registered fixture TERM behavior: %v", err)
 	}
 	recorded := registry.records()
-
-	var gateway *forcedKillChild
-	select {
-	case gateway = <-sys.gatewayStarted:
-	default:
-		cancel()
-		<-runDone
-		t.Fatal("gateway was not started before fixture readiness")
-	}
 	cancel()
 	select {
 	case err := <-runDone:
@@ -145,6 +161,34 @@ func TestRealForcedGatewayKillRegistryCleanup(t *testing.T) {
 	}
 }
 
+func TestForcedKillRegistryObservationDoesNotRequireBeforeProviderStartup(t *testing.T) {
+	sys := newForcedKillRunSystem("")
+	registryPath := filepath.Join(t.TempDir(), "fixture.registry")
+	registry, err := sys.StartFixtureRegistry(registryPath, time.Second)
+	if registry != nil {
+		t.Cleanup(func() {
+			result := registry.StopAndVerify(time.Second)
+			if result.Err != nil || !result.SafeToRemove {
+				t.Errorf("registry cleanup = %#v", result)
+			}
+		})
+	}
+	if err != nil {
+		t.Fatalf("start fixture registry: %v", err)
+	}
+	wrapped, ok := registry.(*forcedKillRegistry)
+	if !ok {
+		t.Fatalf("registry type = %T", registry)
+	}
+
+	wrapped.concrete.mu.Lock()
+	required := wrapped.concrete.required
+	wrapped.concrete.mu.Unlock()
+	if required {
+		t.Fatal("observing fixture readiness required registration before provider startup")
+	}
+}
+
 type forcedKillRunSystem struct {
 	*realSystem
 	testExecutable  string
@@ -153,6 +197,7 @@ type forcedKillRunSystem struct {
 	mu              sync.Mutex
 	slowPath        string
 	root            *forcedKillRoot
+	registry        *forcedKillRegistry
 	events          []string
 	buildStarted    int
 	buildCompleted  int
@@ -236,9 +281,14 @@ func (s *forcedKillRunSystem) StartFixtureRegistry(path string, grace time.Durat
 	wrapped := &forcedKillRegistry{
 		fixtureRegistry: registry,
 		concrete:        concrete,
-		ready:           registry.Ready(),
-		system:          s,
+		// Observe the production ready channel directly. Calling Ready here would
+		// arm the partial-record protocol timer before the provider starts.
+		ready:  concrete.ready,
+		system: s,
 	}
+	s.mu.Lock()
+	s.registry = wrapped
+	s.mu.Unlock()
 	s.registryStarted <- wrapped
 	return wrapped, nil
 }
@@ -254,8 +304,9 @@ func (s *forcedKillRunSystem) StartGateway(executable, directory string, argv, e
 	s.mu.Lock()
 	slowPath := s.slowPath
 	root := s.root
+	registry := s.registry
 	s.mu.Unlock()
-	if slowPath == "" || root == nil {
+	if slowPath == "" || root == nil || registry == nil {
 		return nil, newError(categoryFailed)
 	}
 	rootPath := root.Path()
@@ -283,6 +334,10 @@ func (s *forcedKillRunSystem) StartGateway(executable, directory string, argv, e
 	if started == nil {
 		return nil, err
 	}
+	// Once the helper process exists, terminal cleanup must require a complete
+	// registry even if the provider stalls before writing its first byte. The
+	// first byte, not this ownership transfer, starts RegistryProtocol.
+	registry.concrete.requireCompletion()
 	wrapped := &forcedKillChild{concrete: started, system: s}
 	s.gatewayStarted <- wrapped
 	return wrapped, err

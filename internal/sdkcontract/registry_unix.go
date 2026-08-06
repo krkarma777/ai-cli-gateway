@@ -22,22 +22,24 @@ type registryRecord struct {
 }
 
 type unixFixtureRegistry struct {
-	mu        sync.Mutex
-	file      *os.File
-	protocol  time.Duration
-	ready     chan struct{}
-	arm       chan struct{}
-	stop      chan struct{}
-	done      chan struct{}
-	armOnce   sync.Once
-	readyOnce sync.Once
-	stopOnce  sync.Once
-	result    cleanupResult
-	armed     bool
-	complete  bool
-	failed    bool
-	buffer    []byte
-	records   []registryRecord
+	mu                sync.Mutex
+	file              *os.File
+	protocol          time.Duration
+	ready             chan struct{}
+	arm               chan struct{}
+	stop              chan struct{}
+	done              chan struct{}
+	armOnce           sync.Once
+	readyOnce         sync.Once
+	stopOnce          sync.Once
+	result            cleanupResult
+	required          bool
+	protocolRequested bool
+	protocolStarted   bool
+	complete          bool
+	failed            bool
+	buffer            []byte
+	records           []registryRecord
 }
 
 type unixRecoveryRegistry struct {
@@ -131,7 +133,8 @@ func syscallNonblock() int { return unix.O_NONBLOCK }
 func (r *unixFixtureRegistry) Ready() <-chan struct{} {
 	r.armOnce.Do(func() {
 		r.mu.Lock()
-		r.armed = true
+		r.required = true
+		r.protocolRequested = true
 		r.mu.Unlock()
 		select {
 		case r.arm <- struct{}{}:
@@ -139,6 +142,14 @@ func (r *unixFixtureRegistry) Ready() <-chan struct{} {
 		}
 	})
 	return r.ready
+}
+
+// requireCompletion records cleanup liability without starting the
+// partial-record deadline before the producer has written its first byte.
+func (r *unixFixtureRegistry) requireCompletion() {
+	r.mu.Lock()
+	r.required = true
+	r.mu.Unlock()
 }
 
 func (r *unixFixtureRegistry) drain() {
@@ -153,6 +164,10 @@ func (r *unixFixtureRegistry) drain() {
 	var deadlineChannel <-chan time.Time
 	startDeadline := func() {
 		if deadline == nil {
+			r.mu.Lock()
+			r.protocolRequested = true
+			r.protocolStarted = true
+			r.mu.Unlock()
 			deadline = time.NewTimer(r.protocol)
 			deadlineChannel = deadline.C
 		}
@@ -167,11 +182,9 @@ func (r *unixFixtureRegistry) drain() {
 		for {
 			n, err := unix.Read(int(r.file.Fd()), data)
 			if n > 0 {
+				startDeadline()
 				r.mu.Lock()
-				if !r.armed {
-					r.armed = true
-					startDeadline()
-				}
+				r.required = true
 				r.consume(data[:n])
 				r.mu.Unlock()
 			}
@@ -309,15 +322,15 @@ func (r *unixFixtureRegistry) stopAndVerify(grace time.Duration) cleanupResult {
 	}
 	closeErr := r.file.Close()
 	r.mu.Lock()
-	armed, complete, failed := r.armed, r.complete, r.failed
+	required, complete, failed := r.required, r.complete, r.failed
 	buffered := len(r.buffer)
 	records := append([]registryRecord(nil), r.records...)
 	r.mu.Unlock()
 	safe := cleanupRegistryProcesses(records, grace)
-	if armed && len(records) == 0 {
+	if required && len(records) == 0 {
 		safe = false
 	}
-	protocolErr := failed || armed && (!complete || buffered != 0)
+	protocolErr := failed || required && (!complete || buffered != 0)
 	if closeErr != nil || protocolErr {
 		return cleanupResult{SafeToRemove: safe, Err: newError(categoryCleanup)}
 	}

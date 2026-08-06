@@ -81,6 +81,9 @@ func TestFixtureRegistryReadyArmsAndRequiresCompleteProtocol(t *testing.T) {
 	root := trustedSiblingFixture(t)
 	path := filepath.Join(root, "fixture.registry")
 	registry, err := startPlatformRegistry(path, 15*time.Millisecond)
+	if registry != nil {
+		t.Cleanup(func() { _ = registry.StopAndVerify(30 * time.Millisecond) })
+	}
 	if err != nil {
 		t.Fatalf("start registry: %v", err)
 	}
@@ -93,6 +96,43 @@ func TestFixtureRegistryReadyArmsAndRequiresCompleteProtocol(t *testing.T) {
 	result := registry.StopAndVerify(30 * time.Millisecond)
 	if result.Err == nil || result.SafeToRemove {
 		t.Fatalf("timeout result = %#v", result)
+	}
+}
+
+func TestFixtureRegistryRequirementDoesNotStartProtocolBeforeFirstByte(t *testing.T) {
+	root := trustedSiblingFixture(t)
+	path := filepath.Join(root, "fixture.registry")
+	registry, err := startPlatformRegistry(path, 15*time.Millisecond)
+	if registry != nil {
+		t.Cleanup(func() { _ = registry.StopAndVerify(30 * time.Millisecond) })
+	}
+	if err != nil {
+		t.Fatalf("start registry: %v", err)
+	}
+	concrete, ok := registry.(*unixFixtureRegistry)
+	if !ok {
+		t.Fatalf("registry type = %T", registry)
+	}
+	concrete.requireCompletion()
+
+	concrete.mu.Lock()
+	required := concrete.required
+	protocolRequested := concrete.protocolRequested
+	protocolStarted := concrete.protocolStarted
+	failed := concrete.failed
+	concrete.mu.Unlock()
+	if !required || protocolRequested || protocolStarted || failed {
+		t.Fatalf("required=%t protocol_requested=%t protocol_started=%t failed=%t", required, protocolRequested, protocolStarted, failed)
+	}
+	select {
+	case <-concrete.arm:
+		t.Fatal("cleanup requirement queued the partial-record protocol timer")
+	default:
+	}
+
+	result := registry.StopAndVerify(30 * time.Millisecond)
+	if result.Err == nil || result.SafeToRemove {
+		t.Fatalf("required zero-record result = %#v", result)
 	}
 }
 
