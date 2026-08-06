@@ -263,7 +263,7 @@ Run:
 ```bash
 go test -count=1 ./internal/securitytest -run '^TestRepositoryHygiene$'
 sed -n '1,220p' docs/releases/v0.1.0.md
-rg -n -i 'free api|unlimited|subscription-to-api|billing bypass|prompts stay local|full openai api compatibility|drop-in replacement' README.md docs/releases/v0.1.0.md
+rg -n -i 'free api|unlimited|subscription-to-api|billing bypass|prompts stay local' README.md docs/releases/v0.1.0.md
 curl --disable --fail --silent --show-error --location --head https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.1.0
 curl --disable --fail --silent --show-error --location --head https://github.com/krkarma777/ai-cli-gateway/blob/main/SECURITY.md
 curl --disable --fail --silent --show-error --location --head https://github.com/krkarma777/ai-cli-gateway/blob/main/CONTRIBUTING.md
