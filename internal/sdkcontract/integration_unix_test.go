@@ -23,22 +23,15 @@ import (
 
 func TestRealForcedGatewayKillRegistryCleanup(t *testing.T) {
 	repository := moduleRootForIntegration(t)
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Fatalf("look up python3: %v", err)
-	}
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatalf("look up node: %v", err)
-	}
+	python := trustedIntegrationPython(t)
 	testExecutable, err := os.Executable()
 	if err != nil {
 		t.Fatalf("test executable: %v", err)
 	}
 	options := Options{
 		RepositoryRoot:       repository,
-		PythonExecutable:     cleanAbsolutePath(t, python),
-		NodeExecutable:       cleanAbsolutePath(t, node),
+		PythonExecutable:     python,
+		NodeExecutable:       privateIntegrationExecutable(t, testExecutable),
 		JavaScriptEntrypoint: filepath.Join(repository, "examples/openai-sdk/javascript/main.mjs"),
 	}
 	sys := newForcedKillRunSystem(testExecutable)
@@ -342,6 +335,83 @@ func (c *forcedKillChild) StopAndWait(grace time.Duration) cleanupResult {
 	c.result = c.concrete.StopAndWait(grace)
 	c.system.record("gateway_stop")
 	return c.result
+}
+
+func privateIntegrationRoot(t *testing.T) string {
+	t.Helper()
+	temporaryParent, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil || !filepath.IsAbs(temporaryParent) {
+		t.Fatalf("resolve temporary parent: %v", err)
+	}
+	if err := validateSecureAncestors(temporaryParent); err != nil {
+		t.Fatalf("temporary parent is not secure: %v", err)
+	}
+	root, err := os.MkdirTemp(temporaryParent, "sdk-contract-integration-")
+	if err != nil {
+		t.Fatalf("create private runtime root: %v", err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		_ = os.RemoveAll(root)
+		t.Fatalf("protect private runtime root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove private runtime root: %v", err)
+		}
+	})
+	return root
+}
+
+func trustedIntegrationPython(t *testing.T) string {
+	t.Helper()
+	candidates := make([]string, 0, 3)
+	if path, err := exec.LookPath("python3"); err == nil {
+		candidates = append(candidates, cleanAbsolutePath(t, path))
+	}
+	candidates = append(candidates, "/usr/bin/python3", "/usr/local/bin/python3")
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if _, duplicate := seen[candidate]; duplicate {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		if _, err := validateExecutableIdentity(candidate); err == nil {
+			return candidate
+		}
+	}
+	t.Fatal("trusted Python runtime is not installed")
+	return ""
+}
+
+func privateIntegrationExecutable(t *testing.T, source string) string {
+	t.Helper()
+	if !filepath.IsAbs(source) {
+		t.Fatalf("test executable path is not absolute: %q", source)
+	}
+	root := privateIntegrationRoot(t)
+
+	input, err := os.Open(source) //nolint:gosec // os.Executable returned this test-owned source.
+	if err != nil {
+		t.Fatalf("open test executable: %v", err)
+	}
+	defer func() { _ = input.Close() }()
+	destination := filepath.Join(root, "runtime")
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700) //nolint:gosec // fixed child of the private test root.
+	if err != nil {
+		t.Fatalf("create private runtime identity: %v", err)
+	}
+	if err := output.Chmod(0o700); err != nil {
+		_ = output.Close()
+		t.Fatalf("protect private runtime identity: %v", err)
+	}
+	if _, err := io.Copy(output, input); err != nil {
+		_ = output.Close()
+		t.Fatalf("copy private runtime identity: %v", err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("close private runtime identity: %v", err)
+	}
+	return destination
 }
 
 func cleanAbsolutePath(t *testing.T, path string) string {

@@ -1293,7 +1293,7 @@ func TestREADMEReleaseQuickStart(t *testing.T) {
 	}
 }
 
-func TestREADMEWindowsACLGrantSyntax(t *testing.T) {
+func TestREADMEWindowsACLProgram(t *testing.T) {
 	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
 	if err != nil {
 		t.Fatal(err)
@@ -1302,8 +1302,8 @@ func TestREADMEWindowsACLGrantSyntax(t *testing.T) {
 	if len(windows) != 6 {
 		t.Fatalf("PowerShell fence count = %d, want six", len(windows))
 	}
-	if _, err := extractREADMEWindowsACLGrants(windows[3]); err != nil {
-		t.Fatalf("README Windows ACL grants are not executable documented icacls syntax: %v", err)
+	if err := validateREADMEWindowsACLProgram(windows[3]); err != nil {
+		t.Fatalf("README Windows ACL program is not a closed exact-rule program: %v", err)
 	}
 }
 
@@ -1349,22 +1349,19 @@ func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
 		{name: "raw systemd path added to Windows", mutate: replaceREADMEOnce(`Use PowerShell 7 as an unprivileged gateway identity.`, `Use PowerShell 7 as an unprivileged gateway identity. See deploy/systemd/ai-cli-gateway.service.`)},
 		{name: "encoded systemd path added to Windows", mutate: replaceREADMEOnce(`Use PowerShell 7 as an unprivileged gateway identity.`, `Use PowerShell 7 as an unprivileged gateway identity. See [Linux service unit](deploy/%73ystemd/ai-cli-gateway.service).`)},
 		{name: "PowerShell accepts preexisting target", mutate: replaceREADMEOnce(`if (Test-Path -LiteralPath $FreshTarget) { throw 'private target already exists' }`, `if (Test-Path -LiteralPath $FreshTarget) { Write-Output 'reusing target' }`)},
-		{name: "PowerShell directory basic right parenthesized", mutate: replaceREADMEOnce(`& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null`, `& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)(F)" | Out-Null`)},
-		{name: "PowerShell file basic rights parenthesized", mutate: replaceREADMENth(`(RD,REA,RA,RC,WD,AD,WEA,WA,S)`, `(R,W)`, 1)},
-		{name: "PowerShell file Synchronize omitted", mutate: replaceREADMENth(`(RD,REA,RA,RC,WD,AD,WEA,WA,S)`, `(RD,REA,RA,RC,WD,AD,WEA,WA)`, 1)},
-		{name: "PowerShell adds another ACE", mutate: replaceREADMEOnce(`& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null`, `& icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null`+"\n"+`  & icacls.exe $PrivateDir /grant 'BUILTIN\Users:R' | Out-Null`)},
-		{name: "PowerShell omits nonempty ACL check", mutate: replaceREADMEOnce(`if ($Rules.Count -lt 1) { throw 'private ACL has no access rule' }`, `# if ($Rules.Count -lt 1) { throw 'private ACL has no access rule' }`)},
-		{name: "PowerShell key owner omitted", mutate: replaceREADMEOnce(`& icacls.exe $GatewayKeyPath /setowner "$CurrentIdentity" | Out-Null`, `# & icacls.exe $GatewayKeyPath /setowner "$CurrentIdentity" | Out-Null`)},
-		{name: "PowerShell key owner follows restrictive grant", mutate: replaceREADMEOnce(
-			"& icacls.exe $GatewayKeyPath /setowner \"$CurrentIdentity\" | Out-Null\n"+
-				"if ($LASTEXITCODE -ne 0) { throw 'failed to set gateway key owner' }\n"+
-				`& icacls.exe $GatewayKeyPath /inheritance:r /grant:r "${CurrentIdentity}:(RD,REA,RA,RC,WD,AD,WEA,WA,S)" | Out-Null`,
-			`& icacls.exe $GatewayKeyPath /inheritance:r /grant:r "${CurrentIdentity}:(RD,REA,RA,RC,WD,AD,WEA,WA,S)" | Out-Null`+"\n"+
-				"if ($LASTEXITCODE -ne 0) { throw 'failed to protect gateway key ACL' }\n"+
-				`& icacls.exe $GatewayKeyPath /setowner "$CurrentIdentity" | Out-Null`,
-		)},
-		{name: "PowerShell key ACL assertion is inert", mutate: replaceREADMEOnce(`Assert-ExactPrivateFileACL $GatewayKeyPath`, `$null = 'Assert-ExactPrivateFileACL $GatewayKeyPath'`)},
-		{name: "PowerShell key ACL assertion in dead branch", mutate: replaceREADMEOnce(`Assert-ExactPrivateFileACL $GatewayKeyPath`, "if ($false) {\n  Assert-ExactPrivateFileACL $GatewayKeyPath\n}")},
+		{name: "PowerShell directory right weakened", mutate: replaceREADMEOnce(`[Security.AccessControl.FileSystemRights]::FullControl`, `[Security.AccessControl.FileSystemRights]::Read`)},
+		{name: "PowerShell file Synchronize omitted", mutate: replaceREADMEOnce("    [Security.AccessControl.FileSystemRights]::Synchronize\n", "")},
+		{name: "PowerShell preserves inherited ACEs", mutate: replaceREADMEOnce(`$ACL.SetAccessRuleProtection($true, $false)`, `$ACL.SetAccessRuleProtection($true, $true)`)},
+		{name: "PowerShell removes only one matching ACE", mutate: replaceREADMEOnce(`$ACL.RemoveAccessRuleAll($ExistingRule)`, `$ACL.RemoveAccessRule($ExistingRule) | Out-Null`)},
+		{name: "PowerShell current owner omitted", mutate: replaceREADMEOnce(`$ACL.SetOwner($CurrentSIDObject)`, `# $ACL.SetOwner($CurrentSIDObject)`)},
+		{name: "PowerShell key exact ACL setter is inert", mutate: replaceREADMEOnce(`Set-ExactPrivateFileACL $GatewayKeyPath`, `$null = 'Set-ExactPrivateFileACL $GatewayKeyPath'`)},
+		{name: "PowerShell key exact ACL setter in dead branch", mutate: replaceREADMEOnce(`Set-ExactPrivateFileACL $GatewayKeyPath`, "if ($false) {\n  Set-ExactPrivateFileACL $GatewayKeyPath\n}")},
+		{name: "PowerShell directory exact ACL loop in dead branch", mutate: replaceREADMEOnce("foreach ($PrivateDir in @($GatewayConfigDir, $GatewayRuntimeDir)) {\n  Set-ExactPrivateDirectoryACL $PrivateDir\n}", "if ($false) {\n  foreach ($PrivateDir in @($GatewayConfigDir, $GatewayRuntimeDir)) {\n    Set-ExactPrivateDirectoryACL $PrivateDir\n  }\n}")},
+		{name: "PowerShell directory exact ACL setter in dead branch", mutate: replaceREADMEOnce(`  Set-ExactPrivateDirectoryACL $PrivateDir`, "  if ($false) {\n    Set-ExactPrivateDirectoryACL $PrivateDir\n  }")},
+		{name: "PowerShell exact ACL assertion count weakened", mutate: replaceREADMEOnce(`if ($Rules.Count -ne 1) { throw 'private ACL must contain exactly one rule' }`, `if ($Rules.Count -lt 1) { throw 'private ACL has no access rule' }`)},
+		{name: "PowerShell exact ACL rights assertion omitted", mutate: replaceREADMEOnce(`  if ($Rule.FileSystemRights -ne $ExpectedRights) { throw 'private ACL rights differ' }`, `  # exact rights assertion omitted`)},
+		{name: "PowerShell exact ACL inheritance assertion omitted", mutate: replaceREADMEOnce(`  if ($Rule.InheritanceFlags -ne $ExpectedInheritance) { throw 'private ACL inheritance flags differ' }`, `  # exact inheritance assertion omitted`)},
+		{name: "PowerShell exact ACL propagation assertion omitted", mutate: replaceREADMEOnce(`  if ($Rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw 'private ACL propagation differs' }`, `  # exact propagation assertion omitted`)},
 		{name: "PowerShell TOML model assertion is inert", mutate: replaceREADMEOnce(`Assert-SafeTOMLValue $CodexModelTOML`, `$null = 'Assert-SafeTOMLValue $CodexModelTOML'`)},
 		{name: "PowerShell TOML model assertion in dead branch", mutate: replaceREADMEOnce(`Assert-SafeTOMLValue $CodexModelTOML`, "if ($false) {\n  Assert-SafeTOMLValue $CodexModelTOML\n}")},
 		{name: "PowerShell terminal load commented", mutate: replaceREADMENth(`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, `# $LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, 2)},
@@ -1833,12 +1830,15 @@ func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) er
 		`Replace-ExactlyOnce $ConfigText '/var/lib/ai-cli-gateway/runtime' $GatewayRuntimeTOML`,
 		`Replace-ExactlyOnce $ConfigText 'configured-provider-model' $CodexModelTOML`,
 		`if (Test-Path -LiteralPath $FreshTarget) { throw 'private target already exists' }`,
-		`AreAccessRulesProtected`, `$Rules.Count -lt 1`, `$ExpectedRuleFound`,
+		`function Set-ExactPrivateACL`, `$ACL.SetAccessRuleProtection($true, $false)`,
+		`$ACL.RemoveAccessRuleAll($ExistingRule)`, `$ACL.SetOwner($CurrentSIDObject)`,
+		`Set-Acl -LiteralPath $Path -AclObject $ACL`,
+		`AreAccessRulesProtected`, `$Rules.Count -ne 1`,
 		`$Rule.IsInherited`, `$Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value`,
 		`$RuleSID -ne $CurrentSID`,
 		`[Security.AccessControl.AccessControlType]::Allow`,
-		`Assert-ExactPrivateDirectoryACL $PrivateDir`, `Assert-ExactPrivateFileACL $GatewayConfigFile`,
-		`Assert-ExactPrivateFileACL $GatewayKeyPath`,
+		`Set-ExactPrivateDirectoryACL $PrivateDir`, `Set-ExactPrivateFileACL $GatewayConfigFile`,
+		`Set-ExactPrivateFileACL $GatewayKeyPath`,
 	} {
 		if !strings.Contains(windowsFences[3], marker) {
 			return fmt.Errorf("active PowerShell configuration is missing %q", marker)
@@ -1849,17 +1849,18 @@ func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) er
 		return fmt.Errorf("PowerShell configuration reachability: %w", err)
 	}
 	if err := requireTopLevelStatementCounts(powerShellSetupStatements, map[string]int{
-		`Assert-SafeTOMLValue $CodexExecutableTOML`:     1,
-		`Assert-SafeTOMLValue $CodexConfigHomeTOML`:     1,
-		`Assert-SafeTOMLValue $GatewayRuntimeTOML`:      1,
-		`Assert-SafeTOMLValue $CodexModelTOML`:          1,
-		`Assert-ExactPrivateFileACL $GatewayConfigFile`: 1,
-		`Assert-ExactPrivateFileACL $GatewayKeyPath`:    1,
+		`Assert-SafeTOMLValue $CodexExecutableTOML`:                           1,
+		`Assert-SafeTOMLValue $CodexConfigHomeTOML`:                           1,
+		`Assert-SafeTOMLValue $GatewayRuntimeTOML`:                            1,
+		`Assert-SafeTOMLValue $CodexModelTOML`:                                1,
+		`foreach ($PrivateDir in @($GatewayConfigDir, $GatewayRuntimeDir)) {`: 1,
+		`Set-ExactPrivateFileACL $GatewayConfigFile`:                          1,
+		`Set-ExactPrivateFileACL $GatewayKeyPath`:                             1,
 	}); err != nil {
 		return fmt.Errorf("PowerShell configuration reachability: %w", err)
 	}
-	if _, err := extractREADMEWindowsACLGrants(windowsFences[3]); err != nil {
-		return fmt.Errorf("PowerShell ACL grant contract: %w", err)
+	if err := validateREADMEWindowsACLProgram(windowsFences[3]); err != nil {
+		return fmt.Errorf("PowerShell exact ACL contract: %w", err)
 	}
 
 	if err := requireOrderedMarkers(posixFences[5],
@@ -2263,9 +2264,7 @@ func validateREADMEKeyUseContract(posixFences, windowsFences, sdkFences []string
 		`foreach ($FreshTarget in @($GatewayConfigDir, $GatewayRuntimeDir, $GatewayConfigFile, $GatewayKeyPath)) {`,
 		`$GatewayKey = [Convert]::ToHexString($RandomBytes).ToLowerInvariant()`,
 		`[IO.File]::WriteAllText($GatewayKeyPath, $GatewayKey, [Text.UTF8Encoding]::new($false))`,
-		`& icacls.exe $GatewayKeyPath /setowner "$CurrentIdentity" | Out-Null`,
-		`& icacls.exe $GatewayKeyPath /inheritance:r /grant:r "${CurrentIdentity}:(RD,REA,RA,RC,WD,AD,WEA,WA,S)" | Out-Null`,
-		`Assert-ExactPrivateFileACL $GatewayKeyPath`,
+		`Set-ExactPrivateFileACL $GatewayKeyPath`,
 		`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`,
 		`if ($LoadedGatewayKey -cnotmatch '^[0-9a-f]{64}$') { throw 'invalid gateway key file' }`,
 		`$env:AI_CLI_GATEWAY_API_KEY = $LoadedGatewayKey`,
@@ -2383,7 +2382,7 @@ func validateREADMEQuickStartFenceSources(document readmeQuickStartDocument) err
 		"055e3b1a0d12505f1f854879ebf0c0c1ffe52b10d94621aba03f63f81299aed7", // Windows download and checksum.
 		"67f363e541443c9275a1aacc834d1ce93c7ac7d638db764cd323b81d1fce7c3b", // Windows attestation.
 		"57b0a84d1b0fbd75264c24c4cbbc8f3807f28a3f3d0e0e5088ea001c69c9bc46", // Windows install.
-		"e070dcacca5efcd82aba4a52d4ad08130e1965cfb69de6981aa46b00dc92c24f", // Windows configuration.
+		"e945b7509ade4560e6912eb15f6d8d9990708524824c360e06cd7880f8998537", // Windows configuration.
 		"5b26c7ae1423bf83919abc35593accd9137111778cb21f641c473441e72cadc0", // Windows serve.
 		"ab30f260752be7690d82a380260d41ece4a6680c13d59755ea3d980447b679a0", // Windows requests.
 		"182d7dd2aba1e42acce798618dac0dc23f13051ad1c96a7190162ca18558ca6f", // SDK checks.
@@ -2643,52 +2642,86 @@ func stringsCount(values []string, expected string) int {
 	return count
 }
 
-type readmeWindowsACLGrants struct {
-	directory string
-	config    string
-	key       string
-}
-
-func extractREADMEWindowsACLGrants(block string) (readmeWindowsACLGrants, error) {
-	grantPattern := regexp.MustCompile(`(?m)^\s*& icacls\.exe \$(PrivateDir|GatewayConfigFile|GatewayKeyPath) /inheritance:r /grant:r "\$\{CurrentIdentity\}:([^"]+)" \| Out-Null\s*$`)
-	matches := grantPattern.FindAllStringSubmatch(block, -1)
-	ownerPattern := regexp.MustCompile(`(?m)^\s*& icacls\.exe \$(PrivateDir|GatewayConfigFile|GatewayKeyPath) /setowner "\$CurrentIdentity" \| Out-Null\s*$`)
-	owners := ownerPattern.FindAllStringSubmatch(block, -1)
-	if commandCount := strings.Count(block, "& icacls.exe"); commandCount != 6 || len(matches) != 3 || len(owners) != 3 {
-		return readmeWindowsACLGrants{}, fmt.Errorf("found %d parsed grants and %d owner assignments among %d icacls commands, want three of each", len(matches), len(owners), commandCount)
+func validateREADMEWindowsACLProgram(block string) error {
+	if strings.Contains(block, "icacls.exe") {
+		return errors.New("exact ACL program must not preserve ambient explicit rules through icacls")
 	}
-	values := make(map[string]string, len(matches))
-	for _, match := range matches {
-		if _, duplicate := values[match[1]]; duplicate {
-			return readmeWindowsACLGrants{}, fmt.Errorf("duplicate grant target %s", match[1])
-		}
-		values[match[1]] = match[2]
+	assertFunction, err := extractREADMEPowerShellFunction(block, "Assert-ExactPrivateACL")
+	if err != nil {
+		return err
 	}
-	ownerTargets := make(map[string]struct{}, len(owners))
-	for _, match := range owners {
-		if _, duplicate := ownerTargets[match[1]]; duplicate {
-			return readmeWindowsACLGrants{}, fmt.Errorf("duplicate owner target %s", match[1])
-		}
-		ownerTargets[match[1]] = struct{}{}
+	if err := requireOrderedMarkers(assertFunction,
+		`$ACL = Get-Acl -LiteralPath $Path`,
+		`if (-not $ACL.AreAccessRulesProtected)`,
+		`$OwnerSID = $ACL.GetOwner([Security.Principal.SecurityIdentifier]).Value`,
+		`if ($OwnerSID -ne $CurrentSID)`,
+		`if ($Rules.Count -ne 1)`,
+		`$RuleSID = $Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value`,
+		`if ($RuleSID -ne $CurrentSID)`,
+		`[Security.AccessControl.AccessControlType]::Allow`,
+		`if ($Rule.FileSystemRights -ne $ExpectedRights)`,
+		`if ($Rule.InheritanceFlags -ne $ExpectedInheritance)`,
+		`if ($Rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None)`,
+	); err != nil {
+		return fmt.Errorf("exact ACL assertion: %w", err)
 	}
-	const directoryGrant = `(OI)(CI)F`
-	const fileGrant = `(RD,REA,RA,RC,WD,AD,WEA,WA,S)`
-	for target, expected := range map[string]string{
-		"PrivateDir": directoryGrant, "GatewayConfigFile": fileGrant, "GatewayKeyPath": fileGrant,
+	setFunction, err := extractREADMEPowerShellFunction(block, "Set-ExactPrivateACL")
+	if err != nil {
+		return err
+	}
+	if err := requireOrderedMarkers(setFunction,
+		`$ACL = Get-Acl -LiteralPath $Path`,
+		`$ACL.SetAccessRuleProtection($true, $false)`,
+		`foreach ($ExistingRule in @($ACL.Access))`,
+		`$ACL.RemoveAccessRuleAll($ExistingRule)`,
+		`$CurrentSIDObject = [Security.Principal.SecurityIdentifier]::new($CurrentSID)`,
+		`$ACL.SetOwner($CurrentSIDObject)`,
+		`$Rule = [Security.AccessControl.FileSystemAccessRule]::new(`,
+		`$ACL.SetAccessRule($Rule)`,
+		`Set-Acl -LiteralPath $Path -AclObject $ACL`,
+		`Assert-ExactPrivateACL $Path $ExpectedRights $ExpectedInheritance`,
+	); err != nil {
+		return fmt.Errorf("exact ACL setter: %w", err)
+	}
+	if strings.Count(setFunction, "$ACL.RemoveAccessRuleAll(") != 1 || strings.Count(setFunction, "$ACL.SetAccessRule(") != 1 || strings.Count(setFunction, "FileSystemAccessRule]::new(") != 1 {
+		return errors.New("exact ACL setter must purge by identity and add exactly one rule")
+	}
+	directoryFunction, err := extractREADMEPowerShellFunction(block, "Set-ExactPrivateDirectoryACL")
+	if err != nil {
+		return err
+	}
+	if err := requireOrderedMarkers(directoryFunction,
+		`[Security.AccessControl.InheritanceFlags]::ContainerInherit`,
+		`[Security.AccessControl.InheritanceFlags]::ObjectInherit`,
+		`Set-ExactPrivateACL $Path ([Security.AccessControl.FileSystemRights]::FullControl) $Inheritance`,
+	); err != nil {
+		return fmt.Errorf("exact directory ACL setter: %w", err)
+	}
+	fileFunction, err := extractREADMEPowerShellFunction(block, "Set-ExactPrivateFileACL")
+	if err != nil {
+		return err
+	}
+	if err := requireOrderedMarkers(fileFunction,
+		`[Security.AccessControl.FileSystemRights]::Read`,
+		`[Security.AccessControl.FileSystemRights]::Write`,
+		`[Security.AccessControl.FileSystemRights]::Synchronize`,
+		`Set-ExactPrivateACL $Path $Rights ([Security.AccessControl.InheritanceFlags]::None)`,
+	); err != nil {
+		return fmt.Errorf("exact file ACL setter: %w", err)
+	}
+	const directoryLoop = "foreach ($PrivateDir in @($GatewayConfigDir, $GatewayRuntimeDir)) {\n  Set-ExactPrivateDirectoryACL $PrivateDir\n}"
+	if strings.Count(block, directoryLoop) != 1 {
+		return errors.New("exact directory ACL setter loop must be a direct top-level body")
+	}
+	for target, setter := range map[string]string{
+		"PrivateDir": "Set-ExactPrivateDirectoryACL", "GatewayConfigFile": "Set-ExactPrivateFileACL", "GatewayKeyPath": "Set-ExactPrivateFileACL",
 	} {
-		if values[target] != expected {
-			return readmeWindowsACLGrants{}, fmt.Errorf("grant for %s = %q, want %q", target, values[target], expected)
-		}
-		if _, exists := ownerTargets[target]; !exists {
-			return readmeWindowsACLGrants{}, fmt.Errorf("owner assignment for %s is missing", target)
-		}
-		ownerMarker := "$" + target + ` /setowner "$CurrentIdentity"`
-		grantMarker := "$" + target + " /inheritance:r /grant:r "
-		if strings.Count(block, ownerMarker) != 1 || strings.Count(block, grantMarker) != 1 || strings.Index(block, ownerMarker) > strings.Index(block, grantMarker) {
-			return readmeWindowsACLGrants{}, fmt.Errorf("owner assignment for %s must precede its restrictive grant", target)
+		marker := setter + " $" + target
+		if strings.Count(block, marker) != 1 {
+			return fmt.Errorf("exact ACL setter for %s occurs %d times, want one", target, strings.Count(block, marker))
 		}
 	}
-	return readmeWindowsACLGrants{directory: directoryGrant, config: fileGrant, key: fileGrant}, nil
+	return nil
 }
 
 func executableREADMEFence(body string) string {
@@ -3100,25 +3133,16 @@ func TestREADMEWindowsACLCommandsNative(t *testing.T) {
 		t.Fatal(err)
 	}
 	windows := quickStartFences(document, quickStartWindowsSection, "powershell")
-	grants, err := extractREADMEWindowsACLGrants(windows[3])
-	if err != nil {
+	if err := validateREADMEWindowsACLProgram(windows[3]); err != nil {
 		t.Fatal(err)
 	}
-	functions := make([]string, 0, 3)
-	for _, name := range []string{"Assert-ExactPrivateACL", "Assert-ExactPrivateDirectoryACL", "Assert-ExactPrivateFileACL"} {
+	functions := make([]string, 0, 4)
+	for _, name := range []string{"Assert-ExactPrivateACL", "Set-ExactPrivateACL", "Set-ExactPrivateDirectoryACL", "Set-ExactPrivateFileACL"} {
 		function, err := extractREADMEPowerShellFunction(windows[3], name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		functions = append(functions, function)
-	}
-	identityOutput, err := runREADMEPowerShell(t, `[Security.Principal.WindowsIdentity]::GetCurrent().Name`)
-	if err != nil {
-		t.Fatalf("resolve current Windows identity: %v output=%q", err, identityOutput)
-	}
-	identity := strings.TrimSpace(string(identityOutput))
-	if identity == "" || strings.ContainsAny(identity, "\r\n") {
-		t.Fatalf("current Windows identity is not one line: %q", identityOutput)
 	}
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
@@ -3138,43 +3162,34 @@ func TestREADMEWindowsACLCommandsNative(t *testing.T) {
 	targets := []struct {
 		name      string
 		path      string
-		grant     string
 		directory bool
 	}{
-		{name: "config directory", path: configDir, grant: grants.directory, directory: true},
-		{name: "runtime directory", path: runtimeDir, grant: grants.directory, directory: true},
-		{name: "config file", path: configFile, grant: grants.config},
-		{name: "key file", path: keyFile, grant: grants.key},
+		{name: "config directory", path: configDir, directory: true},
+		{name: "runtime directory", path: runtimeDir, directory: true},
+		{name: "config file", path: configFile},
+		{name: "key file", path: keyFile},
 	}
 	for _, target := range targets {
 		t.Run(target.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			command := exec.CommandContext(ctx, "icacls.exe", target.path, "/setowner", identity) //nolint:gosec // Fixed Windows utility and test-owned targets.
+			command := exec.CommandContext(ctx, "icacls.exe", target.path, "/grant", "*S-1-1-0:R") //nolint:gosec // Fixed Windows utility, well-known Everyone SID, and test-owned targets.
 			output, err := command.CombinedOutput()
 			if ctx.Err() != nil {
-				t.Fatal("icacls owner assignment exceeded its local execution deadline")
+				t.Fatal("icacls foreign-rule fixture exceeded its local execution deadline")
 			}
 			if err != nil {
-				t.Fatalf("documented icacls owner assignment failed: %v output=%q", err, output)
-			}
-			command = exec.CommandContext(ctx, "icacls.exe", target.path, "/inheritance:r", "/grant:r", identity+":"+target.grant) //nolint:gosec // Fixed Windows utility and test-owned targets.
-			output, err = command.CombinedOutput()
-			if ctx.Err() != nil {
-				t.Fatal("icacls grant exceeded its local execution deadline")
-			}
-			if err != nil {
-				t.Fatalf("documented icacls grant failed: %v output=%q", err, output)
+				t.Fatalf("create explicit foreign ACL fixture: %v output=%q", err, output)
 			}
 			kind := "file"
-			readmeAssertion := "Assert-ExactPrivateFileACL $env:README_ACL_PATH"
+			readmeSetter := "Set-ExactPrivateFileACL $env:README_ACL_PATH"
 			if target.directory {
 				kind = "directory"
-				readmeAssertion = "Assert-ExactPrivateDirectoryACL $env:README_ACL_PATH"
+				readmeSetter = "Set-ExactPrivateDirectoryACL $env:README_ACL_PATH"
 			}
 			script := "$ErrorActionPreference = 'Stop'\n" +
 				"$CurrentSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value\n" +
-				strings.Join(functions, "\n") + "\n" + readmeAssertion + "\n" + readmeWindowsIndependentACLAssertion
+				strings.Join(functions, "\n") + "\n" + readmeSetter + "\n" + readmeWindowsIndependentACLAssertion
 			output, err = runREADMEPowerShell(t, script,
 				"README_ACL_PATH="+target.path,
 				"README_ACL_KIND="+kind,
@@ -3252,7 +3267,12 @@ $OwnerSID = $ACL.GetOwner([Security.Principal.SecurityIdentifier]).Value
 $CurrentSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if ($OwnerSID -ne $CurrentSID) { throw 'independent check: wrong owner' }
 $Rules = @($ACL.Access)
-if ($Rules.Count -lt 1) { throw 'independent check: rule count' }
+if ($Rules.Count -ne 1) { throw 'independent check: rule count' }
+$Rule = $Rules[0]
+$RuleSID = $Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+if ($RuleSID -ne $CurrentSID) { throw 'independent check: wrong rule identity' }
+if ($Rule.IsInherited) { throw 'independent check: inherited rule' }
+if ($Rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw 'independent check: non-allow rule' }
 if ($env:README_ACL_KIND -eq 'directory') {
   $ExpectedRights = [Security.AccessControl.FileSystemRights]::FullControl
   $ExpectedInheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
@@ -3260,19 +3280,9 @@ if ($env:README_ACL_KIND -eq 'directory') {
   $ExpectedRights = [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Synchronize
   $ExpectedInheritance = [Security.AccessControl.InheritanceFlags]::None
 }
-$ExpectedRuleFound = $false
-foreach ($Rule in $Rules) {
-  $RuleSID = $Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-  if ($RuleSID -ne $CurrentSID) { throw 'independent check: wrong rule identity' }
-  if ($Rule.IsInherited) { throw 'independent check: inherited rule' }
-  if ($Rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw 'independent check: non-allow rule' }
-  if ($Rule.FileSystemRights -eq $ExpectedRights -and
-      $Rule.InheritanceFlags -eq $ExpectedInheritance -and
-      $Rule.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None) {
-    $ExpectedRuleFound = $true
-  }
-}
-if (-not $ExpectedRuleFound) { throw 'independent check: expected rule missing' }
+if ($Rule.FileSystemRights -ne $ExpectedRights) { throw 'independent check: wrong rights' }
+if ($Rule.InheritanceFlags -ne $ExpectedInheritance) { throw 'independent check: wrong inheritance' }
+if ($Rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw 'independent check: wrong propagation' }
 `
 
 func TestREADMEExactAPISubsetExamplesAndErrors(t *testing.T) {
@@ -4014,11 +4024,11 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	}
 	requireContainsAll(t, "Linux job", jobs["linux"],
 		"runs-on: ubuntu-latest", "go mod verify", "go test -count=1 ./...",
-		"go test -race -count=1 ./...", "go test -tags=integration -count=1 ./...",
+		"go test -race -timeout=20m -count=1 ./...", "go test -tags=integration -count=1 ./...",
 		"go test -tags=live -run '^$' ./internal/provider/...", "CGO_ENABLED: 0",
 		"go build -trimpath", "RUNNER_TEMP")
 	requireContainsAll(t, "macOS job", jobs["macos"],
-		"runs-on: macos-latest", "go test -count=1 ./...", "go test -race -count=1 ./...",
+		"runs-on: macos-latest", "go test -count=1 ./...", "go test -race -timeout=20m -count=1 ./...",
 		"go test -tags=integration -count=1 ./...", "CGO_ENABLED: 0",
 		"go build -trimpath", "RUNNER_TEMP")
 	requireContainsAll(t, "Windows job", jobs["windows"],
@@ -4352,6 +4362,14 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			),
 		},
 		{
+			name:   "Linux race timeout omitted",
+			mutate: replaceCINth("go test -race -timeout=20m -count=1 ./...", "go test -race -count=1 ./...", 1),
+		},
+		{
+			name:   "macOS race timeout omitted",
+			mutate: replaceCINth("go test -race -timeout=20m -count=1 ./...", "go test -race -count=1 ./...", 2),
+		},
+		{
 			name: "wrong SDK runner",
 			mutate: replaceCIOnce(
 				"  sdk-contract:\n    runs-on: ubuntu-latest\n",
@@ -4381,6 +4399,42 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		},
 		{name: "wrong Python runtime", mutate: replaceCIOnce(`python-version: "3.12"`, `python-version: "3.13"`)},
 		{name: "wrong Node runtime", mutate: replaceCIOnce(`node-version: "24"`, `node-version: "22"`)},
+		{
+			name: "Python preflight loses environment isolation",
+			mutate: replaceCIOnce(
+				`/usr/bin/env -i "${RUNNER_TEMP}/sdk-python/bin/python" -I -c 'import openai'`,
+				`"${RUNNER_TEMP}/sdk-python/bin/python" -I -c 'import openai'`,
+			),
+		},
+		{
+			name: "Python allocator preflight bypassed",
+			mutate: replaceCIOnce(
+				`PORT_OUTPUT="$(/usr/bin/env -i "${RUNNER_TEMP}/sdk-python/bin/python" -I -c "${PORT_ALLOCATOR_CODE}" 2>/dev/null)"`,
+				`PORT_OUTPUT=1`,
+			),
+		},
+		{
+			name: "Node preflight loses environment isolation",
+			mutate: replaceCIOnce(
+				`/usr/bin/env -i "${RUNNER_TEMP}/sdk-node/node" --input-type=module`,
+				`"${RUNNER_TEMP}/sdk-node/node" --input-type=module`,
+			),
+		},
+		{
+			name: "SDK build preflight uses host Go cache",
+			mutate: replaceCIOnce(
+				`GOCACHE="${SDK_BUILD_ROOT}/gocache" \`,
+				`GOCACHE="$(go env GOCACHE)" \`,
+			),
+		},
+		{
+			name:   "gateway build preflight removed",
+			mutate: replaceCIOnce("      - name: Preflight gateway build\n", "      - name: Skipped gateway build\n"),
+		},
+		{
+			name:   "fake CLI build preflight removed",
+			mutate: replaceCIOnce("      - name: Preflight fake CLI build\n", "      - name: Skipped fake CLI build\n"),
+		},
 		{
 			name: "Python root below workspace",
 			mutate: func(document string) string {
@@ -4755,7 +4809,7 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 				setupGo,
 				yamlContractLines("- name: Verify modules", "  run: go mod verify"),
 				yamlContractLines("- name: Unit tests", "  run: go test -count=1 ./..."),
-				yamlContractLines("- name: Race tests", "  run: go test -race -count=1 ./..."),
+				yamlContractLines("- name: Race tests", "  run: go test -race -timeout=20m -count=1 ./..."),
 				yamlContractLines("- name: Fake CLI integration tests", "  run: go test -tags=integration -count=1 ./..."),
 				yamlContractLines("- name: Trimmed-path tests", "  run: go test -trimpath -count=1 ./..."),
 				yamlContractLines("- name: Trimmed-path helper tests", "  run: GOFLAGS=-trimpath go test -count=1 ./internal/testutil ./internal/testcli"),
@@ -4769,7 +4823,7 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 				checkout,
 				setupGo,
 				yamlContractLines("- name: Unit tests", "  run: go test -count=1 ./..."),
-				yamlContractLines("- name: Race tests", "  run: go test -race -count=1 ./..."),
+				yamlContractLines("- name: Race tests", "  run: go test -race -timeout=20m -count=1 ./..."),
 				yamlContractLines("- name: Fake CLI integration tests", "  run: go test -tags=integration -count=1 ./..."),
 				yamlContractLines("- name: Trimmed-path tests", "  run: go test -trimpath -count=1 ./..."),
 				unixBuild,
@@ -4850,7 +4904,7 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 					`    node-version: "24"`,
 				),
 				yamlContractLines(
-					"- name: Verify official SDK compatibility",
+					"- name: Prepare official SDK runtimes",
 					"  shell: bash",
 					"  run: |",
 					"    set -eu",
@@ -4871,6 +4925,40 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 					`    chmod 0700 "${RUNNER_TEMP}/sdk-javascript"`,
 					`    test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-javascript")" = "700"`,
 					`    npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"`,
+				),
+				yamlContractLines(
+					"- name: Preflight isolated Python SDK runtime",
+					"  shell: bash",
+					"  run: |",
+					"    set -eu",
+					`    PORT_ALLOCATOR_CODE="import socket`,
+					`    s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)`,
+					`    s.bind(('127.0.0.1',0))`,
+					`    print(s.getsockname()[1])`,
+					`    s.close()`,
+					`    "`,
+					`    /usr/bin/env -i "${RUNNER_TEMP}/sdk-python/bin/python" -I -c 'import openai' >/dev/null 2>&1`,
+					`    PORT_OUTPUT="$(/usr/bin/env -i "${RUNNER_TEMP}/sdk-python/bin/python" -I -c "${PORT_ALLOCATOR_CODE}" 2>/dev/null)"`,
+					`    case "${PORT_OUTPUT}" in ''|*[!0-9]*) exit 1 ;; esac`,
+					`    test "${PORT_OUTPUT}" -ge 1`,
+					`    test "${PORT_OUTPUT}" -le 65535`,
+				),
+				yamlContractLines(
+					"- name: Preflight isolated Node SDK runtime",
+					"  shell: bash",
+					"  run: |",
+					"    set -eu",
+					`    cd "${RUNNER_TEMP}/sdk-javascript"`,
+					`    /usr/bin/env -i "${RUNNER_TEMP}/sdk-node/node" --input-type=module --eval 'await import("openai")' >/dev/null 2>&1`,
+				),
+				sdkBuildPreflightContract("SDK contract command", "sdk-build-contract", "sdk-contract", "./internal/sdkcontract/cmd/sdk-contract"),
+				sdkBuildPreflightContract("gateway", "sdk-build-gateway", "ai-cli-gateway", "./cmd/ai-cli-gateway"),
+				sdkBuildPreflightContract("fake CLI", "sdk-build-fake", "fake-codex-cli", "./internal/testcli/cmd/fake-codex-cli"),
+				yamlContractLines(
+					"- name: Verify official SDK compatibility",
+					"  shell: bash",
+					"  run: |",
+					"    set -eu",
 					`    scripts/sdk-contract.sh \`,
 					`      "${RUNNER_TEMP}/sdk-python/bin/python" \`,
 					`      "${RUNNER_TEMP}/sdk-node/node" \`,
@@ -4903,9 +4991,53 @@ func yamlContractLines(lines ...string) string {
 	return strings.Join(lines, "\n")
 }
 
+func sdkBuildPreflightContract(name, root, binary, packagePath string) string {
+	return yamlContractLines(
+		"- name: Preflight "+name+" build",
+		"  shell: bash",
+		"  run: |",
+		"    set -eu",
+		"    umask 077",
+		`    SDK_BUILD_ROOT="${RUNNER_TEMP}/`+root+`"`,
+		`    test ! -e "${SDK_BUILD_ROOT}"`,
+		`    for directory in bin gocache gomodcache gopath home tmp; do`,
+		`      install -d -m 0700 "${SDK_BUILD_ROOT}/${directory}"`,
+		`    done`,
+		`    HOME="${SDK_BUILD_ROOT}/home" \`,
+		`    GOPATH="${SDK_BUILD_ROOT}/gopath" \`,
+		`    GOMODCACHE="${SDK_BUILD_ROOT}/gomodcache" \`,
+		`    GOCACHE="${SDK_BUILD_ROOT}/gocache" \`,
+		`    TMPDIR="${SDK_BUILD_ROOT}/tmp" \`,
+		`    GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off CGO_ENABLED=0 \`,
+		`    GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= \`,
+		`    go build -trimpath -o "${SDK_BUILD_ROOT}/bin/`+binary+`" `+packagePath+` >/dev/null 2>&1`,
+	)
+}
+
 func replaceCIOnce(old, replacement string) func(string) string {
 	return func(document string) string {
 		return strings.Replace(document, old, replacement, 1)
+	}
+}
+
+func replaceCINth(old, replacement string, occurrence int) func(string) string {
+	return func(document string) string {
+		if occurrence < 1 {
+			return document
+		}
+		offset := 0
+		for index := 1; index <= occurrence; index++ {
+			relative := strings.Index(document[offset:], old)
+			if relative < 0 {
+				return document
+			}
+			offset += relative
+			if index == occurrence {
+				return document[:offset] + replacement + document[offset+len(old):]
+			}
+			offset += len(old)
+		}
+		return document
 	}
 }
 

@@ -197,7 +197,7 @@ jobs:
       - name: Unit tests
         run: go test -count=1 ./...
       - name: Race tests
-        run: go test -race -count=1 ./...
+        run: go test -race -timeout=20m -count=1 ./...
       - name: Fake CLI integration tests
         run: go test -tags=integration -count=1 ./...
       - name: Trimmed-path tests
@@ -223,7 +223,7 @@ jobs:
       - name: Unit tests
         run: go test -count=1 ./...
       - name: Race tests
-        run: go test -race -count=1 ./...
+        run: go test -race -timeout=20m -count=1 ./...
       - name: Fake CLI integration tests
         run: go test -tags=integration -count=1 ./...
       - name: Trimmed-path tests
@@ -306,7 +306,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "24"
-      - name: Verify official SDK compatibility
+      - name: Prepare official SDK runtimes
         shell: bash
         run: |
           set -eu
@@ -327,6 +327,85 @@ jobs:
           chmod 0700 "${RUNNER_TEMP}/sdk-javascript"
           test "$(stat -c '%a' "${RUNNER_TEMP}/sdk-javascript")" = "700"
           npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"
+      - name: Preflight isolated Python SDK runtime
+        shell: bash
+        run: |
+          set -eu
+          PORT_ALLOCATOR_CODE="import socket
+          s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+          s.bind(('127.0.0.1',0))
+          print(s.getsockname()[1])
+          s.close()
+          "
+          /usr/bin/env -i "${RUNNER_TEMP}/sdk-python/bin/python" -I -c 'import openai' >/dev/null 2>&1
+          PORT_OUTPUT="$(/usr/bin/env -i "${RUNNER_TEMP}/sdk-python/bin/python" -I -c "${PORT_ALLOCATOR_CODE}" 2>/dev/null)"
+          case "${PORT_OUTPUT}" in ''|*[!0-9]*) exit 1 ;; esac
+          test "${PORT_OUTPUT}" -ge 1
+          test "${PORT_OUTPUT}" -le 65535
+      - name: Preflight isolated Node SDK runtime
+        shell: bash
+        run: |
+          set -eu
+          cd "${RUNNER_TEMP}/sdk-javascript"
+          /usr/bin/env -i "${RUNNER_TEMP}/sdk-node/node" --input-type=module --eval 'await import("openai")' >/dev/null 2>&1
+      - name: Preflight SDK contract command build
+        shell: bash
+        run: |
+          set -eu
+          umask 077
+          SDK_BUILD_ROOT="${RUNNER_TEMP}/sdk-build-contract"
+          test ! -e "${SDK_BUILD_ROOT}"
+          for directory in bin gocache gomodcache gopath home tmp; do
+            install -d -m 0700 "${SDK_BUILD_ROOT}/${directory}"
+          done
+          HOME="${SDK_BUILD_ROOT}/home" \
+          GOPATH="${SDK_BUILD_ROOT}/gopath" \
+          GOMODCACHE="${SDK_BUILD_ROOT}/gomodcache" \
+          GOCACHE="${SDK_BUILD_ROOT}/gocache" \
+          TMPDIR="${SDK_BUILD_ROOT}/tmp" \
+          GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off CGO_ENABLED=0 \
+          GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= \
+          go build -trimpath -o "${SDK_BUILD_ROOT}/bin/sdk-contract" ./internal/sdkcontract/cmd/sdk-contract >/dev/null 2>&1
+      - name: Preflight gateway build
+        shell: bash
+        run: |
+          set -eu
+          umask 077
+          SDK_BUILD_ROOT="${RUNNER_TEMP}/sdk-build-gateway"
+          test ! -e "${SDK_BUILD_ROOT}"
+          for directory in bin gocache gomodcache gopath home tmp; do
+            install -d -m 0700 "${SDK_BUILD_ROOT}/${directory}"
+          done
+          HOME="${SDK_BUILD_ROOT}/home" \
+          GOPATH="${SDK_BUILD_ROOT}/gopath" \
+          GOMODCACHE="${SDK_BUILD_ROOT}/gomodcache" \
+          GOCACHE="${SDK_BUILD_ROOT}/gocache" \
+          TMPDIR="${SDK_BUILD_ROOT}/tmp" \
+          GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off CGO_ENABLED=0 \
+          GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= \
+          go build -trimpath -o "${SDK_BUILD_ROOT}/bin/ai-cli-gateway" ./cmd/ai-cli-gateway >/dev/null 2>&1
+      - name: Preflight fake CLI build
+        shell: bash
+        run: |
+          set -eu
+          umask 077
+          SDK_BUILD_ROOT="${RUNNER_TEMP}/sdk-build-fake"
+          test ! -e "${SDK_BUILD_ROOT}"
+          for directory in bin gocache gomodcache gopath home tmp; do
+            install -d -m 0700 "${SDK_BUILD_ROOT}/${directory}"
+          done
+          HOME="${SDK_BUILD_ROOT}/home" \
+          GOPATH="${SDK_BUILD_ROOT}/gopath" \
+          GOMODCACHE="${SDK_BUILD_ROOT}/gomodcache" \
+          GOCACHE="${SDK_BUILD_ROOT}/gocache" \
+          TMPDIR="${SDK_BUILD_ROOT}/tmp" \
+          GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOTELEMETRY=off CGO_ENABLED=0 \
+          GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= \
+          go build -trimpath -o "${SDK_BUILD_ROOT}/bin/fake-codex-cli" ./internal/testcli/cmd/fake-codex-cli >/dev/null 2>&1
+      - name: Verify official SDK compatibility
+        shell: bash
+        run: |
+          set -eu
           scripts/sdk-contract.sh \
             "${RUNNER_TEMP}/sdk-python/bin/python" \
             "${RUNNER_TEMP}/sdk-node/node" \

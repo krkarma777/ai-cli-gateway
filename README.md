@@ -294,7 +294,6 @@ foreach ($FreshTarget in @($GatewayConfigDir, $GatewayRuntimeDir, $GatewayConfig
 }
 [IO.Directory]::CreateDirectory($GatewayConfigDir) | Out-Null
 [IO.Directory]::CreateDirectory($GatewayRuntimeDir) | Out-Null
-$CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $CurrentSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 function Assert-ExactPrivateACL(
   [string]$Path,
@@ -303,39 +302,55 @@ function Assert-ExactPrivateACL(
 ) {
   $ACL = Get-Acl -LiteralPath $Path
   if (-not $ACL.AreAccessRulesProtected) { throw 'private ACL still inherits' }
+  $OwnerSID = $ACL.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  if ($OwnerSID -ne $CurrentSID) { throw 'private ACL has another owner' }
   $Rules = @($ACL.Access)
-  if ($Rules.Count -lt 1) { throw 'private ACL has no access rule' }
-  $ExpectedRuleFound = $false
-  foreach ($Rule in $Rules) {
-    $RuleSID = $Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-    if ($Rule.IsInherited) { throw 'private ACL rule is inherited' }
-    if ($RuleSID -ne $CurrentSID) { throw 'private ACL belongs to another identity' }
-    if ($Rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw 'private ACL rule is not allow' }
-    if ($Rule.FileSystemRights -eq $ExpectedRights -and
-        $Rule.InheritanceFlags -eq $ExpectedInheritance -and
-        $Rule.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None) {
-      $ExpectedRuleFound = $true
-    }
-  }
-  if (-not $ExpectedRuleFound) { throw 'private ACL expected rule is missing' }
+  if ($Rules.Count -ne 1) { throw 'private ACL must contain exactly one rule' }
+  $Rule = $Rules[0]
+  $RuleSID = $Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+  if ($Rule.IsInherited) { throw 'private ACL rule is inherited' }
+  if ($RuleSID -ne $CurrentSID) { throw 'private ACL belongs to another identity' }
+  if ($Rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw 'private ACL rule is not allow' }
+  if ($Rule.FileSystemRights -ne $ExpectedRights) { throw 'private ACL rights differ' }
+  if ($Rule.InheritanceFlags -ne $ExpectedInheritance) { throw 'private ACL inheritance flags differ' }
+  if ($Rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw 'private ACL propagation differs' }
 }
-function Assert-ExactPrivateDirectoryACL([string]$Path) {
+function Set-ExactPrivateACL(
+  [string]$Path,
+  [Security.AccessControl.FileSystemRights]$ExpectedRights,
+  [Security.AccessControl.InheritanceFlags]$ExpectedInheritance
+) {
+  $ACL = Get-Acl -LiteralPath $Path
+  $ACL.SetAccessRuleProtection($true, $false)
+  foreach ($ExistingRule in @($ACL.Access)) {
+    [void]$ACL.RemoveAccessRuleAll($ExistingRule)
+  }
+  $CurrentSIDObject = [Security.Principal.SecurityIdentifier]::new($CurrentSID)
+  $ACL.SetOwner($CurrentSIDObject)
+  $Rule = [Security.AccessControl.FileSystemAccessRule]::new(
+    $CurrentSIDObject,
+    $ExpectedRights,
+    $ExpectedInheritance,
+    [Security.AccessControl.PropagationFlags]::None,
+    [Security.AccessControl.AccessControlType]::Allow
+  )
+  $ACL.SetAccessRule($Rule)
+  Set-Acl -LiteralPath $Path -AclObject $ACL
+  Assert-ExactPrivateACL $Path $ExpectedRights $ExpectedInheritance
+}
+function Set-ExactPrivateDirectoryACL([string]$Path) {
   $Inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
     [Security.AccessControl.InheritanceFlags]::ObjectInherit
-  Assert-ExactPrivateACL $Path ([Security.AccessControl.FileSystemRights]::FullControl) $Inheritance
+  Set-ExactPrivateACL $Path ([Security.AccessControl.FileSystemRights]::FullControl) $Inheritance
 }
-function Assert-ExactPrivateFileACL([string]$Path) {
+function Set-ExactPrivateFileACL([string]$Path) {
   $Rights = [Security.AccessControl.FileSystemRights]::Read -bor `
     [Security.AccessControl.FileSystemRights]::Write -bor `
     [Security.AccessControl.FileSystemRights]::Synchronize
-  Assert-ExactPrivateACL $Path $Rights ([Security.AccessControl.InheritanceFlags]::None)
+  Set-ExactPrivateACL $Path $Rights ([Security.AccessControl.InheritanceFlags]::None)
 }
 foreach ($PrivateDir in @($GatewayConfigDir, $GatewayRuntimeDir)) {
-  & icacls.exe $PrivateDir /setowner "$CurrentIdentity" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'failed to set private directory owner' }
-  & icacls.exe $PrivateDir /inheritance:r /grant:r "${CurrentIdentity}:(OI)(CI)F" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'failed to protect private directory ACL' }
-  Assert-ExactPrivateDirectoryACL $PrivateDir
+  Set-ExactPrivateDirectoryACL $PrivateDir
 }
 
 Copy-Item -LiteralPath (Join-Path $ReleaseRoot 'examples/config/codex.example.toml') `
@@ -352,21 +367,13 @@ $ConfigText = Replace-ExactlyOnce $ConfigText '/var/lib/ai-cli-gateway/codex-hom
 $ConfigText = Replace-ExactlyOnce $ConfigText '/var/lib/ai-cli-gateway/runtime' $GatewayRuntimeTOML
 $ConfigText = Replace-ExactlyOnce $ConfigText 'configured-provider-model' $CodexModelTOML
 [IO.File]::WriteAllText($GatewayConfigFile, $ConfigText, [Text.UTF8Encoding]::new($false))
-& icacls.exe $GatewayConfigFile /setowner "$CurrentIdentity" | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'failed to set config owner' }
-& icacls.exe $GatewayConfigFile /inheritance:r /grant:r "${CurrentIdentity}:(RD,REA,RA,RC,WD,AD,WEA,WA,S)" | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'failed to protect config ACL' }
-Assert-ExactPrivateFileACL $GatewayConfigFile
+Set-ExactPrivateFileACL $GatewayConfigFile
 
 $RandomBytes = [byte[]]::new(32)
 [Security.Cryptography.RandomNumberGenerator]::Fill($RandomBytes)
 $GatewayKey = [Convert]::ToHexString($RandomBytes).ToLowerInvariant()
 [IO.File]::WriteAllText($GatewayKeyPath, $GatewayKey, [Text.UTF8Encoding]::new($false))
-& icacls.exe $GatewayKeyPath /setowner "$CurrentIdentity" | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'failed to set gateway key owner' }
-& icacls.exe $GatewayKeyPath /inheritance:r /grant:r "${CurrentIdentity}:(RD,REA,RA,RC,WD,AD,WEA,WA,S)" | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'failed to protect gateway key ACL' }
-Assert-ExactPrivateFileACL $GatewayKeyPath
+Set-ExactPrivateFileACL $GatewayKeyPath
 $LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()
 if ($LoadedGatewayKey -cnotmatch '^[0-9a-f]{64}$') { throw 'invalid gateway key file' }
 $env:AI_CLI_GATEWAY_API_KEY = $LoadedGatewayKey
