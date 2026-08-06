@@ -5230,6 +5230,9 @@ func TestReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "Syft runtime relative binary", mutate: replaceReleaseOnce(`              SYFT_CHECK_FOR_APP_UPDATE=false "${SYFT_BIN}" "$@"`, `              SYFT_CHECK_FOR_APP_UPDATE=false syft "$@"`)},
 		{name: "Syft update check enabled", mutate: replaceReleaseOnce("SYFT_CHECK_FOR_APP_UPDATE=false", "SYFT_CHECK_FOR_APP_UPDATE=true")},
 		{name: "Syft compliance altered", mutate: replaceReleaseOnce("SYFT_COMPLIANCE_MISSING_NAME=drop", "SYFT_COMPLIANCE_MISSING_NAME=keep")},
+		{name: "Syft version field guard removed", mutate: replaceReleaseOnce(`          test "$(grep -Ec '^Version:' <<<"${syft_version}")" = 1`+"\n", "")},
+		{name: "Syft version field guard narrowed", mutate: replaceReleaseOnce(`grep -Ec '^Version:'`, `grep -Ec '^Version:[[:blank:]]+1[.]50[.]0$'`)},
+		{name: "Syft exact version guard removed", mutate: replaceReleaseOnce(`          test "$(grep -Ec '^Version:[[:blank:]]+1[.]50[.]0$' <<<"${syft_version}")" = 1`+"\n", "")},
 		{name: "Syft version accepts trailing data", mutate: replaceReleaseOnce(`^Version:[[:blank:]]+1[.]50[.]0$`, `^Version:[[:blank:]]+1[.]50[.]0`)},
 		{name: "Syft second config channel removed", mutate: replaceReleaseOnce(`            -c "${tools_root}/config/syft.yaml" -o`, `            -o`)},
 		{
@@ -5717,6 +5720,10 @@ func TestReleaseSyftIsolationScript(t *testing.T) {
 		{name: "wrong reported version", mode: "syft-go-wrong-version"},
 		{name: "trailing reported version", mode: "syft-go-trailing-version"},
 		{name: "duplicate reported version", mode: "syft-go-duplicate-version"},
+		{name: "valid and wrong reported versions", mode: "syft-go-mixed-wrong-version"},
+		{name: "valid and trailing reported versions", mode: "syft-go-mixed-trailing-version"},
+		{name: "valid and malformed reported versions", mode: "syft-go-mixed-malformed-version"},
+		{name: "versioned label is not version field", mode: "syft-go-versioned-label", wantOK: true},
 		{name: "wrong SPDX creator", mode: "syft-go-wrong-creator"},
 		{name: "same-mode config replacement", mode: "syft-go-replace-config"},
 		{name: "same-mode root replacement", mode: "syft-go-replace-root"},
@@ -6035,6 +6042,18 @@ func runWorkflowToolFake(mode, testBinary string, args []string) int {
 			fmt.Println(reported)
 			if mode == "syft-duplicate-version" {
 				fmt.Println(reported)
+			}
+			if mode == "syft-mixed-wrong-version" {
+				fmt.Println("Version:    1.49.0")
+			}
+			if mode == "syft-mixed-trailing-version" {
+				fmt.Println("Version:    1.50.0 trailing")
+			}
+			if mode == "syft-mixed-malformed-version" {
+				fmt.Println("Version:not-a-version")
+			}
+			if mode == "syft-versioned-label" {
+				fmt.Println("Versioned: 1.49.0")
 			}
 			return 0
 		}
@@ -7354,7 +7373,10 @@ ASSETS
 
 func validateReleaseSyftStep(step releaseWorkflowStep) error {
 	script := shellWithoutCommentOnlyLines(step.Run)
-	const versionCheck = `test "$(grep -Ec '^Version:[[:blank:]]+1[.]50[.]0$' <<<"${syft_version}")" = 1`
+	const (
+		versionFieldCheck = `test "$(grep -Ec '^Version:' <<<"${syft_version}")" = 1`
+		exactVersionCheck = `test "$(grep -Ec '^Version:[[:blank:]]+1[.]50[.]0$' <<<"${syft_version}")" = 1`
+	)
 	for _, required := range []string{
 		`tools_root="${RUNNER_TEMP}/release-tools"`,
 		`ENV_BIN=/usr/bin/env`,
@@ -7374,7 +7396,8 @@ func validateReleaseSyftStep(step releaseWorkflowStep) error {
 		`run_clean_syft scan --help`,
 		`run_clean_syft version --help`,
 		`run_clean_syft version`,
-		versionCheck,
+		versionFieldCheck,
+		exactVersionCheck,
 		`SYFT_CONFIG="${tools_root}/config/syft.yaml"`,
 		`SYFT_CHECK_FOR_APP_UPDATE=false`,
 		`SYFT_COMPLIANCE_MISSING_NAME=drop`,
@@ -7389,8 +7412,8 @@ func validateReleaseSyftStep(step releaseWorkflowStep) error {
 		}
 	}
 	lines := trimmedShellLines(script)
-	if shellLineCount(lines, versionCheck) != 1 {
-		return errors.New("Syft version check is not the one exact executable line")
+	if shellLineCount(lines, versionFieldCheck) != 1 || shellLineCount(lines, exactVersionCheck) != 1 {
+		return errors.New("Syft version guards are not the two exact executable lines")
 	}
 	if shellLineCount(lines, `run_clean_go install -ldflags '-X main.version=1.50.0' github.com/anchore/syft/cmd/syft@v1.50.0`) != 1 ||
 		shellLinePrefixCount(lines, "run_clean_go install ") != 1 {
