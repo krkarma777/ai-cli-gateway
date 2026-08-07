@@ -87,4 +87,3 @@ Retain once, in plain language:
 ## Publication
 
 Publish through a reviewed PR. After merge and green hosted CI, update the public v0.1.0 body from the simplified tracked release-note source. Do not change the tag, title, release flags, or seven release assets.
-
