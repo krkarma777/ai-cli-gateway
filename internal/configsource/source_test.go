@@ -20,6 +20,9 @@ func TestLoadBindsDecodedConfigIdentityAndDigestToOneRetainedHandle(t *testing.T
 	if err != nil {
 		t.Fatalf("Lstat() error = %v", err)
 	}
+	if !os.SameFile(pathInfo, pathInfo) {
+		t.Fatal("Lstat identity could not be materialized before retained source open")
+	}
 	opens := 0
 	snapshot, err := loadWithOpen(path, func(actual string) (*os.File, error) {
 		opens++
