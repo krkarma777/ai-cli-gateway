@@ -4,7 +4,7 @@
 
 **Goal:** Replace the 897-line audit-style front page with a 200–300-line product README, move executable onboarding and detailed reference material to dedicated documents, and remove public live-verification status language without weakening tested security instructions.
 
-**Architecture:** Keep `README.md` as the product decision and first-request page. Make `docs/getting-started.md` the sealed executable onboarding contract, `docs/reference.md` the detailed API/operations contract, and `CONTRIBUTING.md` the home of maintainer-only live-test mechanics. Repoint the existing high-value mutation tests to the onboarding guide, replace brittle README prose assertions with small product-page boundary checks, and publish the simplified tracked release note only after a reviewed merge and green hosted CI.
+**Architecture:** Keep `README.md` as the product decision and first-request page. Make `docs/getting-started.md` the sealed executable onboarding contract, `docs/reference.md` the detailed API/operations contract, and `CONTRIBUTING.md` the home of maintainer-only live-test mechanics. Repoint the existing high-value executable mutation tests to the onboarding guide, remove README prose change-detector tests, and publish the simplified tracked release note only after a reviewed merge and green hosted CI.
 
 **Tech Stack:** Markdown, Go 1.26.5 repository tests, golangci-lint 2.12.2, Git/GitHub CLI, GitHub Actions.
 
@@ -20,6 +20,7 @@
 - The public product pages may describe supported behavior, but must not publish maintainer run status such as `live-verified`, `not run`, or an optional-live-check disclaimer.
 - Do not add a new dependency or a generated documentation site.
 - Use `apply_patch` for repository file edits. Formatting tools may perform mechanical rewrites after the semantic edit.
+- Do not add persistent tests for human prose, line counts, heading order, or release-note wording. Verify those review decisions during this change with focused shell checks and code review; retain tests only where they execute or semantically parse security-sensitive instructions.
 
 ## Target document map
 
@@ -131,35 +132,21 @@ git commit -m "docs: move secure onboarding into guide"
 - Source: `README.md:523-854`
 - Source: `README.md:884-897`
 
-- [ ] **Step 1: Repoint detailed-contract assertions before creating the reference**
+- [ ] **Step 1: Remove README prose change-detector tests**
 
-Add:
+Delete `TestREADMEOpeningAndOfficialContractSources`, `TestREADMEExactAPISubsetExamplesAndErrors`, and `TestREADMECommandsOperationsSecurityAndGeminiBoundary`. Also remove helper functions used only by those tests after confirming their references with `rg`.
 
-```go
-func readReference(t *testing.T) string {
-	t.Helper()
-	return string(readRepositoryFile(t, "docs/reference.md"))
-}
-```
+Do not replace them with reference-prose tests. The detailed examples remain reviewable documentation, while executable onboarding stays protected by Task 1's semantic and native execution tests.
 
-Split the existing README assertions as follows:
-
-- Rename `TestREADMEExactAPISubsetExamplesAndErrors` to `TestReferenceExactAPISubsetExamplesAndErrors` and read `readReference(t)`.
-- Rename `TestREADMECommandsOperationsSecurityAndGeminiBoundary` to `TestReferenceCommandsProvidersAndOperations` and read `readReference(t)`.
-- Move the official OpenAI/Codex/Claude/Gemini source-link assertions out of `TestREADMEOpeningAndOfficialContractSources` into `TestReferenceOfficialContractSources`.
-- Retain current command grammar, provider version ranges, credential shapes, limits, process containment, stable-error catalog, and current official contract links.
-- Delete assertions for dated baselines, the Gemini/Antigravity transition chronology, `live-verified`, `not run`, `unassessed`, and maintainer live-test environment variables.
-- Delete the CI runner-version assertion from the reference test; it belongs to contributor workflow documentation.
-
-- [ ] **Step 2: Run the focused reference tests and confirm RED**
+- [ ] **Step 2: Run the security-test package after removing dead assertions**
 
 ```bash
-go test -count=1 ./internal/securitytest -run '^TestReference'
+go test -count=1 ./internal/securitytest -run '^(TestREADME|TestGettingStarted|TestSDKContractRecoveryGuidance)'
 ```
 
-Expected: failure because `docs/reference.md` does not exist.
+Expected: existing executable documentation tests pass; no test requires detailed prose to remain in README.
 
-- [ ] **Step 3: Create `docs/reference.md`**
+- [ ] **Step 3: Create `docs/reference.md` through `apply_patch`**
 
 Use this exact top-level outline:
 
@@ -187,15 +174,17 @@ Move and edit the existing detailed material under those headings:
 - keep source links without a dated `implementation baseline` preamble;
 - use `../config.example.toml`, `../SECURITY.md`, and other correct paths from `docs/`.
 
-- [ ] **Step 4: Verify the reference contract**
+- [ ] **Step 4: Review the reference content and links**
 
 ```bash
-go test -count=1 ./internal/securitytest -run '^TestReference'
 rg -n -i 'live-verified|not run|unassessed|Gemini upstream transition|Antigravity|contract baseline|2026-07-30|2026-08-02' docs/reference.md
+rg -n '^## ' docs/reference.md
+test -f config.example.toml
+test -f SECURITY.md
 git diff --check
 ```
 
-Expected: Go tests pass and the forbidden-copy search produces no output.
+Expected: the forbidden-copy search produces no output, headings match the approved outline, referenced repository files exist, and the diff is clean.
 
 - [ ] **Step 5: Commit the reference move**
 
@@ -212,34 +201,7 @@ git commit -m "docs: add focused API and operations reference"
 - Modify: `internal/securitytest/repository_test.go`
 - Source: `README.md:855-874`
 
-- [ ] **Step 1: Extend the contribution-policy test**
-
-Add these required strings to `TestPublicPolicyContributionSecurityAndIgnoreBoundary`:
-
-```go
-"go test -tags=live -run '^$' ./internal/provider/...",
-"AI_CLI_GATEWAY_LIVE_PROBES",
-"AI_CLI_GATEWAY_LIVE_INFERENCE",
-"AI_CLI_GATEWAY_LIVE_CODEX_INFERENCE",
-"AI_CLI_GATEWAY_LIVE_CLAUDE_INFERENCE",
-"AI_CLI_GATEWAY_LIVE_GEMINI_INFERENCE",
-"dedicated disposable canary",
-"may incur provider usage and cost",
-"Node24",
-"actions/runner v2.327.1",
-```
-
-Add a negative assertion that lowercased `CONTRIBUTING.md` does not contain `live-verified`, `not run`, or `has not been run`.
-
-- [ ] **Step 2: Confirm the contribution test is RED**
-
-```bash
-go test -count=1 ./internal/securitytest -run '^TestPublicPolicyContributionSecurityAndIgnoreBoundary$'
-```
-
-Expected: failure on the first missing live-test mechanic.
-
-- [ ] **Step 3: Add a contributor-only `Opt-in provider tests` section**
+- [ ] **Step 1: Add a contributor-only `Opt-in provider tests` section**
 
 Move the compile command, two-stage global gates, three provider inference gates, provider-specific executable/config/model/auth variables, disposable-canary warning, and Node24/self-hosted-runner note from README into `CONTRIBUTING.md`.
 
@@ -259,109 +221,31 @@ Live probes and inference are explicit maintainer operations. Use a dedicated di
 
 Keep the existing environment-variable details that an actual contributor needs. Do not include `live-verified`, `not run`, or any claim about whether a maintainer performed a run.
 
-- [ ] **Step 4: Verify and commit**
+- [ ] **Step 2: Verify the existing contribution/security contract and copy boundary**
 
 ```bash
 go test -count=1 ./internal/securitytest -run '^TestPublicPolicyContributionSecurityAndIgnoreBoundary$'
 rg -n -i 'live-verified|not run|has not been run' CONTRIBUTING.md
+rg -n 'AI_CLI_GATEWAY_LIVE_(PROBES|INFERENCE|CODEX_INFERENCE|CLAUDE_INFERENCE|GEMINI_INFERENCE)' CONTRIBUTING.md
 git diff --check
+```
+
+Expected: the existing policy test passes, the status search produces no output, and the contributor guide contains all five opt-in gates.
+
+- [ ] **Step 3: Commit the contributor documentation**
+
+```bash
 git add -- CONTRIBUTING.md internal/securitytest/repository_test.go
 git commit -m "docs: move live test mechanics to contributing"
 ```
-
-Expected: test passes and the forbidden status search produces no output.
 
 ### Task 4: Rewrite `README.md` as the product front page
 
 **Files:**
 
 - Modify: `README.md`
-- Modify: `internal/securitytest/repository_test.go`
 
-- [ ] **Step 1: Replace the audit-style README test with a product-page contract**
-
-Replace `TestREADMEOpeningAndOfficialContractSources` with `TestREADMEProductPage`. The test must enforce:
-
-```go
-func TestREADMEProductPage(t *testing.T) {
-	readme := string(readRepositoryFile(t, "README.md"))
-	paragraphs := markdownProseParagraphs(readme)
-	if len(paragraphs) < 2 {
-		t.Fatal("README.md must begin with a product definition and compatibility boundary")
-	}
-	const opening = "AI CLI Gateway turns locally authenticated AI CLIs into an OpenAI Responses-compatible API."
-	if paragraphs[0] != opening {
-		t.Fatalf("README first prose sentence = %q, want %q", paragraphs[0], opening)
-	}
-	if !strings.Contains(paragraphs[1], "Responses API-compatible subset") ||
-		!strings.Contains(paragraphs[1], "not full OpenAI API compatibility") {
-		t.Fatal("README immediate compatibility paragraph is missing the subset boundary")
-	}
-
-	lineCount := strings.Count(strings.TrimSuffix(readme, "\n"), "\n") + 1
-	if lineCount < 200 || lineCount > 300 {
-		t.Fatalf("README line count = %d, want 200..300", lineCount)
-	}
-
-	wantHeadings := []string{
-		"## Build AI MVPs with the AI CLI access you already have.",
-		"## From SDK to local CLI",
-		"## What you can build",
-		"## What v0.1.0 supports",
-		"## Quick Start",
-		"## Security boundaries",
-		"## Release integrity",
-		"## Documentation",
-	}
-	gotHeadings := make([]string, 0, len(wantHeadings))
-	for _, line := range strings.Split(readme, "\n") {
-		if strings.HasPrefix(line, "## ") {
-			gotHeadings = append(gotHeadings, line)
-		}
-	}
-	if !reflect.DeepEqual(gotHeadings, wantHeadings) {
-		t.Fatalf("README H2 headings = %q, want %q", gotHeadings, wantHeadings)
-	}
-
-	requireContainsAll(t, "README product links and boundaries", readme,
-		"docs/getting-started.md",
-		"docs/reference.md",
-		"SECURITY.md",
-		"CONTRIBUTING.md",
-		"releases/tag/v0.1.0",
-		"POST /v1/responses",
-		"GET /v1/models",
-		"Unsupported fields return",
-		"install and authenticate",
-		"may send request data to its upstream provider",
-		"does not log prompts, model output, or credentials",
-		"not an isolation boundary",
-	)
-
-	lower := strings.ToLower(readme)
-	for _, forbidden := range []string{
-		"live-verified", "not run", "optional live", "deterministic fake", "fake cli",
-		"contract baseline", "gemini upstream transition", "closed and authoritative",
-		"2026-07-30", "2026-08-02", "ai_cli_gateway_live_",
-	} {
-		if strings.Contains(lower, strings.ToLower(forbidden)) {
-			t.Fatalf("README contains maintainer/audit copy %q", forbidden)
-		}
-	}
-}
-```
-
-Keep the existing broad-compatibility negative assertions for `fully OpenAI API compatible`, `complete OpenAI API compatibility`, and `drop-in replacement for the OpenAI API`.
-
-- [ ] **Step 2: Run the product-page test and confirm RED**
-
-```bash
-go test -count=1 ./internal/securitytest -run '^TestREADMEProductPage$'
-```
-
-Expected: failure because the current README is 897 lines and contains maintainer/audit copy.
-
-- [ ] **Step 3: Replace README with the approved product structure**
+- [ ] **Step 1: Replace README with the approved product structure**
 
 Use these top-level headings, in this order:
 
@@ -391,22 +275,24 @@ Content requirements:
 
 Do not retain the full platform installers, full response/error catalog, provider version/status table, Doctor parser algorithm, Gemini transition history, operational limit catalog, shutdown internals, live-test mechanics, SDK recovery procedure, or dated source baseline on this page.
 
-- [ ] **Step 4: Verify the product page and moved-content separation**
+- [ ] **Step 2: Review the product page and moved-content separation**
 
 ```bash
-go test -count=1 ./internal/securitytest -run '^(TestREADMEProductPage|TestGettingStarted|TestReference|TestSDKContractRecoveryGuidance)'
 rg -n -i 'live-verified|not run|optional live|deterministic fake|fake CLI|contract baseline|Gemini upstream transition|2026-07-30|2026-08-02|AI_CLI_GATEWAY_LIVE_' README.md
 test "$(wc -l < README.md | tr -d ' ')" -ge 200
 test "$(wc -l < README.md | tr -d ' ')" -le 300
+rg -n '^## ' README.md
+rg -n 'docs/getting-started.md|docs/reference.md|SECURITY.md|CONTRIBUTING.md|releases/tag/v0.1.0' README.md
+rg -n 'Responses API-compatible subset|not full OpenAI API compatibility|Unsupported fields return|may send request data to its upstream provider|does not log prompts, model output, or credentials|not an isolation boundary' README.md
 git diff --check
 ```
 
-Expected: tests pass and the forbidden-copy search produces no output.
+Expected: the forbidden-copy search produces no output; line count is 200–300; headings, links, and essential boundaries appear once in a readable product page.
 
-- [ ] **Step 5: Commit the product README**
+- [ ] **Step 3: Commit the product README**
 
 ```bash
-git add -- README.md internal/securitytest/repository_test.go
+git add -- README.md
 git commit -m "docs: focus README on the product"
 ```
 
@@ -415,48 +301,8 @@ git commit -m "docs: focus README on the product"
 **Files:**
 
 - Modify: `docs/releases/v0.1.0.md`
-- Modify: `internal/securitytest/repository_test.go`
 
-- [ ] **Step 1: Add a small release-copy contract**
-
-Add:
-
-```go
-func TestReleaseNoteProductCopy(t *testing.T) {
-	notes := string(readRepositoryFile(t, "docs/releases/v0.1.0.md"))
-	requireContainsAll(t, "v0.1.0 release note", notes,
-		"Responses API-compatible subset",
-		"POST /v1/responses",
-		"GET /v1/models",
-		"Unsupported request fields",
-		"does not issue, extract, copy, or store provider login tokens",
-		"docs/getting-started.md",
-		"docs/reference.md",
-		"SHA256SUMS",
-		"SPDX SBOM",
-		"seven assets",
-	)
-	lower := strings.ToLower(notes)
-	for _, forbidden := range []string{
-		"live-verified", "not run", "optional live", "deterministic fake", "fake cli",
-		"contract baseline", "closed and authoritative", "not a claim",
-	} {
-		if strings.Contains(lower, strings.ToLower(forbidden)) {
-			t.Fatalf("release note contains maintainer/audit copy %q", forbidden)
-		}
-	}
-}
-```
-
-- [ ] **Step 2: Run the release-copy test and confirm RED**
-
-```bash
-go test -count=1 ./internal/securitytest -run '^TestReleaseNoteProductCopy$'
-```
-
-Expected: failure on the deterministic-fake/optional-live paragraph and old getting-started anchors.
-
-- [ ] **Step 3: Simplify the release note**
+- [ ] **Step 1: Simplify the release note**
 
 Keep the current `Why this exists`, `What you can build`, supported/not-supported scope, authentication/data boundary, and release-integrity substance. Make only these content changes:
 
@@ -467,17 +313,22 @@ Keep the current `Why this exists`, `What you can build`, supported/not-supporte
 - retain security, contributing, release, and changelog links;
 - do not add any personal validation record or maintainer test-status statement.
 
-- [ ] **Step 4: Verify and commit**
+- [ ] **Step 2: Review the release copy and links**
 
 ```bash
-go test -count=1 ./internal/securitytest -run '^TestReleaseNoteProductCopy$'
 rg -n -i 'live-verified|not run|optional live|deterministic fake|fake CLI|contract baseline|closed and authoritative|not a claim' docs/releases/v0.1.0.md
+rg -n 'Responses API-compatible subset|POST /v1/responses|GET /v1/models|Unsupported request fields|SHA256SUMS|SPDX SBOM|seven assets|docs/getting-started.md|docs/reference.md' docs/releases/v0.1.0.md
 git diff --check
+```
+
+Expected: the forbidden-copy search produces no output and the product scope, release integrity, and new documentation links remain present.
+
+- [ ] **Step 3: Commit the release note**
+
+```bash
 git add -- docs/releases/v0.1.0.md internal/securitytest/repository_test.go
 git commit -m "docs: simplify v0.1.0 release notes"
 ```
-
-Expected: test passes and the forbidden-copy search produces no output.
 
 ### Task 6: Whole-branch verification, review, merge, and publication
 
