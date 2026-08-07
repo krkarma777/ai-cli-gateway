@@ -24,6 +24,12 @@ const maxSourceBytes = 1 << 20
 var ErrUnavailable = errors.New("configuration source is unavailable")
 
 type sourceOpener func(string) (*os.File, error)
+type sourceReader func(*os.File) ([]byte, bool)
+
+type sourceEvidence struct {
+	info     fs.FileInfo
+	metadata sourceMetadata
+}
 
 // Snapshot retains the one handle that supplied its decoded configuration and
 // identity evidence.
@@ -32,8 +38,10 @@ type Snapshot struct {
 	file   *os.File
 	path   string
 	info   fs.FileInfo
+	meta   sourceMetadata
 	digest [sha256.Size]byte
 	config config.Config
+	read   sourceReader
 }
 
 // Load opens, decodes, fingerprints, and retains one stable configuration
@@ -43,8 +51,16 @@ func Load(path string) (*Snapshot, error) {
 }
 
 func loadWithOpen(path string, open sourceOpener) (*Snapshot, error) {
+	return loadWithOpenAndRead(path, open, readSourceBytes)
+}
+
+func loadWithOpenAndRead(
+	path string,
+	open sourceOpener,
+	read sourceReader,
+) (*Snapshot, error) {
 	clean, ok := cleanSourcePath(path)
-	if !ok || open == nil {
+	if !ok || open == nil || read == nil {
 		return nil, ErrUnavailable
 	}
 	file, err := open(clean)
@@ -61,11 +77,11 @@ func loadWithOpen(path string, open sourceOpener) (*Snapshot, error) {
 		}
 	}()
 
-	info, ok := stableSourceInfo(clean, file, nil)
+	baseline, ok := stableSourceEvidence(clean, file)
 	if !ok {
 		return nil, ErrUnavailable
 	}
-	raw, ok := readSourceBytes(file)
+	raw, ok := read(file)
 	if !ok {
 		return nil, ErrUnavailable
 	}
@@ -75,13 +91,14 @@ func loadWithOpen(path string, open sourceOpener) (*Snapshot, error) {
 		return nil, ErrUnavailable
 	}
 	digest := sha256.Sum256(raw)
-	if !revalidateSource(clean, file, info, digest) {
+	if !revalidateSource(clean, file, baseline.metadata, digest, read) {
 		return nil, ErrUnavailable
 	}
 
 	retained = true
 	return &Snapshot{
-		file: file, path: clean, info: info, digest: digest, config: cloneConfig(decoded),
+		file: file, path: clean, info: baseline.info, meta: baseline.metadata,
+		digest: digest, config: cloneConfig(decoded), read: read,
 	}, nil
 }
 
@@ -121,8 +138,8 @@ func (s *Snapshot) Revalidate() error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.file == nil || s.info == nil || s.path == "" ||
-		!revalidateSource(s.path, s.file, s.info, s.digest) {
+	if s.file == nil || s.info == nil || s.path == "" || s.read == nil ||
+		!revalidateSource(s.path, s.file, s.meta, s.digest, s.read) {
 		return ErrUnavailable
 	}
 	return nil
@@ -143,8 +160,10 @@ func (s *Snapshot) Close() error {
 	s.file = nil
 	s.path = ""
 	s.info = nil
+	s.meta = sourceMetadata{}
 	clear(s.digest[:])
 	s.config = config.Config{}
+	s.read = nil
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -181,13 +200,15 @@ func readSourceBytes(file *os.File) ([]byte, bool) {
 func revalidateSource(
 	path string,
 	file *os.File,
-	retained fs.FileInfo,
+	baseline sourceMetadata,
 	digest [sha256.Size]byte,
+	read sourceReader,
 ) bool {
-	if _, ok := stableSourceInfo(path, file, retained); !ok {
+	before, ok := stableSourceEvidence(path, file)
+	if !ok || !sameSourceMetadata(baseline, before.metadata) {
 		return false
 	}
-	raw, ok := readSourceBytes(file)
+	raw, ok := read(file)
 	if !ok {
 		return false
 	}
@@ -196,31 +217,26 @@ func revalidateSource(
 	if currentDigest != digest {
 		return false
 	}
-	_, ok = stableSourceInfo(path, file, retained)
-	return ok
+	after, ok := stableSourceEvidence(path, file)
+	return ok && sameSourceMetadata(baseline, after.metadata)
 }
 
-func stableSourceInfo(
+func stableSourceEvidence(
 	path string,
 	file *os.File,
-	retained fs.FileInfo,
-) (fs.FileInfo, bool) {
-	if file == nil || !platformSourceStable(path, file) {
-		return nil, false
+) (sourceEvidence, bool) {
+	if file == nil {
+		return sourceEvidence{}, false
 	}
 	handleInfo, err := file.Stat()
 	if err != nil || !handleInfo.Mode().IsRegular() {
-		return nil, false
+		return sourceEvidence{}, false
 	}
-	pathInfo, err := os.Lstat(path)
-	if err != nil || !pathInfo.Mode().IsRegular() ||
-		!os.SameFile(handleInfo, pathInfo) {
-		return nil, false
+	metadata, ok := platformSourceMetadata(path, file)
+	if !ok {
+		return sourceEvidence{}, false
 	}
-	if retained != nil && !os.SameFile(retained, handleInfo) {
-		return nil, false
-	}
-	return handleInfo, true
+	return sourceEvidence{info: handleInfo, metadata: metadata}, true
 }
 
 func cloneConfig(cfg config.Config) config.Config {

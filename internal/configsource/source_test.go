@@ -3,19 +3,23 @@ package configsource
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/krkarma777/ai-cli-gateway/internal/config"
 )
 
 func TestLoadBindsDecodedConfigIdentityAndDigestToOneRetainedHandle(t *testing.T) {
 	path := writeSourceConfig(t, "SOURCE_KEY")
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat() error = %v", err)
+	}
 	opens := 0
 	snapshot, err := loadWithOpen(path, func(actual string) (*os.File, error) {
 		opens++
@@ -37,10 +41,6 @@ func TestLoadBindsDecodedConfigIdentityAndDigestToOneRetainedHandle(t *testing.T
 		cfg.Providers["claude"].Executable == "" ||
 		len(cfg.Models) != 1 || cfg.Models[0].ID != "source-model" {
 		t.Fatalf("decoded config = %+v", cfg)
-	}
-	pathInfo, err := os.Lstat(path)
-	if err != nil {
-		t.Fatalf("Lstat() error = %v", err)
 	}
 	if snapshot.FileInfo() == nil || !os.SameFile(snapshot.FileInfo(), pathInfo) {
 		t.Fatalf("FileInfo() = %#v, want retained source identity", snapshot.FileInfo())
@@ -110,6 +110,63 @@ func TestSnapshotRevalidateRejectsInPlaceContentChangeWithoutReplacingConfig(t *
 	assertSourceUnavailable(t, snapshot.Revalidate())
 	if got := snapshot.Config(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Config() changed after failed revalidation\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestSnapshotRevalidateRejectsMutationRestoredToOriginalDigestAndMtime(t *testing.T) {
+	path := writeSourceConfig(t, "ORIGINAL_KEY")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read original source: %v", err)
+	}
+	snapshot, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	t.Cleanup(func() { _ = snapshot.Close() })
+	baseline, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat baseline source: %v", err)
+	}
+
+	mutateAndRestoreSource(t, path, original, baseline.ModTime())
+
+	assertSourceUnavailable(t, snapshot.Revalidate())
+}
+
+func TestLoadRejectsMutationRestoredDuringInitialRetainedHandleRead(t *testing.T) {
+	path := writeSourceConfig(t, "ORIGINAL_KEY")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read original source: %v", err)
+	}
+	baseline, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat baseline source: %v", err)
+	}
+	opens := 0
+	reads := 0
+	snapshot, err := loadWithOpenAndRead(
+		path,
+		func(actual string) (*os.File, error) {
+			opens++
+			return openSourceFile(actual)
+		},
+		func(file *os.File) ([]byte, bool) {
+			reads++
+			if reads == 1 {
+				mutateAndRestoreSource(t, path, original, baseline.ModTime())
+			}
+			return readSourceBytes(file)
+		},
+	)
+	if snapshot != nil {
+		_ = snapshot.Close()
+		t.Fatalf("loadWithOpenAndRead() snapshot = %#v, want nil", snapshot)
+	}
+	assertSourceUnavailable(t, err)
+	if opens != 1 || reads != 1 {
+		t.Fatalf("open/read calls = %d/%d, want 1/1", opens, reads)
 	}
 }
 
@@ -257,6 +314,20 @@ func assertSourceUnavailable(t *testing.T, err error) {
 	}
 }
 
-func sameSourceInfos(left, right fs.FileInfo) bool {
-	return left != nil && right != nil && os.SameFile(left, right)
+func mutateAndRestoreSource(
+	t *testing.T,
+	path string,
+	original []byte,
+	modTime time.Time,
+) {
+	t.Helper()
+	mutated := append([]byte(nil), original...)
+	mutated[len(mutated)/2] ^= 1
+	if err := os.WriteFile(path, mutated, 0o600); err != nil {
+		t.Fatalf("write mutated source: %v", err)
+	}
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("restore original source: %v", err)
+	}
+	restoreSourceModTime(t, path, modTime)
 }
