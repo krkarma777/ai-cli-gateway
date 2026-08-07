@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/krkarma777/ai-cli-gateway/internal/config"
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
+	"github.com/krkarma777/ai-cli-gateway/internal/gatewaykey"
 	"github.com/krkarma777/ai-cli-gateway/internal/process"
 	"github.com/krkarma777/ai-cli-gateway/internal/provider"
 	"github.com/krkarma777/ai-cli-gateway/internal/provider/codex"
@@ -480,6 +482,369 @@ func TestRunPreRootFailureReturnsCompleteDiagnosisAndSkipsRootAndProviders(t *te
 	}
 	if rootCalls != 0 || adapter.nameCalls != 1 || adapter.rangeCalls != 1 || adapter.probeCalls != 0 {
 		t.Fatalf("calls = root %d name %d range %d probe %d", rootCalls, adapter.nameCalls, adapter.rangeCalls, adapter.probeCalls)
+	}
+}
+
+func TestRunDisabledGatewayAuthReturnsValidDisabledSnapshotBeforeRoot(t *testing.T) {
+	cfg := doctorTestConfig(t, core.ProviderCodex)
+	cfg.Server.Listen = "localhost:8080"
+	adapter := &doctorTestAdapter{name: core.ProviderCodex, interval: reportTestRange()}
+	dependencies := doctorTestDependencies(map[core.ProviderName]provider.Adapter{
+		core.ProviderCodex: adapter,
+	})
+	dependencies.GatewayExecutable = doctorTestExecutable(t)
+	rootCalls := 0
+	dependencies.OpenRoot = func(string) (*process.Root, error) {
+		rootCalls++
+		return nil, errors.New("unexpected root open")
+	}
+
+	diagnosis, err := Run(context.Background(), cfg, dependencies)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	auth := diagnosis.GatewayAuth()
+	if !auth.Valid() || auth.Enabled() || !auth.Matches("any-token") {
+		t.Fatalf("GatewayAuth() = %#v, want valid disabled snapshot", auth)
+	}
+	if check := diagnosis.Report().Core()[1]; check != (Check{Name: "gateway_auth", Status: "pass"}) {
+		t.Fatalf("gateway auth check = %+v", check)
+	}
+	if rootCalls != 0 || adapter.probeCalls != 0 {
+		t.Fatalf("root/probe calls = %d/%d, want 0/0", rootCalls, adapter.probeCalls)
+	}
+}
+
+func TestRunEnvironmentGatewayAuthLooksUpExactlyOnceAndFailsClosed(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       string
+		present     bool
+		wantReady   bool
+		wantEnabled bool
+	}{
+		{name: "valid", value: "gateway-secret", present: true, wantReady: true, wantEnabled: true},
+		{name: "missing"},
+		{name: "empty", present: true},
+		{name: "NUL", value: "gateway\x00secret", present: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := doctorTestConfig(t, core.ProviderCodex)
+			cfg.Server.Listen = "localhost:8080"
+			cfg.Server.APIKeyEnv = "GATEWAY_KEY"
+			adapter := &doctorTestAdapter{name: core.ProviderCodex, interval: reportTestRange()}
+			dependencies := doctorTestDependencies(map[core.ProviderName]provider.Adapter{
+				core.ProviderCodex: adapter,
+			})
+			dependencies.GatewayExecutable = doctorTestExecutable(t)
+			lookupCalls := 0
+			dependencies.LookupEnv = func(name string) (string, bool) {
+				lookupCalls++
+				if name != "GATEWAY_KEY" {
+					t.Fatalf("lookup name = %q, want GATEWAY_KEY", name)
+				}
+				return test.value, test.present
+			}
+			rootCalls := 0
+			dependencies.OpenRoot = func(string) (*process.Root, error) {
+				rootCalls++
+				return nil, errors.New("unexpected root open")
+			}
+
+			diagnosis, err := Run(context.Background(), cfg, dependencies)
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if lookupCalls != 1 || rootCalls != 0 || adapter.probeCalls != 0 {
+				t.Fatalf("lookup/root/probe calls = %d/%d/%d, want 1/0/0",
+					lookupCalls, rootCalls, adapter.probeCalls)
+			}
+			check := diagnosis.Report().Core()[1]
+			auth := diagnosis.GatewayAuth()
+			if test.wantReady {
+				if check != (Check{Name: "gateway_auth", Status: "pass"}) ||
+					!auth.Valid() || auth.Enabled() != test.wantEnabled ||
+					!auth.Matches(test.value) || auth.Matches("wrong-secret") {
+					t.Fatalf("check/auth = %+v/%#v", check, auth)
+				}
+				local := auth
+				local = gatewaykey.Disabled()
+				if !local.Valid() || diagnosis.GatewayAuth().Matches("wrong-secret") {
+					t.Fatal("GatewayAuth defensive value access mutated diagnosis snapshot")
+				}
+				return
+			}
+			want := Check{
+				Name: "gateway_auth", Status: "fail", Code: "gateway_key_missing",
+				Message: "gateway authentication is unavailable",
+			}
+			if check != want || auth.Valid() || auth.Enabled() || auth.Matches(test.value) {
+				t.Fatalf("check/auth = %+v/%#v, want closed failure", check, auth)
+			}
+		})
+	}
+}
+
+func TestRunFileGatewayAuthLoadsOnceWithExactIdentityEvidence(t *testing.T) {
+	cfg := doctorTestConfig(t, core.ProviderGemini)
+	cfg.Server.APIKeyFile = filepath.Join(doctorTestPrivateDirectory(t), "gateway.key")
+	providerConfig := cfg.Providers["gemini"]
+	providerConfig.CredentialEnv = []string{
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"GOOGLE_CLOUD_PROJECT",
+		"GOOGLE_CLOUD_LOCATION",
+	}
+	cfg.Providers["gemini"] = providerConfig
+
+	configPath := filepath.Join(doctorTestPrivateDirectory(t), "config.toml")
+	testutil.WriteTrustedFile(t, configPath, []byte("config identity only"), 0o600)
+	configIdentity, err := os.Lstat(configPath)
+	if err != nil {
+		t.Fatalf("Lstat config identity: %v", err)
+	}
+	credentialPath := filepath.Join(doctorTestPrivateDirectory(t), "service.json")
+	testutil.WriteTrustedFile(t, credentialPath, []byte("credential identity only"), 0o600)
+	credential, disposition := validateCredentialPath(credentialPath)
+	if disposition != pathSafe {
+		t.Fatalf("credential disposition = %v", disposition)
+	}
+	executable, disposition := validateExecutablePath(providerConfig.Executable)
+	if disposition != pathSafe {
+		t.Fatalf("executable disposition = %v", disposition)
+	}
+	wantAuth := doctorGatewaySnapshot(t, "file-gateway-secret")
+	adapter := &doctorTestAdapter{
+		name: core.ProviderGemini, interval: reportTestRange(),
+		health: validReadyProviderHealth(core.ProviderGemini),
+	}
+	dependencies, _, _ := doctorTestReadyDependencies(
+		t,
+		cfg,
+		map[core.ProviderName]provider.Adapter{core.ProviderGemini: adapter},
+		&doctorTestController{},
+	)
+	dependencies.ConfigIdentity = configIdentity
+	values := map[string]string{
+		"GOOGLE_APPLICATION_CREDENTIALS": credentialPath,
+		"GOOGLE_CLOUD_PROJECT":           "project",
+		"GOOGLE_CLOUD_LOCATION":          "location",
+	}
+	lookupCalls := make(map[string]int)
+	dependencies.LookupEnv = func(name string) (string, bool) {
+		lookupCalls[name]++
+		value, present := values[name]
+		return value, present
+	}
+	loaderCalls := 0
+	dependencies.LoadGatewayKey = func(path string, distinct []fs.FileInfo) (gatewaykey.Snapshot, error) {
+		loaderCalls++
+		if path != cfg.Server.APIKeyFile {
+			t.Fatalf("key path = %q, want %q", path, cfg.Server.APIKeyFile)
+		}
+		want := []fs.FileInfo{configIdentity, executable.Info, credential.Info}
+		if !sameDoctorIdentityList(distinct, want) {
+			t.Fatalf("distinct identities = %#v, want config/executable/credential", distinct)
+		}
+		return wantAuth, nil
+	}
+	diagnosis, err := Run(context.Background(), cfg, dependencies)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if loaderCalls != 1 || adapter.probeCalls != 1 {
+		t.Fatalf("loader/probe calls = %d/%d, want 1/1", loaderCalls, adapter.probeCalls)
+	}
+	for _, name := range providerConfig.CredentialEnv {
+		if lookupCalls[name] != 1 {
+			t.Fatalf("lookup calls[%s] = %d, want 1; all %#v", name, lookupCalls[name], lookupCalls)
+		}
+	}
+	if auth := diagnosis.GatewayAuth(); !auth.Valid() || !auth.Enabled() ||
+		!auth.Matches("file-gateway-secret") || auth.Matches("wrong-secret") {
+		t.Fatalf("GatewayAuth() = %#v, want file snapshot", auth)
+	}
+	if diagnosis.RuntimeRoot == nil {
+		t.Fatal("ready file-auth diagnosis did not transfer runtime root")
+	}
+	if err := diagnosis.RuntimeRoot.Close(); err != nil {
+		t.Fatalf("close transferred root: %v", err)
+	}
+}
+
+func TestRunFileGatewayAuthMissingConfigEvidenceFailsBeforeLoaderRootAndProbes(t *testing.T) {
+	tests := []struct {
+		name     string
+		identity fs.FileInfo
+	}{
+		{name: "nil"},
+		{name: "non-regular", identity: mustDoctorFileInfo(t, doctorTestPrivateDirectory(t))},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := doctorTestConfig(t, core.ProviderCodex)
+			cfg.Server.APIKeyFile = filepath.Join(doctorTestPrivateDirectory(t), "gateway.key")
+			adapter := &doctorTestAdapter{name: core.ProviderCodex, interval: reportTestRange()}
+			dependencies := doctorTestDependencies(map[core.ProviderName]provider.Adapter{
+				core.ProviderCodex: adapter,
+			})
+			dependencies.GatewayExecutable = doctorTestExecutable(t)
+			dependencies.ConfigIdentity = test.identity
+			loaderCalls := 0
+			dependencies.LoadGatewayKey = func(string, []fs.FileInfo) (gatewaykey.Snapshot, error) {
+				loaderCalls++
+				return doctorGatewaySnapshot(t, "unexpected"), nil
+			}
+			rootCalls := 0
+			dependencies.OpenRoot = func(string) (*process.Root, error) {
+				rootCalls++
+				return nil, errors.New("unexpected root open")
+			}
+
+			diagnosis, err := Run(context.Background(), cfg, dependencies)
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			want := Check{
+				Name: "gateway_auth", Status: "fail", Code: "gateway_key_missing",
+				Message: "gateway authentication is unavailable",
+			}
+			if check := diagnosis.Report().Core()[1]; check != want {
+				t.Fatalf("gateway auth check = %+v, want %+v", check, want)
+			}
+			if diagnosis.GatewayAuth().Valid() || loaderCalls != 0 || rootCalls != 0 || adapter.probeCalls != 0 {
+				t.Fatalf("auth/loader/root/probe = %#v/%d/%d/%d",
+					diagnosis.GatewayAuth(), loaderCalls, rootCalls, adapter.probeCalls)
+			}
+		})
+	}
+}
+
+func TestRunFileGatewayAuthLoaderFailureAndInvalidSnapshotSkipRootAndProbes(t *testing.T) {
+	tests := []struct {
+		name     string
+		snapshot gatewaykey.Snapshot
+		err      error
+	}{
+		{name: "loader error", err: gatewaykey.ErrUnavailable},
+		{name: "invalid snapshot"},
+		{name: "disabled snapshot", snapshot: gatewaykey.Disabled()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := doctorTestConfig(t, core.ProviderCodex)
+			cfg.Server.APIKeyFile = filepath.Join(doctorTestPrivateDirectory(t), "gateway.key")
+			configPath := filepath.Join(doctorTestPrivateDirectory(t), "config.toml")
+			testutil.WriteTrustedFile(t, configPath, []byte("identity"), 0o600)
+			adapter := &doctorTestAdapter{name: core.ProviderCodex, interval: reportTestRange()}
+			dependencies := doctorTestDependencies(map[core.ProviderName]provider.Adapter{
+				core.ProviderCodex: adapter,
+			})
+			dependencies.GatewayExecutable = doctorTestExecutable(t)
+			dependencies.ConfigIdentity = mustDoctorFileInfo(t, configPath)
+			loaderCalls := 0
+			dependencies.LoadGatewayKey = func(string, []fs.FileInfo) (gatewaykey.Snapshot, error) {
+				loaderCalls++
+				return test.snapshot, test.err
+			}
+			rootCalls := 0
+			dependencies.OpenRoot = func(string) (*process.Root, error) {
+				rootCalls++
+				return nil, errors.New("unexpected root open")
+			}
+
+			diagnosis, err := Run(context.Background(), cfg, dependencies)
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			want := Check{
+				Name: "gateway_auth", Status: "fail", Code: "gateway_key_missing",
+				Message: "gateway authentication is unavailable",
+			}
+			if diagnosis.Report().Core()[1] != want || diagnosis.GatewayAuth().Valid() ||
+				loaderCalls != 1 || rootCalls != 0 || adapter.probeCalls != 0 {
+				t.Fatalf("check/auth/loader/root/probe = %+v/%#v/%d/%d/%d",
+					diagnosis.Report().Core()[1], diagnosis.GatewayAuth(),
+					loaderCalls, rootCalls, adapter.probeCalls)
+			}
+		})
+	}
+}
+
+func TestRunGatewayAuthSnapshotSurvivesFinishRunEarlyReturns(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Dependencies, *doctorTestController)
+	}{
+		{
+			name: "root failure",
+			mutate: func(dependencies *Dependencies, _ *doctorTestController) {
+				dependencies.OpenRoot = func(string) (*process.Root, error) {
+					return nil, errors.New("root failure")
+				}
+			},
+		},
+		{
+			name: "janitor failure",
+			mutate: func(dependencies *Dependencies, _ *doctorTestController) {
+				dependencies.Janitor = func(context.Context, *process.Root) error {
+					return errors.New("janitor failure")
+				}
+			},
+		},
+		{
+			name: "controller failure",
+			mutate: func(dependencies *Dependencies, _ *doctorTestController) {
+				dependencies.NewProbeController = func(
+					*process.Root,
+					process.Limits,
+					func() (string, error),
+				) (ProbeController, error) {
+					return nil, errors.New("controller failure")
+				}
+			},
+		},
+		{
+			name: "containment failure",
+			mutate: func(_ *Dependencies, controller *doctorTestController) {
+				controller.selfTestErr = errors.New("containment failure")
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := doctorTestConfig(t, core.ProviderCodex)
+			cfg.Server.APIKeyEnv = "GATEWAY_KEY"
+			adapter := &doctorTestAdapter{name: core.ProviderCodex, interval: reportTestRange()}
+			controller := &doctorTestController{}
+			dependencies, _, _ := doctorTestReadyDependencies(
+				t,
+				cfg,
+				map[core.ProviderName]provider.Adapter{core.ProviderCodex: adapter},
+				controller,
+			)
+			lookupCalls := 0
+			dependencies.LookupEnv = func(name string) (string, bool) {
+				lookupCalls++
+				if name != "GATEWAY_KEY" {
+					t.Fatalf("lookup name = %q", name)
+				}
+				return "gateway-secret", true
+			}
+			test.mutate(&dependencies, controller)
+
+			diagnosis, err := Run(context.Background(), cfg, dependencies)
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if auth := diagnosis.GatewayAuth(); !auth.Valid() || !auth.Enabled() ||
+				!auth.Matches("gateway-secret") || lookupCalls != 1 {
+				t.Fatalf("auth/lookup calls = %#v/%d", auth, lookupCalls)
+			}
+			if diagnosis.RuntimeRoot != nil {
+				_ = diagnosis.RuntimeRoot.Close()
+			}
+		})
 	}
 }
 
@@ -1900,6 +2265,7 @@ func doctorTestDependencies(adapters map[core.ProviderName]provider.Adapter) Dep
 	return Dependencies{
 		Adapters:         adapters,
 		LookupEnv:        func(string) (string, bool) { return "", false },
+		LoadGatewayKey:   gatewaykey.LoadFile,
 		LookupExecutable: func(string) (string, error) { return "", errors.New("lookup") },
 		NewRuntimeID:     func() (string, error) { return "runtime-id", nil },
 		OpenRoot:         func(string) (*process.Root, error) { return nil, errors.New("open") },
@@ -2009,6 +2375,41 @@ func doctorTestOpenRoot(t *testing.T, path string) *process.Root {
 		t.Fatalf("OpenRoot test fixture: %v", err)
 	}
 	return root
+}
+
+func doctorGatewaySnapshot(t *testing.T, token string) gatewaykey.Snapshot {
+	t.Helper()
+	snapshot, err := gatewaykey.FromEnvironment("GATEWAY_KEY", func(name string) (string, bool) {
+		if name != "GATEWAY_KEY" {
+			t.Fatalf("gateway snapshot lookup name = %q", name)
+		}
+		return token, true
+	})
+	if err != nil {
+		t.Fatalf("FromEnvironment() error = %v", err)
+	}
+	return snapshot
+}
+
+func mustDoctorFileInfo(t *testing.T, path string) fs.FileInfo {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat(%q) error = %v", path, err)
+	}
+	return info
+}
+
+func sameDoctorIdentityList(got, want []fs.FileInfo) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range want {
+		if got[index] == nil || want[index] == nil || !os.SameFile(got[index], want[index]) {
+			return false
+		}
+	}
+	return true
 }
 
 func validReadyProviderHealth(name core.ProviderName) provider.Health {
@@ -2316,7 +2717,8 @@ func TestZeroValuesReturnEmptyDefensiveViews(t *testing.T) {
 	zeroReport := diagnosis.Report()
 	if zeroReport.constructed || zeroReport.phase != reportPhaseUnconstructed ||
 		zeroReport.Core() != nil || zeroReport.Providers() != nil || zeroReport.Models() != nil ||
-		diagnosis.ResolvedProviders() != nil || diagnosis.Registry() != nil {
+		diagnosis.ResolvedProviders() != nil || diagnosis.Registry() != nil ||
+		diagnosis.GatewayAuth().Valid() {
 		t.Fatal("zero Diagnosis accessors returned non-zero state")
 	}
 }

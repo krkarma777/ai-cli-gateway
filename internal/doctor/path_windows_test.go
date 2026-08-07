@@ -3,7 +3,9 @@
 package doctor
 
 import (
+	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +13,9 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/krkarma777/ai-cli-gateway/internal/core"
+	"github.com/krkarma777/ai-cli-gateway/internal/gatewaykey"
+	"github.com/krkarma777/ai-cli-gateway/internal/provider"
 	"github.com/krkarma777/ai-cli-gateway/internal/testutil"
 	"golang.org/x/sys/windows"
 )
@@ -349,6 +354,57 @@ func TestTrustedWindowsFixturesPassCompleteDoctorPathPolicy(t *testing.T) {
 				t.Fatalf("trusted fixture disposition = %v, want pathSafe", disposition)
 			}
 		})
+	}
+}
+
+func TestRunFileGatewayAuthIncludesWindowsNodeEntrypointIdentity(t *testing.T) {
+	directory := testutil.TrustedTempDir(t)
+	node := filepath.Join(directory, "node.exe")
+	testutil.WriteTrustedFile(t, node, []byte("node fixture"), 0o700)
+	entrypoint := filepath.Join(directory, "provider.js")
+	testutil.WriteTrustedFile(t, entrypoint, []byte("entrypoint fixture"), 0o600)
+	configPath := filepath.Join(directory, "config.toml")
+	testutil.WriteTrustedFile(t, configPath, []byte("config identity"), 0o600)
+
+	cfg := doctorTestConfig(t, core.ProviderCodex)
+	cfg.Server.Listen = "localhost:8080"
+	cfg.Server.APIKeyFile = filepath.Join(directory, "gateway.key")
+	configured := cfg.Providers["codex"]
+	configured.Executable = node
+	configured.PrefixArgs = []string{entrypoint}
+	cfg.Providers["codex"] = configured
+	adapter := &doctorTestAdapter{name: core.ProviderCodex, interval: reportTestRange()}
+	dependencies := doctorTestDependencies(map[core.ProviderName]provider.Adapter{
+		core.ProviderCodex: adapter,
+	})
+	dependencies.GatewayExecutable = doctorTestExecutable(t)
+	dependencies.ConfigIdentity = mustDoctorFileInfo(t, configPath)
+	wantAuth := doctorGatewaySnapshot(t, "windows-node-key")
+	loaderCalls := 0
+	dependencies.LoadGatewayKey = func(_ string, distinct []fs.FileInfo) (gatewaykey.Snapshot, error) {
+		loaderCalls++
+		validatedNode, nodeDisposition := validateExecutablePath(node)
+		validatedEntrypoint, entrypointDisposition := validateEntrypointPath(entrypoint)
+		if nodeDisposition != pathSafe || entrypointDisposition != pathSafe {
+			t.Fatalf("node/entrypoint dispositions = %v/%v", nodeDisposition, entrypointDisposition)
+		}
+		want := []fs.FileInfo{
+			dependencies.ConfigIdentity,
+			validatedNode.Info,
+			validatedEntrypoint.Info,
+		}
+		if !sameDoctorIdentityList(distinct, want) {
+			t.Fatalf("distinct identities = %#v, want config/node/entrypoint", distinct)
+		}
+		return wantAuth, nil
+	}
+
+	diagnosis, err := Run(context.Background(), cfg, dependencies)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if loaderCalls != 1 || !diagnosis.GatewayAuth().Matches("windows-node-key") {
+		t.Fatalf("loader/auth = %d/%#v", loaderCalls, diagnosis.GatewayAuth())
 	}
 }
 
