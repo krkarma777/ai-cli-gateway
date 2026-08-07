@@ -526,6 +526,9 @@ func TestDecodeAllowsOmittedOrExplicitlyEmptyGatewayAPIKeyEnvironmentName(t *tes
 			if cfg.Server.APIKeyEnv != "" {
 				t.Fatalf("Server.APIKeyEnv = %q, want empty", cfg.Server.APIKeyEnv)
 			}
+			if cfg.Server.APIKeyFile != "" {
+				t.Fatalf("Server.APIKeyFile = %q, want empty", cfg.Server.APIKeyFile)
+			}
 		})
 	}
 }
@@ -545,6 +548,100 @@ func TestDecodeValidatesNonEmptyGatewayAPIKeyEnvironmentName(t *testing.T) {
 			document := replaceLine(f.document(), "api_key_env = "+tomlQuote(testAPIKeyEnv),
 				"api_key_env = "+tomlQuote(value))
 			mustDecode(t, document)
+		})
+	}
+}
+
+func TestDecodeNormalizesGatewayAPIKeyFile(t *testing.T) {
+	f := newFixture(t)
+	path := filepath.Join(f.root, "gateway.key")
+	document := replaceLine(
+		f.document(),
+		"api_key_env = "+tomlQuote(testAPIKeyEnv),
+		"api_key_file = "+tomlQuote(path),
+	)
+
+	cfg := mustDecode(t, document)
+	if cfg.Server.APIKeyEnv != "" {
+		t.Fatalf("Server.APIKeyEnv = %q, want empty", cfg.Server.APIKeyEnv)
+	}
+	if cfg.Server.APIKeyFile != path {
+		t.Fatalf("Server.APIKeyFile = %q, want %q", cfg.Server.APIKeyFile, path)
+	}
+}
+
+func TestDecodeRejectsInvalidGatewayAPIKeyFile(t *testing.T) {
+	f := newFixture(t)
+	const wantError = "invalid configuration: server API key file"
+	for _, value := range []string{"", "gateway.key"} {
+		t.Run(strconv.Quote(value), func(t *testing.T) {
+			document := replaceLine(
+				f.document(),
+				"api_key_env = "+tomlQuote(testAPIKeyEnv),
+				"api_key_file = "+tomlQuote(value),
+			)
+			requireDecodeErrorText(t, document, wantError)
+		})
+	}
+}
+
+func TestDecodeRejectsMultipleGatewayAPIKeySources(t *testing.T) {
+	f := newFixture(t)
+	const wantError = "invalid configuration: server API key source"
+	for _, environment := range []string{"", testAPIKeyEnv} {
+		t.Run(strconv.Quote(environment), func(t *testing.T) {
+			document := inServer(
+				replaceLine(
+					f.document(),
+					"api_key_env = "+tomlQuote(testAPIKeyEnv),
+					"api_key_env = "+tomlQuote(environment),
+				),
+				"api_key_file = "+tomlQuote(filepath.Join(f.root, "gateway.key")),
+			)
+			requireDecodeErrorText(t, document, wantError)
+		})
+	}
+}
+
+func TestDecodeDoesNotTreatGatewayAPIKeyFileAsProviderCredentialEnvironment(t *testing.T) {
+	f := newFixture(t)
+	document := f.providerDocument("claude", "", `credential_env = ["ANTHROPIC_API_KEY"]`)
+	document = strings.Replace(document, `api_key_env = ""`+"\n", "", 1)
+	document = inServer(document, "api_key_file = "+tomlQuote(filepath.Join(f.root, "gateway.key")))
+
+	cfg := mustDecode(t, document)
+	if cfg.Server.APIKeyEnv != "" {
+		t.Fatalf("Server.APIKeyEnv = %q, want empty", cfg.Server.APIKeyEnv)
+	}
+	if cfg.Server.APIKeyFile == "" {
+		t.Fatal("Server.APIKeyFile is empty")
+	}
+}
+
+func TestDecodeRejectsUnknownGatewayAPIKeyField(t *testing.T) {
+	f := newFixture(t)
+	requireDecodeError(t, inServer(f.document(), `api_key_command = "secret"`))
+}
+
+func TestIsAbsolutePathRecognizesGatewayAPIKeyFilePlatformSpellings(t *testing.T) {
+	tests := []struct {
+		platform string
+		path     string
+		want     bool
+	}{
+		{"linux", "/var/lib/ai-cli-gateway/gateway.key", true},
+		{"linux", "gateway.key", false},
+		{"windows", `C:\Gateway\gateway.key`, true},
+		{"windows", `C:/Gateway/gateway.key`, true},
+		{"windows", `\\server\share\gateway.key`, true},
+		{"windows", `C:gateway.key`, false},
+		{"windows", `\gateway.key`, false},
+	}
+	for _, test := range tests {
+		t.Run(test.platform+"_"+test.path, func(t *testing.T) {
+			if got := isAbsolutePath(test.platform, test.path); got != test.want {
+				t.Fatalf("isAbsolutePath(%q, %q) = %t, want %t", test.platform, test.path, got, test.want)
+			}
 		})
 	}
 }

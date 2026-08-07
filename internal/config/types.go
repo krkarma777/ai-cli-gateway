@@ -18,6 +18,7 @@ type Config struct {
 type Server struct {
 	Listen            string   `toml:"listen"`
 	APIKeyEnv         string   `toml:"api_key_env"`
+	APIKeyFile        string   `toml:"api_key_file"`
 	HTTPBodyBytes     int64    `toml:"http_body_bytes"`
 	InputBytes        int      `toml:"input_bytes"`
 	InstructionsBytes int      `toml:"instructions_bytes"`

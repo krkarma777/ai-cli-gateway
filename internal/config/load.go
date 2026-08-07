@@ -78,7 +78,8 @@ type wireConfig struct {
 
 type wireServer struct {
 	Listen            *string   `toml:"listen"`
-	APIKeyEnv         string    `toml:"api_key_env"`
+	APIKeyEnv         *string   `toml:"api_key_env"`
+	APIKeyFile        *string   `toml:"api_key_file"`
 	HTTPBodyBytes     *int64    `toml:"http_body_bytes"`
 	InputBytes        *int64    `toml:"input_bytes"`
 	InstructionsBytes *int64    `toml:"instructions_bytes"`
@@ -182,6 +183,16 @@ func normalize(wire wireConfig) (Config, error) {
 }
 
 func normalizeServer(wire wireServer) (Server, error) {
+	if wire.APIKeyEnv != nil && wire.APIKeyFile != nil {
+		return Server{}, invalidConfig("server API key source")
+	}
+	apiKeyFile := ""
+	if wire.APIKeyFile != nil {
+		apiKeyFile = *wire.APIKeyFile
+		if !isAbsolutePath(runtime.GOOS, apiKeyFile) {
+			return Server{}, invalidConfig("server API key file")
+		}
+	}
 	inputBytes, err := normalizedInt(wire.InputBytes, 524_288, maxInputBytes)
 	if err != nil {
 		return Server{}, invalidConfig("server input byte limit")
@@ -217,7 +228,8 @@ func normalizeServer(wire wireServer) (Server, error) {
 
 	return Server{
 		Listen:            stringDefault(wire.Listen, "127.0.0.1:8080"),
-		APIKeyEnv:         wire.APIKeyEnv,
+		APIKeyEnv:         stringDefault(wire.APIKeyEnv, ""),
+		APIKeyFile:        apiKeyFile,
 		HTTPBodyBytes:     int64Default(wire.HTTPBodyBytes, 1_048_576),
 		InputBytes:        inputBytes,
 		InstructionsBytes: instructionsBytes,
