@@ -3175,7 +3175,7 @@ if ($Rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) 
 func TestPublicPolicyContributionSecurityAndIgnoreBoundary(t *testing.T) {
 	contributing := string(readRepositoryFile(t, "CONTRIBUTING.md"))
 	requireContainsAll(t, "CONTRIBUTING.md", contributing,
-		"Go 1.26.5", "golangci-lint v2.12.2", "TDD", "semantic RED", "GREEN",
+		"Go 1.26.5", "golangci-lint v2.12.2", "TDD", "failing test",
 		"fake CLI", "gofmt", "go vet", "golangci-lint", "go test ./...",
 		"go test -race ./...", "go test -tags=integration ./...", "-trimpath",
 		"cross-platform", "Windows Job Object", "private security",
@@ -3203,7 +3203,7 @@ func TestPublicPolicyContributionSecurityAndIgnoreBoundary(t *testing.T) {
 	ignore := string(readRepositoryFile(t, ".gitignore"))
 	wantLines := []string{
 		"/ai-cli-gateway", "/fake-ai-cli", "*.test", "*.test.exe", "*.exe", "*.prof",
-		"coverage*.out", "/config.toml", ".env", ".env.*", "!.env.example",
+		"coverage*.out", "/.idea/", "/.vscode/", "/config.toml", ".env", ".env.*", "!.env.example",
 		"/.codex/", "/.claude/", "/.gemini/", "auth.json", ".credentials.json",
 		"credentials.json", "oauth_creds.json", "google_accounts.json",
 	}
@@ -8279,10 +8279,10 @@ func TestScannerRejectsEverySymlinkEntry(t *testing.T) {
 	assertFinding(t, scanRepository(root), "symlink", "link.txt")
 }
 
-func TestScannerSkipsOnlyTopLevelGitAndSuperpowersMetadata(t *testing.T) {
+func TestScannerSkipsOnlyTopLevelGitMetadata(t *testing.T) {
 	root := t.TempDir()
 	secret := "actual-" + "credential"
-	for _, directory := range []string{".git", ".superpowers"} {
+	for _, directory := range []string{".git"} {
 		writeFixtureFile(t, root, filepath.Join(directory, "hidden.env"), []byte("OPENAI_"+"API_KEY="+secret+"\n"))
 	}
 	writeFixtureFile(t, root, "clean.txt", []byte("clean\n"))
@@ -8386,7 +8386,7 @@ func TestScannerRejectsBinaryMagicWithDisguisedNames(t *testing.T) {
 	}
 }
 
-func TestScannerRejectsDeveloperHomePathsExceptApprovedResearchDocs(t *testing.T) {
+func TestScannerRejectsDeveloperHomePathsInEveryDocument(t *testing.T) {
 	username := "krkarma" + "777"
 	paths := []string{
 		"/Users/" + username + "/Dev/private",
@@ -8400,20 +8400,16 @@ func TestScannerRejectsDeveloperHomePathsExceptApprovedResearchDocs(t *testing.T
 		assertFinding(t, scanRepository(root), "developer_path", name, planted)
 	}
 
+	nested := "docs/reference.md"
+	planted := "/Users/" + username + "/Dev/private"
 	root := t.TempDir()
-	for _, relative := range []string{
-		"docs/superpowers/specs/2026-07-30-ai-cli-gateway-design.md",
-		"docs/superpowers/plans/2026-07-30-ai-cli-gateway.md",
-	} {
-		writeFixtureFile(t, root, relative, []byte("/Users/"+username+"/Dev/spawngate\n"))
-	}
-	if err := scanRepository(root); err != nil {
-		t.Fatalf("scanRepository(approved docs) error = %q, want nil", err)
-	}
+	writeFixtureFile(t, root, nested, []byte(planted+"\n"))
+	assertFinding(t, scanRepository(root), "developer_path", nested, planted)
 
+	root = t.TempDir()
 	secret := "actual-" + "credential"
-	writeFixtureFile(t, root, "docs/superpowers/specs/2026-07-30-ai-cli-gateway-design.md", []byte("OPENAI_"+"API_KEY="+secret+"\n"))
-	assertFinding(t, scanRepository(root), "secret_assignment", "docs/superpowers/specs/2026-07-30-ai-cli-gateway-design.md", secret)
+	writeFixtureFile(t, root, nested, []byte("OPENAI_"+"API_KEY="+secret+"\n"))
+	assertFinding(t, scanRepository(root), "secret_assignment", nested, secret)
 }
 
 func TestModuleRootResolutionDoesNotRequireGit(t *testing.T) {
@@ -8614,9 +8610,6 @@ func scanRepository(root string) error {
 			return scanFinding{category: "auth_artifact", relative: relative}
 		}
 		if entry.IsDir() {
-			if relative == ".superpowers" {
-				return filepath.SkipDir
-			}
 			return nil
 		}
 
@@ -8647,7 +8640,7 @@ func scanRepository(root string) error {
 		if hasClosedCatalogToken(contents) {
 			return scanFinding{category: "token", relative: relative}
 		}
-		if !isApprovedDeveloperPathDocument(filepath.ToSlash(relative)) && hasDeveloperHomePath(contents) {
+		if hasDeveloperHomePath(contents) {
 			return scanFinding{category: "developer_path", relative: relative}
 		}
 		return nil
@@ -9145,14 +9138,4 @@ func isPathClosingBoundary(character byte) bool {
 
 func isASCIIAlpha(character byte) bool {
 	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z'
-}
-
-func isApprovedDeveloperPathDocument(relative string) bool {
-	switch relative {
-	case "docs/superpowers/specs/2026-07-30-ai-cli-gateway-design.md",
-		"docs/superpowers/plans/2026-07-30-ai-cli-gateway.md":
-		return true
-	default:
-		return false
-	}
 }

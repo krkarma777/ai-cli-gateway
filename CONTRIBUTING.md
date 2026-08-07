@@ -8,7 +8,7 @@ Use Go 1.26.5 and golangci-lint v2.12.2. Keep generated binaries and test artifa
 
 ## Development method
 
-TDD is required for behavior changes. Write one focused semantic RED that fails for the intended reason before implementation, make the minimum change to reach GREEN, then refactor while the focused and package tests remain green.
+TDD is expected for behavior changes. Add a failing test that pins the behavior first, and check it fails for the reason you expect rather than an unrelated one. Then implement the smallest change that makes it pass, and refactor while the package tests stay green.
 
 Provider and process behavior needs fake CLI integration coverage. Default tests use no real provider CLI, credentials, or inference. Never add provider authentication material, sensitive prompts, or provider outputs to a fixture.
 
@@ -55,6 +55,6 @@ GitHub Actions uses Node24-based official actions. A self-hosted runner needs `a
 
 ## Pull requests
 
-Keep each change scoped, explain its public contract impact, and include the focused RED/GREEN evidence plus relevant platform results. Update public documentation when behavior changes, but do not broaden the advertised Responses-compatible subset beyond tested implementation.
+Keep each change scoped, explain its public contract impact, and include the new test plus relevant platform results. Update public documentation when behavior changes, but do not broaden the advertised Responses-compatible subset beyond tested implementation.
 
 For a suspected vulnerability, use private security reporting as described in [SECURITY.md](SECURITY.md), not an ordinary issue or pull request.
