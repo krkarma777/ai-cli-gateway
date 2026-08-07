@@ -27,6 +27,32 @@ CGO_ENABLED=0 go build -trimpath -o "${TMPDIR:-/tmp}/ai-cli-gateway" ./cmd/ai-cl
 
 Process containment changes require cross-platform evidence, not only cross-compilation. Include native Unix process-group coverage and native Windows Job Object tests for descendant termination, cancellation, cleanup, and handle quiescence as applicable.
 
+## Opt-in provider tests
+
+Default tests and CI do not use installed provider CLIs or credentials. Compile the opt-in sources without executing them with:
+
+```bash
+go test -tags=live -run '^$' ./internal/provider/...
+```
+
+Live probes and inference are explicit maintainer operations. Use a dedicated disposable canary; inference may incur provider usage and cost.
+
+Probe execution requires `AI_CLI_GATEWAY_LIVE_PROBES=1`. Inference also requires `AI_CLI_GATEWAY_LIVE_INFERENCE=1` and one matching provider gate:
+
+- `AI_CLI_GATEWAY_LIVE_CODEX_INFERENCE=1`;
+- `AI_CLI_GATEWAY_LIVE_CLAUDE_INFERENCE=1`; or
+- `AI_CLI_GATEWAY_LIVE_GEMINI_INFERENCE=1`.
+
+Each selected provider needs its canary configuration:
+
+- Codex: `AI_CLI_GATEWAY_LIVE_CODEX_EXECUTABLE`, `AI_CLI_GATEWAY_LIVE_CODEX_CONFIG_HOME`, and `AI_CLI_GATEWAY_LIVE_CODEX_MODEL`.
+- Claude: `AI_CLI_GATEWAY_LIVE_CLAUDE_EXECUTABLE`, `AI_CLI_GATEWAY_LIVE_CLAUDE_CONFIG_HOME`, `AI_CLI_GATEWAY_LIVE_CLAUDE_MODEL`, and `AI_CLI_GATEWAY_LIVE_CLAUDE_AUTH_MODE=config_home|api_key`.
+- Gemini: `AI_CLI_GATEWAY_LIVE_GEMINI_EXECUTABLE`, `AI_CLI_GATEWAY_LIVE_GEMINI_CONFIG_HOME`, `AI_CLI_GATEWAY_LIVE_GEMINI_MODEL`, and `AI_CLI_GATEWAY_LIVE_GEMINI_AUTH_MODE=gemini_api_key|google_api_key|vertex`.
+
+The selected API-key or Vertex mode also needs its corresponding provider environment values outside the repository. The harness redacts failures and cleans up its canary state.
+
+GitHub Actions uses Node24-based official actions. A self-hosted runner needs `actions/runner v2.327.1` or later.
+
 ## Pull requests
 
 Keep each change scoped, explain its public contract impact, and include the focused RED/GREEN evidence plus relevant platform results. Update public documentation when behavior changes, but do not broaden the advertised Responses-compatible subset beyond tested implementation.

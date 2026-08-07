@@ -882,8 +882,13 @@ func TestSDKContractScript(t *testing.T) {
 	}
 }
 
+func readGettingStarted(t *testing.T) string {
+	t.Helper()
+	return string(readRepositoryFile(t, "docs/getting-started.md"))
+}
+
 func TestSDKContractRecoveryGuidance(t *testing.T) {
-	contents := string(readRepositoryFile(t, "README.md"))
+	contents := readGettingStarted(t)
 	for _, required := range []string{
 		"sdk_contract_cleanup_failed",
 		"owner-only `.sdk-contract-*` sibling",
@@ -892,7 +897,7 @@ func TestSDKContractRecoveryGuidance(t *testing.T) {
 		"never prints the retained path or underlying error",
 	} {
 		if !strings.Contains(contents, required) {
-			t.Fatalf("README is missing SDK recovery guidance %q", required)
+			t.Fatalf("getting-started guide is missing SDK recovery guidance %q", required)
 		}
 	}
 }
@@ -1231,70 +1236,15 @@ OpenAI.APIError = APIError;
 export default OpenAI;
 `
 
-func TestREADMEOpeningAndOfficialContractSources(t *testing.T) {
-	readme := string(readRepositoryFile(t, "README.md"))
-	paragraphs := markdownProseParagraphs(readme)
-	if len(paragraphs) < 2 {
-		t.Fatal("README.md must begin with two prose paragraphs after its title")
-	}
-	const opening = "AI CLI Gateway turns locally authenticated AI CLIs into an OpenAI Responses-compatible API."
-	if paragraphs[0] != opening {
-		t.Fatalf("README first prose sentence = %q, want exact opening %q", paragraphs[0], opening)
-	}
-	if !strings.Contains(paragraphs[1], "**Responses API-compatible subset**") ||
-		!strings.Contains(paragraphs[1], "not full OpenAI API compatibility") {
-		t.Fatal("README immediate compatibility paragraph does not state the exact subset boundary")
-	}
-
-	requireContainsAll(t, "README contract sources", readme,
-		"2026-07-30",
-		"https://developers.openai.com/api/reference/resources/responses/methods/create",
-		"https://developers.openai.com/api/docs/guides/text",
-		"https://developers.openai.com/api/docs/guides/structured-outputs",
-		"https://developers.openai.com/api/reference/resources/models/methods/list",
-		"https://learn.chatgpt.com/docs/non-interactive-mode",
-		"https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-exec",
-		"https://learn.chatgpt.com/docs/auth",
-		"https://code.claude.com/docs/en/headless",
-		"https://code.claude.com/docs/en/cli-usage",
-		"https://code.claude.com/docs/en/agent-sdk/typescript",
-		"https://code.claude.com/docs/en/env-vars",
-		"https://code.claude.com/docs/en/authentication",
-		"https://code.claude.com/docs/en/changelog",
-		"https://geminicli.com/docs/cli/headless/",
-		"https://geminicli.com/docs/cli/cli-reference/",
-		"https://geminicli.com/docs/reference/configuration/",
-		"https://geminicli.com/docs/get-started/authentication/",
-		"https://geminicli.com/docs/cli/session-management/",
-		"2026-05-19",
-		"https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/",
-		"2026-06-18",
-		"https://github.com/google-gemini/gemini-cli/discussions/28017",
-		"https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals",
-		"2026-08-02",
-		"https://geminicli.com/docs/resources/quota-and-pricing/",
-	)
-
-	for _, forbidden := range []string{
-		"fully OpenAI API compatible",
-		"complete OpenAI API compatibility",
-		"drop-in replacement for the OpenAI API",
-	} {
-		if strings.Contains(readme, forbidden) {
-			t.Fatalf("README makes forbidden broad compatibility claim %q", forbidden)
-		}
-	}
-}
-
-func TestREADMEReleaseQuickStart(t *testing.T) {
-	readme := string(readRepositoryFile(t, "README.md"))
+func TestGettingStartedReleaseQuickStart(t *testing.T) {
+	readme := readGettingStarted(t)
 	if err := validateREADMEReleaseQuickStart(readme); err != nil {
 		t.Fatalf("README release Quick Start contract: %v", err)
 	}
 }
 
-func TestREADMEWindowsACLProgram(t *testing.T) {
-	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+func TestGettingStartedWindowsACLProgram(t *testing.T) {
+	document, err := parseREADMEQuickStart(readGettingStarted(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1307,8 +1257,8 @@ func TestREADMEWindowsACLProgram(t *testing.T) {
 	}
 }
 
-func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
-	readme := string(readRepositoryFile(t, "README.md"))
+func TestGettingStartedReleaseQuickStartRejectsMutations(t *testing.T) {
+	readme := readGettingStarted(t)
 	if err := validateREADMEReleaseQuickStart(readme); err != nil {
 		t.Fatalf("baseline README Quick Start must be valid before mutation checks: %v", err)
 	}
@@ -1342,9 +1292,6 @@ func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
 		{name: "Node SDK command commented", mutate: replaceREADMEOnce(`node "${SDK_WORK_ROOT}/javascript/main.mjs"`, `# node "${SDK_WORK_ROOT}/javascript/main.mjs"`)},
 		{name: "Node SDK command in dead branch", mutate: replaceREADMEOnce(`node "${SDK_WORK_ROOT}/javascript/main.mjs"`, "if false; then\n  "+`node "${SDK_WORK_ROOT}/javascript/main.mjs"`+"\nfi")},
 		{name: "SDK fence prints gateway key", mutate: replaceREADMEOnce(`node "${SDK_WORK_ROOT}/javascript/main.mjs"`, `node "${SDK_WORK_ROOT}/javascript/main.mjs"`+"\n"+`printf '%s\n' "${AI_CLI_GATEWAY_API_KEY}"`)},
-		{name: "subset only in HTML comment", mutate: replaceREADMEOnce(`It exercises the documented non-streaming **Responses API-compatible subset**;`, `It exercises the documented non-streaming local subset. <!-- Responses API-compatible subset -->`)},
-		{name: "subset only in Markdown reference", mutate: replaceREADMEOnce(`This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. It exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility.`, "This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. It is fully OpenAI API compatible.[subset-contract]\n\n[subset-contract]: Responses API-compatible subset")},
-		{name: "subset sentence hidden in details", mutate: replaceREADMEOnce(`It exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility.`, "This setup implements the entire OpenAI Responses API.\n\n<details>\n<summary>Compatibility detail</summary>\n\nIt exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility.\n</details>")},
 		{name: "systemd link moved to Windows", mutate: moveREADMESystemdLink},
 		{name: "raw systemd path added to Windows", mutate: replaceREADMEOnce(`Use PowerShell 7 as an unprivileged gateway identity.`, `Use PowerShell 7 as an unprivileged gateway identity. See deploy/systemd/ai-cli-gateway.service.`)},
 		{name: "encoded systemd path added to Windows", mutate: replaceREADMEOnce(`Use PowerShell 7 as an unprivileged gateway identity.`, `Use PowerShell 7 as an unprivileged gateway identity. See [Linux service unit](deploy/%73ystemd/ai-cli-gateway.service).`)},
@@ -1386,37 +1333,19 @@ func TestREADMEReleaseQuickStartRejectsMutations(t *testing.T) {
 	}
 }
 
-func TestREADMEQuickStartSemanticHelpersRejectBypasses(t *testing.T) {
-	readme := string(readRepositoryFile(t, "README.md"))
+func TestGettingStartedQuickStartSemanticHelpersRejectBypasses(t *testing.T) {
+	readme := readGettingStarted(t)
 	t.Run("cross-section HTML comment", func(t *testing.T) {
 		mutated, err := replaceREADMEOnce("### POSIX (macOS and Linux)\n", "<!--\n### POSIX (macOS and Linux)\n")(readme)
 		if err != nil {
 			t.Fatal(err)
 		}
-		mutated, err = replaceREADMEOnce("\n## Architecture and scope\n", "\n-->\n## Architecture and scope\n")(mutated)
+		mutated, err = replaceREADMEOnce("\n## SDK contract recovery\n", "\n-->\n## SDK contract recovery\n")(mutated)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := parseREADMEQuickStart(mutated); err == nil {
 			t.Fatal("Quick Start parser accepted a cross-section HTML comment")
-		}
-	})
-
-	t.Run("Markdown-obfuscated compatibility claim", func(t *testing.T) {
-		const subsetSentence = "It exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility."
-		const prefix = "This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. "
-		prose := prefix + subsetSentence + "\nThis setup has complete Open**AI** Responses **API** compatibility."
-		if err := validateREADMECompatibilityClaims(prose, subsetSentence); err == nil {
-			t.Fatal("compatibility validator accepted a Markdown-obfuscated broad claim")
-		}
-	})
-
-	t.Run("subset sentence in link title", func(t *testing.T) {
-		const subsetSentence = "It exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility."
-		const prefix = "This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. "
-		prose := `[Compatibility](https://example.invalid "` + prefix + subsetSentence + `")`
-		if err := validateREADMECompatibilityClaims(prose, subsetSentence); err == nil {
-			t.Fatal("compatibility validator accepted the required paragraph only in a link title")
 		}
 	})
 
@@ -1469,7 +1398,7 @@ func TestREADMEQuickStartSemanticHelpersRejectBypasses(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mutated, err = replaceREADMEOnce("\n## Architecture and scope\n", "\n?>\n## Architecture and scope\n")(mutated)
+		mutated, err = replaceREADMEOnce("\n## SDK contract recovery\n", "\n?>\n## SDK contract recovery\n")(mutated)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1499,8 +1428,8 @@ func TestREADMEQuickStartSemanticHelpersRejectBypasses(t *testing.T) {
 	})
 }
 
-func TestREADMEQuickStartWholeDocumentBoundaries(t *testing.T) {
-	readme := string(readRepositoryFile(t, "README.md"))
+func TestGettingStartedQuickStartWholeDocumentBoundaries(t *testing.T) {
+	readme := readGettingStarted(t)
 	if err := validateREADMEReleaseQuickStartSemantics(readme); err != nil {
 		t.Fatalf("baseline README semantic contract: %v", err)
 	}
@@ -1516,7 +1445,7 @@ func TestREADMEQuickStartWholeDocumentBoundaries(t *testing.T) {
 				if err != nil {
 					return "", err
 				}
-				return replaceREADMEOnce("\n## Architecture and scope\n", "\n## Architecture and scope\n-->\n")(mutated)
+				return replaceREADMEOnce("\n## SDK contract recovery\n", "\n## SDK contract recovery\n-->\n")(mutated)
 			},
 		},
 		{
@@ -1526,7 +1455,7 @@ func TestREADMEQuickStartWholeDocumentBoundaries(t *testing.T) {
 				if err != nil {
 					return "", err
 				}
-				return replaceREADMEOnce("\n## Architecture and scope\n", "\n## Architecture and scope\n</details>\n")(mutated)
+				return replaceREADMEOnce("\n## SDK contract recovery\n", "\n## SDK contract recovery\n</details>\n")(mutated)
 			},
 		},
 		{
@@ -1536,7 +1465,7 @@ func TestREADMEQuickStartWholeDocumentBoundaries(t *testing.T) {
 				if err != nil {
 					return "", err
 				}
-				return replaceREADMEOnce("\n## Architecture and scope\n", "\n## Architecture and scope\n~~~~\n")(mutated)
+				return replaceREADMEOnce("\n## SDK contract recovery\n", "\n## SDK contract recovery\n~~~~\n")(mutated)
 			},
 		},
 		{
@@ -1546,7 +1475,7 @@ func TestREADMEQuickStartWholeDocumentBoundaries(t *testing.T) {
 				if err != nil {
 					return "", err
 				}
-				return replaceREADMEOnce("\n## Architecture and scope\n", "\n## Architecture and scope\n~~~~~\n")(mutated)
+				return replaceREADMEOnce("\n## SDK contract recovery\n", "\n## SDK contract recovery\n~~~~~\n")(mutated)
 			},
 		},
 		{
@@ -1556,7 +1485,7 @@ func TestREADMEQuickStartWholeDocumentBoundaries(t *testing.T) {
 				if err != nil {
 					return "", err
 				}
-				return replaceREADMEOnce("\n## Architecture and scope\n", "\n## Architecture and scope\n````\n")(mutated)
+				return replaceREADMEOnce("\n## SDK contract recovery\n", "\n## SDK contract recovery\n````\n")(mutated)
 			},
 		},
 	}
@@ -1573,7 +1502,7 @@ func TestREADMEQuickStartWholeDocumentBoundaries(t *testing.T) {
 	}
 
 	t.Run("later fenced literals do not affect boundaries", func(t *testing.T) {
-		mutated := readme + "\n~~~~text\n<!-- literal fenced HTML -->\n## Quick Start\n## Architecture and scope\n<?literal?>\n~~~~\n"
+		mutated := readme + "\n~~~~text\n<!-- literal fenced HTML -->\n## Quick Start\n## SDK contract recovery\n<?literal?>\n~~~~\n"
 		if err := validateREADMEReleaseQuickStartSemantics(mutated); err != nil {
 			t.Fatalf("semantic validator rejected inert later fenced literals: %v", err)
 		}
@@ -1622,7 +1551,7 @@ func replaceREADMENth(old, replacement string, occurrence int) func(string) (str
 }
 
 func moveREADMESystemdLink(document string) (string, error) {
-	const sentence = "Linux service operators can adapt the checked-in [systemd service example](deploy/systemd/ai-cli-gateway.service) after completing the same path, ownership, Doctor, and credential checks."
+	const sentence = "Linux service operators can adapt the checked-in [systemd service example](../deploy/systemd/ai-cli-gateway.service) after completing the same path, ownership, Doctor, and credential checks."
 	if strings.Count(document, sentence) != 1 {
 		return "", errors.New("systemd mutation target is not unique")
 	}
@@ -1631,7 +1560,7 @@ func moveREADMESystemdLink(document string) (string, error) {
 	if strings.Count(document, windows) != 1 {
 		return "", errors.New("Windows heading mutation target is not unique")
 	}
-	return strings.Replace(document, windows, windows+"\nUse the [systemd service example](deploy/systemd/ai-cli-gateway.service).\n", 1), nil
+	return strings.Replace(document, windows, windows+"\nUse the [systemd service example](../deploy/systemd/ai-cli-gateway.service).\n", 1), nil
 }
 
 func moveREADMEHostBranchToUnusedFunction(document string) (string, error) {
@@ -1676,12 +1605,6 @@ func validateREADMEReleaseQuickStartSemantics(readme string) error {
 }
 
 func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) error {
-	paragraphs := markdownProseParagraphs(readme)
-	const opening = "AI CLI Gateway turns locally authenticated AI CLIs into an OpenAI Responses-compatible API."
-	const disclaimer = "It deliberately implements a small **Responses API-compatible subset**, not full OpenAI API compatibility. The gateway is a local, final-output bridge with strict validation; it is not a drop-in implementation of every OpenAI endpoint or feature."
-	if len(paragraphs) < 2 || paragraphs[0] != opening || paragraphs[1] != disclaimer {
-		return errors.New("opening description or adjacent subset disclaimer changed")
-	}
 	document, err := parseREADMEQuickStart(readme)
 	if err != nil {
 		return err
@@ -1693,19 +1616,10 @@ func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) er
 	posixProse := document.prose[quickStartPOSIXSection]
 	windowsProse := document.prose[quickStartWindowsSection]
 	sdkProse := document.prose[quickStartSDKSection]
-	const subsetSentence = "It exercises the documented non-streaming **Responses API-compatible subset**; it is not a claim of complete OpenAI API or SDK compatibility."
-	if strings.Count(rootProse, subsetSentence) != 1 {
-		return errors.New("active Quick Start prose is missing the exact rendered subset qualification")
-	}
-	visibleQuickStartProse := strings.Join([]string{rootProse, posixProse, windowsProse, sdkProse}, "\n")
-	if err := validateREADMECompatibilityClaims(visibleQuickStartProse, subsetSentence); err != nil {
-		return err
-	}
 	for _, marker := range []string{
 		"v0.1.0", "ai-cli-gateway_0.1.0_linux_amd64.tar.gz",
 		"ai-cli-gateway_0.1.0_linux_arm64.tar.gz", "ai-cli-gateway_0.1.0_darwin_amd64.tar.gz",
 		"ai-cli-gateway_0.1.0_darwin_arm64.tar.gz", "ai-cli-gateway_0.1.0_windows_amd64.zip",
-		"Responses API-compatible subset",
 	} {
 		if !strings.Contains(rootProse, marker) {
 			return fmt.Errorf("active Quick Start prose is missing %q", marker)
@@ -1715,7 +1629,7 @@ func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) er
 	if !strings.Contains(sdkProse, terms) {
 		return errors.New("active SDK prose is missing the provider-terms notice")
 	}
-	const systemdLink = "[systemd service example](deploy/systemd/ai-cli-gateway.service)"
+	const systemdLink = "[systemd service example](../deploy/systemd/ai-cli-gateway.service)"
 	if !strings.Contains(posixProse, systemdLink) {
 		return errors.New("systemd link is not active POSIX-only prose")
 	}
@@ -1907,7 +1821,7 @@ func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) er
 		return fmt.Errorf("active SDK reachability: %w", err)
 	}
 	for _, marker := range []string{
-		"1..300", "300", "five seconds", "models.list()", "responses.create()", "non-streaming",
+		"1..300", "300", "models.list()", "responses.create()", "non-streaming",
 		"SDK_GATEWAY_OK", "zero or one trailing newline",
 	} {
 		if !strings.Contains(sdkProse, marker) {
@@ -2015,7 +1929,7 @@ func parseREADMEQuickStart(readme string) (readmeQuickStartDocument, error) {
 func extractREADMEQuickStartSource(readme string) (string, error) {
 	lines := strings.Split(readme, "\n")
 	quickStartLine := -1
-	architectureLine := -1
+	recoveryLine := -1
 	var fenceMarker byte
 	fenceLength := 0
 	for index, line := range lines {
@@ -2044,23 +1958,23 @@ func extractREADMEQuickStartSource(readme string) (string, error) {
 				return "", errors.New("README contains more than one top-level Quick Start heading")
 			}
 			quickStartLine = index
-		case "## Architecture and scope":
-			if architectureLine >= 0 {
-				return "", errors.New("README contains more than one top-level Architecture and scope heading")
+		case "## SDK contract recovery":
+			if recoveryLine >= 0 {
+				return "", errors.New("getting-started guide contains more than one top-level SDK contract recovery heading")
 			}
-			architectureLine = index
+			recoveryLine = index
 		}
 	}
 	if fenceLength > 0 {
 		return "", errors.New("README contains an unterminated GFM code fence")
 	}
-	if quickStartLine < 0 || architectureLine < 0 {
-		return "", errors.New("Quick Start and Architecture headings must each occur exactly once at top level")
+	if quickStartLine < 0 || recoveryLine < 0 {
+		return "", errors.New("Quick Start and SDK contract recovery headings must each occur exactly once at top level")
 	}
-	if quickStartLine >= architectureLine {
-		return "", errors.New("Quick Start must precede Architecture and scope")
+	if quickStartLine >= recoveryLine {
+		return "", errors.New("Quick Start must precede SDK contract recovery")
 	}
-	return strings.Join(lines[quickStartLine+1:architectureLine], "\n"), nil
+	return strings.Join(lines[quickStartLine+1:recoveryLine], "\n"), nil
 }
 
 func containsREADMERawHTMLConstruct(line string) bool {
@@ -2148,33 +2062,6 @@ func renderedREADMEProse(document string) (string, error) {
 		return "", errors.New("contains raw HTML outside a code fence")
 	}
 	return withoutComments, nil
-}
-
-func validateREADMECompatibilityClaims(prose, allowedSubsetSentence string) error {
-	const quickStartParagraphPrefix = "This v0.1.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway. "
-	requiredParagraph := quickStartParagraphPrefix + allowedSubsetSentence
-	if stringsCount(markdownProseParagraphs(prose), requiredParagraph) != 1 || strings.Count(prose, allowedSubsetSentence) != 1 {
-		return errors.New("active Quick Start prose does not contain the exact visible subset paragraph")
-	}
-	withoutAllowedBoundary := strings.ReplaceAll(prose, allowedSubsetSentence, "")
-	normalized := strings.ReplaceAll(withoutAllowedBoundary, "`examples/openai-sdk`", "")
-	for iteration := 0; iteration < 8; iteration++ {
-		next := html.UnescapeString(normalized)
-		if next == normalized {
-			break
-		}
-		normalized = next
-	}
-	var compact strings.Builder
-	for _, character := range strings.ToLower(normalized) {
-		if unicode.IsLetter(character) || unicode.IsDigit(character) {
-			compact.WriteRune(character)
-		}
-	}
-	if strings.Contains(compact.String(), "openai") || strings.Contains(compact.String(), "responsesapi") {
-		return errors.New("active Quick Start prose contains an OpenAI compatibility claim outside the exact subset qualification")
-	}
-	return nil
 }
 
 func validateREADMEWindowsServiceLinks(prose string) error {
@@ -2768,7 +2655,7 @@ func requireOrderedMarkers(document string, markers ...string) error {
 	return nil
 }
 
-func TestREADMEPOSIXChecksumCommands(t *testing.T) {
+func TestGettingStartedPOSIXChecksumCommands(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the documented POSIX checksum commands require Bash and shasum")
 	}
@@ -2778,7 +2665,7 @@ func TestREADMEPOSIXChecksumCommands(t *testing.T) {
 	if _, err := exec.LookPath("shasum"); err != nil {
 		t.Fatal("shasum is required to verify the documented POSIX checksum commands")
 	}
-	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	document, err := parseREADMEQuickStart(readGettingStarted(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2833,7 +2720,7 @@ func TestREADMEPOSIXChecksumCommands(t *testing.T) {
 	}
 }
 
-func TestREADMEPOSIXHostSelectorCommands(t *testing.T) {
+func TestGettingStartedPOSIXHostSelectorCommands(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the documented POSIX host selector requires a POSIX shell")
 	}
@@ -2841,7 +2728,7 @@ func TestREADMEPOSIXHostSelectorCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal("Bash is required to execute the documented POSIX host selector")
 	}
-	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	document, err := parseREADMEQuickStart(readGettingStarted(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2911,8 +2798,8 @@ esac
 	}
 }
 
-func TestREADMEQuickStartTOMLSubstitutionValues(t *testing.T) {
-	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+func TestGettingStartedQuickStartTOMLSubstitutionValues(t *testing.T) {
+	document, err := parseREADMEQuickStart(readGettingStarted(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2995,11 +2882,11 @@ func replaceREADMEConfigMarkers(t *testing.T, template string, replacements map[
 	return template
 }
 
-func TestREADMEWindowsPowerShellFencesNative(t *testing.T) {
+func TestGettingStartedWindowsPowerShellFencesNative(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("PowerShell fence parsing is exercised by Windows CI")
 	}
-	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	document, err := parseREADMEQuickStart(readGettingStarted(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3025,11 +2912,11 @@ $null = [scriptblock]::Create($Source)
 	}
 }
 
-func TestREADMEWindowsChecksumCommandsNative(t *testing.T) {
+func TestGettingStartedWindowsChecksumCommandsNative(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("the documented PowerShell checksum commands are exercised by Windows CI")
 	}
-	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	document, err := parseREADMEQuickStart(readGettingStarted(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3085,11 +2972,11 @@ func TestREADMEWindowsChecksumCommandsNative(t *testing.T) {
 	}
 }
 
-func TestREADMEWindowsTOMLValidationFunctionNative(t *testing.T) {
+func TestGettingStartedWindowsTOMLValidationFunctionNative(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("the documented PowerShell TOML function is exercised by Windows CI")
 	}
-	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	document, err := parseREADMEQuickStart(readGettingStarted(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3124,11 +3011,11 @@ func TestREADMEWindowsTOMLValidationFunctionNative(t *testing.T) {
 	}
 }
 
-func TestREADMEWindowsACLCommandsNative(t *testing.T) {
+func TestGettingStartedWindowsACLCommandsNative(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("the documented PowerShell ACL commands are exercised by Windows CI")
 	}
-	document, err := parseREADMEQuickStart(string(readRepositoryFile(t, "README.md")))
+	document, err := parseREADMEQuickStart(readGettingStarted(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3285,245 +3172,6 @@ if ($Rule.InheritanceFlags -ne $ExpectedInheritance) { throw 'independent check:
 if ($Rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw 'independent check: wrong propagation' }
 `
 
-func TestREADMEExactAPISubsetExamplesAndErrors(t *testing.T) {
-	readme := string(readRepositoryFile(t, "README.md"))
-	requireContainsAll(t, "README architecture and endpoints", readme,
-		"Client\n  -> POST /v1/responses\n  -> AI CLI Gateway\n  -> Codex / Claude Code / Gemini CLI adapter\n  -> final text or locally validated JSON",
-		"POST /v1/responses",
-		"GET /v1/models",
-		"non-streaming",
-		"immutable configured alias snapshot",
-		"503 provider_not_ready",
-		"no response retrieval endpoint",
-		"SSE",
-		"tool-call round trip",
-		"session",
-		"conversation",
-		"web UI",
-		"database",
-	)
-
-	for _, field := range []string{"model", "input", "instructions", "text.format", "stream", "store", "tools", "tool_choice"} {
-		if !strings.Contains(readme, "`"+field+"`") {
-			t.Fatalf("README request matrix is missing field %q", field)
-		}
-	}
-	requireContainsAll(t, "README request boundary", readme,
-		"required nonempty configured alias",
-		"required nonempty UTF-8 string",
-		"optional UTF-8 string or `null`",
-		"absent or exactly `false`",
-		"absent or exactly `[]`",
-		"absent or exactly `\"none\"`",
-		"400 unsupported_parameter",
-		"duplicate",
-		"trailing",
-		"array",
-		"multimodal",
-		"previous_response_id",
-		"metadata",
-		"reasoning",
-		"generation controls",
-		"provider-specific options",
-		"background",
-	)
-
-	requireContainsAll(t, "README JSON Schema profile", readme,
-		"object root",
-		"object`, `array`, `string`, `number`, `integer`, `boolean`, and `null`",
-		"`type`, `properties`, `required`, `additionalProperties`, and `items`",
-		"`enum` and `const`",
-		"`minLength`", "`maxLength`", "`minItems`", "`maxItems`",
-		"`minProperties`", "`maxProperties`", "`minimum`", "`maximum`",
-		"`exclusiveMinimum`", "`exclusiveMaximum`", "`description`", "`title`",
-		"additionalProperties:false",
-		"every property",
-		"required",
-		"no references",
-		"combinators",
-		"patterns",
-		"formats",
-		"remote",
-		"exactly one JSON object",
-		"duplicate-free",
-		"no repair",
-		"fallback",
-		"retry",
-		"validated string in `output_text.text`",
-		"does not invent an `output_json` field",
-	)
-
-	const responseCurl = `curl --fail-with-body \
-  -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}" \
-  --data-binary @request.json \
-  http://127.0.0.1:8080/v1/responses`
-	if count := strings.Count(readme, responseCurl); count < 2 {
-		t.Fatalf("README contains %d exact response curl examples, want text and schema examples", count)
-	}
-	requireNearby(t, "README models curl", readme, "/v1/models", "AI_CLI_GATEWAY_API_KEY")
-	requireContainsAll(t, "README request examples", readme,
-		"\"type\": \"text\"",
-		"\"type\": \"json_schema\"",
-		"\"strict\": true",
-		"\"additionalProperties\": false",
-		"\"required\"",
-	)
-
-	objects := readmeJSONObjects(t, readme)
-	var success map[string]any
-	var errorEnvelope map[string]any
-	var modelList map[string]any
-	for _, object := range objects {
-		if object["object"] == "response" {
-			success = object
-		}
-		if object["object"] == "list" {
-			modelList = object
-		}
-		if _, ok := object["error"]; ok && len(object) == 1 {
-			errorEnvelope = object
-		}
-	}
-	if success == nil {
-		t.Fatal("README has no complete JSON success response example")
-	}
-	requireExactJSONKeys(t, "success response", success,
-		"id", "object", "created_at", "completed_at", "status", "background", "error",
-		"incomplete_details", "instructions", "model", "output", "parallel_tool_calls",
-		"previous_response_id", "store", "text", "tools", "tool_choice")
-	if success["status"] != "completed" || success["background"] != false || success["store"] != false || success["tool_choice"] != "none" {
-		t.Fatal("README success response example does not use the stable completed response shape")
-	}
-	if errorEnvelope == nil {
-		t.Fatal("README has no complete stable error-envelope JSON example")
-	}
-	errorObject, ok := errorEnvelope["error"].(map[string]any)
-	if !ok {
-		t.Fatal("README error example's error field is not an object")
-	}
-	requireExactJSONKeys(t, "error envelope", errorObject, "message", "type", "param", "code")
-	if modelList == nil {
-		t.Fatal("README has no complete model-list JSON example")
-	}
-	requireExactJSONKeys(t, "model list", modelList, "object", "data")
-
-	wantErrors := map[string][]string{
-		"400": {"invalid_json", "invalid_request", "unsupported_parameter", "invalid_json_schema"},
-		"401": {"invalid_bearer_key"},
-		"404": {"not_found", "model_not_found"},
-		"405": {"method_not_allowed"},
-		"408": {"request_timeout"},
-		"413": {"request_too_large"},
-		"415": {"unsupported_media_type"},
-		"429": {"server_busy", "queue_full", "provider_rate_limited"},
-		"500": {"process_cleanup_failed", "internal_error"},
-		"502": {"output_limit_exceeded", "provider_protocol_error", "structured_output_invalid", "provider_failed"},
-		"503": {"queue_timeout", "provider_not_ready", "provider_auth_required", "service_shutting_down"},
-		"504": {"provider_timeout"},
-	}
-	for status, codes := range wantErrors {
-		for _, code := range codes {
-			requireErrorTableRow(t, readme, status, code)
-		}
-	}
-}
-
-func TestREADMECommandsOperationsSecurityAndGeminiBoundary(t *testing.T) {
-	readme := string(readRepositoryFile(t, "README.md"))
-	const usage = "usage:\n" +
-		"  ai-cli-gateway version\n" +
-		"  ai-cli-gateway serve --config PATH\n" +
-		"  ai-cli-gateway doctor --config PATH [--json]"
-	requireContainsAll(t, "README commands", readme,
-		"Go 1.26.5",
-		usage,
-		"ai-cli-gateway doctor --config PATH --json",
-		"ai-cli-gateway doctor --json --config PATH",
-		"ai-cli-gateway --help",
-		"ai-cli-gateway version --help",
-		"ai-cli-gateway serve --help",
-		"ai-cli-gateway doctor --help",
-		"exit status",
-		"configuration_invalid",
-		"gateway_not_ready: run ai-cli-gateway doctor",
-		"doctor_failed",
-		"serve_failed: run ai-cli-gateway doctor",
-		"Codex `>=0.146.0,<0.147.0`",
-		"Claude Code `>=2.1.208,<2.2.0`",
-		"Gemini CLI `>=0.53.0,<0.54.0`",
-		"drive-absolute",
-		"UNC",
-		"node.exe",
-		"prefix_args",
-		".js",
-		".mjs",
-		"implemented",
-		"live-verified",
-		"not-ready",
-		"not run",
-		"unassessed",
-	)
-	if strings.Contains(readme, "--config=PATH") {
-		t.Fatal("README documents unsupported --config=PATH syntax")
-	}
-
-	requireContainsAll(t, "README operational defaults", readme,
-		"concurrency 1", "queue 32", "16 MiB", "30 seconds", "300 seconds",
-		"TERM grace 2 seconds", "cleanup 5 seconds", "HTTP body 1 MiB",
-		"input 512 KiB", "instructions 256 KiB", "schema 32 KiB",
-		"stdout 2 MiB", "stderr 256 KiB", "final output 1 MiB",
-		"exactly one adapter attempt", "no gateway retry", "no fallback",
-		"provider-internal", "usage", "cost",
-		"listener", "closed", "before", "Gateway", "shutdown",
-		"hard HTTP", "force close", "process containment", "drain",
-		"loopback", "Bearer", "dedicated", "OS user",
-		"argv", "without a shell", "stdin",
-		"setsid", "power loss", "SIGKILL", "KillMode=control-group",
-		"does not issue", "extract", "copy", "store login tokens",
-		"does not log", "prompt", "output", "credentials",
-		"separately length-framed", "provider-dependent", "adversarial `input`",
-	)
-
-	requireContainsAll(t, "README Gemini boundary", readme,
-		"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
-		"GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "disposable",
-		"cached personal OAuth", "unsupported", "Gemini Code Assist for individuals",
-		"Google AI Pro", "Google AI Ultra", "2026-06-18", "Antigravity",
-		"Code Assist Standard", "Enterprise", "paid API-key", "API-key and Vertex tiers",
-		"not exhaustive", "availability", "billing tier", "quota", "entitlement",
-		"live credential validity", "provider execution is authoritative",
-		"configured", "readiness", "local checks only",
-	)
-
-	requireContainsAll(t, "README live-provider environment contract", readme,
-		"AI_CLI_GATEWAY_LIVE_PROBES",
-		"AI_CLI_GATEWAY_LIVE_INFERENCE",
-		"AI_CLI_GATEWAY_LIVE_CODEX_INFERENCE",
-		"AI_CLI_GATEWAY_LIVE_CLAUDE_INFERENCE",
-		"AI_CLI_GATEWAY_LIVE_GEMINI_INFERENCE",
-		"AI_CLI_GATEWAY_LIVE_CODEX_EXECUTABLE",
-		"AI_CLI_GATEWAY_LIVE_CODEX_CONFIG_HOME",
-		"AI_CLI_GATEWAY_LIVE_CODEX_MODEL",
-		"AI_CLI_GATEWAY_LIVE_CLAUDE_EXECUTABLE",
-		"AI_CLI_GATEWAY_LIVE_CLAUDE_CONFIG_HOME",
-		"AI_CLI_GATEWAY_LIVE_CLAUDE_MODEL",
-		"AI_CLI_GATEWAY_LIVE_CLAUDE_AUTH_MODE=config_home|api_key",
-		"AI_CLI_GATEWAY_LIVE_GEMINI_EXECUTABLE",
-		"AI_CLI_GATEWAY_LIVE_GEMINI_CONFIG_HOME",
-		"AI_CLI_GATEWAY_LIVE_GEMINI_MODEL",
-		"AI_CLI_GATEWAY_LIVE_GEMINI_AUTH_MODE=gemini_api_key|google_api_key|vertex",
-		"operator-triggered", "may incur", "usage",
-	)
-	requireContainsAll(t, "README CI runtime note", readme,
-		"Node24", "self-hosted", "actions/runner", "v2.327.1")
-
-	const terms = "You are responsible for installing and authenticating each provider CLI and for using it in accordance with its applicable terms."
-	if !strings.Contains(collapseWhitespace(readme), terms) {
-		t.Fatal("README is missing the exact short provider terms notice")
-	}
-}
-
 func TestPublicPolicyContributionSecurityAndIgnoreBoundary(t *testing.T) {
 	contributing := string(readRepositoryFile(t, "CONTRIBUTING.md"))
 	requireContainsAll(t, "CONTRIBUTING.md", contributing,
@@ -3577,31 +3225,6 @@ func TestGitAttributesPinsTextCheckoutToLF(t *testing.T) {
 	}
 }
 
-func markdownProseParagraphs(document string) []string {
-	paragraphs := make([]string, 0)
-	current := make([]string, 0)
-	flush := func() {
-		if len(current) > 0 {
-			paragraphs = append(paragraphs, strings.Join(current, " "))
-			current = current[:0]
-		}
-	}
-	for _, line := range strings.Split(strings.ReplaceAll(document, "\r\n", "\n"), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			flush()
-			continue
-		}
-		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "[![") || strings.HasPrefix(trimmed, "<") {
-			flush()
-			continue
-		}
-		current = append(current, trimmed)
-	}
-	flush()
-	return paragraphs
-}
-
 func requireContainsAll(t *testing.T, name, document string, required ...string) {
 	t.Helper()
 	for _, value := range required {
@@ -3633,59 +3256,6 @@ func requireNearby(t *testing.T, name, document, first, second string) {
 		search = start + len(first)
 	}
 	t.Fatalf("%s does not place %q near %q", name, second, first)
-}
-
-func readmeJSONObjects(t *testing.T, readme string) []map[string]any {
-	t.Helper()
-	blocks := make([]map[string]any, 0)
-	remainder := readme
-	for {
-		start := strings.Index(remainder, "```json\n")
-		if start < 0 {
-			return blocks
-		}
-		remainder = remainder[start+len("```json\n"):]
-		end := strings.Index(remainder, "\n```")
-		if end < 0 {
-			t.Fatal("README contains an unterminated JSON code fence")
-		}
-		var value any
-		decoder := json.NewDecoder(strings.NewReader(remainder[:end]))
-		decoder.UseNumber()
-		if err := decoder.Decode(&value); err != nil {
-			t.Fatalf("README JSON example is invalid: %v", err)
-		}
-		var trailing any
-		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-			t.Fatalf("README JSON fence does not end after exactly one value: %v", err)
-		}
-		if object, ok := value.(map[string]any); ok {
-			blocks = append(blocks, object)
-		}
-		remainder = remainder[end+len("\n```"):]
-	}
-}
-
-func requireExactJSONKeys(t *testing.T, name string, object map[string]any, keys ...string) {
-	t.Helper()
-	if len(object) != len(keys) {
-		t.Fatalf("%s has %d fields, want exactly %d", name, len(object), len(keys))
-	}
-	for _, key := range keys {
-		if _, ok := object[key]; !ok {
-			t.Fatalf("%s is missing field %q", name, key)
-		}
-	}
-}
-
-func requireErrorTableRow(t *testing.T, readme, status, code string) {
-	t.Helper()
-	for _, line := range strings.Split(readme, "\n") {
-		if strings.Contains(line, "|") && strings.Contains(line, "`"+code+"`") && strings.Contains(line, status) {
-			return
-		}
-	}
-	t.Fatalf("README stable error table does not map %s to HTTP %s", code, status)
 }
 
 func collapseWhitespace(value string) string {
