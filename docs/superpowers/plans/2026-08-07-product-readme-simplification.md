@@ -378,7 +378,7 @@ Expected: the forbidden-copy search produces no output. The diff contains only t
 The developer's ignored root `config.toml` intentionally makes `TestRepositoryHygiene` fail in the working checkout. Do not remove it. After all implementation commits, create a private directory under the repository, extract only tracked files from `HEAD`, and run the full matrix there:
 
 ```bash
-VERIFY_ROOT="$(mktemp -d /Users/krkarma777/Dev/ai-cli-gateway/.product-readme-verify.XXXXXX)"
+VERIFY_ROOT="$(mktemp -d "${PWD}/.product-readme-verify.XXXXXX")"
 git archive HEAD | tar -x -C "${VERIFY_ROOT}"
 cd "${VERIFY_ROOT}"
 GOCACHE=/private/tmp/aicli-product-readme-go-build go test -count=1 ./...
