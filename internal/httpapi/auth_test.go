@@ -1,91 +1,100 @@
 package httpapi
 
 import (
-	"errors"
-	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/krkarma777/ai-cli-gateway/internal/gatewaykey"
 )
 
-func TestAuthenticatorDisabledDoesNotReadEnvironment(t *testing.T) {
-	calls := 0
-	auth, err := newAuthenticator("", func(string) (string, bool) {
-		calls++
-		return "planted-secret", true
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if calls != 0 {
-		t.Fatalf("lookup calls=%d", calls)
-	}
-	if !auth.authorized(http.Header{}) {
-		t.Fatal("disabled authentication rejected request")
-	}
-}
-
-func TestAuthenticatorReadsAndHashesSecretOnce(t *testing.T) {
-	secret := "gateway-secret-DO-NOT-LEAK"
-	calls := 0
-	auth, err := newAuthenticator("AI_CLI_GATEWAY_API_KEY", func(name string) (string, bool) {
-		calls++
-		if name != "AI_CLI_GATEWAY_API_KEY" {
-			t.Fatalf("name=%q", name)
-		}
-		return secret, true
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if calls != 1 {
-		t.Fatalf("lookup calls=%d", calls)
-	}
-	if strings.Contains(fmt.Sprintf("%#v", auth), secret) {
-		t.Fatal("authenticator retained printable raw secret")
-	}
-
-	secret = "mutated"
+func TestAuthenticatorDisabledBypassesBearerHeader(t *testing.T) {
+	auth := authenticator{snapshot: gatewaykey.Disabled()}
 	header := make(http.Header)
-	header.Set("Authorization", "Bearer gateway-secret-DO-NOT-LEAK")
+	header.Add("Authorization", "Basic wrong-token")
+	header.Add("Authorization", "Bearer wrong-token")
+
 	if !auth.authorized(header) {
-		t.Fatal("digest changed after source mutation")
-	}
-	if calls != 1 {
-		t.Fatalf("lookup repeated: calls=%d", calls)
+		t.Fatal("explicitly disabled authentication rejected request")
 	}
 }
 
-func TestAuthenticatorRejectsMissingOrEmptySecretWithFixedError(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		value string
-		ok    bool
-	}{
-		{name: "missing", ok: false},
-		{name: "empty", value: "", ok: true},
+func TestAuthenticatorZeroSnapshotFailsClosed(t *testing.T) {
+	var auth authenticator
+	for _, header := range []http.Header{
+		{},
+		{"Authorization": []string{"Bearer anything"}},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := newAuthenticator("AI_CLI_GATEWAY_API_KEY", func(string) (string, bool) {
-				return test.value, test.ok
-			})
-			if !errors.Is(err, errAuthenticator) {
-				t.Fatalf("error=%v", err)
-			}
-			if strings.Contains(fmt.Sprint(err), "AI_CLI_GATEWAY_API_KEY") {
-				t.Fatalf("error exposed input=%q", err)
-			}
-		})
+		if auth.authorized(header) {
+			t.Fatal("zero snapshot authorized request")
+		}
+	}
+}
+
+func TestAuthenticatorUsesImmutableEnvironmentSnapshot(t *testing.T) {
+	const name = "AI_CLI_GATEWAY_TASK7_TEST_KEY"
+	const original = "environment-original-token"
+	const mutated = "environment-mutated-token"
+	t.Setenv(name, original)
+	snapshot, err := gatewaykey.FromEnvironment(name, os.LookupEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := authenticator{snapshot: snapshot}
+
+	if err := os.Setenv(name, mutated); err != nil {
+		t.Fatal(err)
+	}
+	if !auth.authorized(bearerHeader(original)) {
+		t.Fatal("snapshot stopped matching after environment source mutation")
+	}
+	if auth.authorized(bearerHeader(mutated)) {
+		t.Fatal("snapshot followed environment source mutation")
+	}
+}
+
+func TestAuthenticatorUsesImmutableFileSnapshot(t *testing.T) {
+	const original = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	mutated := strings.Repeat("f", 64)
+	path := filepath.Join(t.TempDir(), "gateway.key")
+	if err := os.WriteFile(path, []byte(original+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, parseErr := gatewaykey.Parse(file)
+	closeErr := file.Close()
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	auth := authenticator{snapshot: snapshot}
+
+	if err := os.WriteFile(path, []byte(mutated+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !auth.authorized(bearerHeader(original)) {
+		t.Fatal("snapshot stopped matching after file source mutation")
+	}
+	if auth.authorized(bearerHeader(mutated)) {
+		t.Fatal("snapshot followed file source mutation")
 	}
 }
 
 func TestAuthenticatorRequiresExactSingleBearerHeader(t *testing.T) {
-	auth, err := newAuthenticator("AI_CLI_GATEWAY_API_KEY", func(string) (string, bool) {
+	snapshot, err := gatewaykey.FromEnvironment("GATEWAY_KEY", func(string) (string, bool) {
 		return "correct-token", true
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	auth := authenticator{snapshot: snapshot}
 
 	tests := []struct {
 		name   string
@@ -120,15 +129,6 @@ func TestAuthenticatorRequiresExactSingleBearerHeader(t *testing.T) {
 	}
 }
 
-func TestAPIKeyEnvironmentNameGrammar(t *testing.T) {
-	for _, valid := range []string{"AI_CLI_GATEWAY_API_KEY", "A", "_LOCAL_1"} {
-		if !validAPIKeyEnvironmentName(valid) {
-			t.Fatalf("rejected %q", valid)
-		}
-	}
-	for _, invalid := range []string{"lowercase", "1_KEY", "KEY-NAME", "KEY NAME", "KEY\x00NAME"} {
-		if validAPIKeyEnvironmentName(invalid) {
-			t.Fatalf("accepted %q", invalid)
-		}
-	}
+func bearerHeader(token string) http.Header {
+	return http.Header{"Authorization": []string{"Bearer " + token}}
 }
