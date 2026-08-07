@@ -1,8 +1,76 @@
 # AI CLI Gateway
 
+[![CI](https://github.com/krkarma777/ai-cli-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/krkarma777/ai-cli-gateway/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/krkarma777/ai-cli-gateway)](https://github.com/krkarma777/ai-cli-gateway/releases/latest) [![License](https://img.shields.io/github/license/krkarma777/ai-cli-gateway)](LICENSE) [![Go](https://img.shields.io/github/go-mod/go-version/krkarma777/ai-cli-gateway)](go.mod)
+
+## Build AI MVPs with the AI CLI access you already have.
+
 AI CLI Gateway turns locally authenticated AI CLIs into an OpenAI Responses-compatible API.
 
 It deliberately implements a small **Responses API-compatible subset**, not full OpenAI API compatibility. The gateway is a local, final-output bridge with strict validation; it is not a drop-in implementation of every OpenAI endpoint or feature.
+
+Your AI tools already work in the terminal. Your MVP expects an API. AI CLI Gateway bridges that gap locally.
+
+[Get started](#quick-start) · [See the API](#from-sdk-to-local-cli) · [Check the scope](#what-v010-supports) · [Download v0.1.0](https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.1.0)
+
+## From SDK to local CLI
+
+Point an OpenAI JavaScript SDK client at the loopback gateway and use a configured model alias:
+
+```javascript
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.AI_CLI_GATEWAY_API_KEY,
+  baseURL: "http://127.0.0.1:8080/v1",
+  timeout: 300_000,
+  maxRetries: 0,
+});
+
+const response = await client.responses.create({
+  model: "codex-local",
+  instructions: "Answer concisely.",
+  input: "Propose three names for my AI MVP.",
+  text: { format: { type: "text" } },
+  stream: false,
+  store: false,
+  tools: [],
+  tool_choice: "none",
+});
+
+console.log(response.output_text);
+```
+
+This illustrative call assumes the gateway is running and `codex-local` is configured. The checked-in [JavaScript](examples/openai-sdk/javascript/main.mjs) and [Python](examples/openai-sdk/python/main.py) examples are the executable SDK contracts. Adapter integration tests use deterministic fake CLIs; optional live checks are operator-run and do not prove every provider, account, or model combination.
+
+## Built for fast validation
+
+- **Vibe-coded AI-service MVPs** — connect application code to an AI CLI without writing provider-specific subprocess logic.
+- **Product validation** — test the workflow and response contract before committing to a larger architecture.
+- **Demos and hackathons** — expose one predictable local endpoint across supported CLIs.
+- **Local SDK integration tests** — exercise the same non-streaming request shape with deterministic model aliases.
+
+## What v0.1.0 supports
+
+| Area | Included |
+|---|---|
+| Provider adapters | Codex CLI, Claude Code, and Gemini CLI |
+| HTTP API | `POST /v1/responses` and `GET /v1/models` |
+| Final output | final non-streaming text or strict JSON Schema output |
+| Routing | Provider/model aliases configured by the operator |
+| Intentionally out of scope | SSE streaming, tool/function-call round trips, stored conversations, web UI, and an external database |
+
+The detailed [request contract](#request-contract) is closed and authoritative: unsupported fields fail with a clear `400` response instead of being ignored.
+
+## Local control, explicit boundaries
+
+- You install and authenticate each official CLI. The gateway does not issue, extract, copy, or store provider login tokens.
+- Prompts reach the selected CLI through stdin, never through a shell command string or prompt argument.
+- Each request gets a temporary working directory, timeouts, cancellation, process-tree cleanup, bounded queues, and bounded output.
+- Operational logs carry request metadata and stable errors; the gateway does not log prompts, model output, or credentials.
+- Release downloads include `SHA256SUMS` and an SPDX SBOM.
+  GitHub build-provenance attestations cover all seven release assets.
+
+The gateway and CLI credential boundary are local. The selected CLI may send request data to its upstream provider. This is not an isolation boundary between mutually untrusted users sharing one OS account.
 
 The contract baseline is 2026-07-30, with the external provider transition notes below rechecked on 2026-08-02. The project supports locally prepared Codex CLI and Claude Code profiles, plus the three documented Gemini environment/external credential shapes; actual provider access remains an upstream decision.
 
