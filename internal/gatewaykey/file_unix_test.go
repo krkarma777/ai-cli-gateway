@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/krkarma777/ai-cli-gateway/internal/testutil"
 	"golang.org/x/sys/unix"
@@ -200,6 +201,86 @@ func TestLoadFileParsesRetainedHandleOnceAndRejectsPathReplacement(t *testing.T)
 	}
 	if calls != 1 {
 		t.Fatalf("parser calls = %d, want 1", calls)
+	}
+}
+
+func TestLoadFileRejectsSameInodeMutationRestoredAfterParse(t *testing.T) {
+	path := writeUnixKeyFile(t, testKey+"\n", 0o600)
+	originalTime := time.Unix(1_700_000_000, 123_456_789)
+	if err := os.Chtimes(path, originalTime, originalTime); err != nil {
+		t.Fatalf("pin original timestamps: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+
+	calls := 0
+	snapshot, err := loadFile(path, nil, func(reader io.Reader) (Snapshot, error) {
+		calls++
+		file, ok := reader.(*os.File)
+		if !ok {
+			t.Fatalf("parser reader type = %T, want *os.File", reader)
+		}
+		mutated := strings.Repeat("1", 64) + "\n"
+		if err := os.WriteFile(path, []byte(mutated), 0o600); err != nil {
+			t.Fatalf("mutate retained inode: %v", err)
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			t.Fatalf("rewind retained handle: %v", err)
+		}
+		parsed, parseErr := Parse(file)
+		if err := os.WriteFile(path, []byte(testKey+"\n"), 0o600); err != nil {
+			t.Fatalf("restore retained inode: %v", err)
+		}
+		if err := os.Chtimes(path, originalTime, originalTime); err != nil {
+			t.Fatalf("restore timestamps: %v", err)
+		}
+		return parsed, parseErr
+	})
+	if err != ErrUnavailable {
+		t.Fatalf("loadFile() error = %v, want ErrUnavailable", err)
+	}
+	if snapshot.Valid() {
+		t.Fatal("loadFile() returned a snapshot parsed from transient content")
+	}
+	if calls != 1 {
+		t.Fatalf("parser calls = %d, want 1", calls)
+	}
+}
+
+func TestLoadFileFIFOReplacementBeforeOpenCannotBlock(t *testing.T) {
+	path := writeUnixKeyFile(t, testKey+"\n", 0o600)
+	openCalls := 0
+	seenFlags := 0
+
+	snapshot, err := loadFileWithUnixOpen(
+		path,
+		nil,
+		Parse,
+		func(openPath string, flags int, mode uint32) (int, error) {
+			openCalls++
+			seenFlags = flags
+			if err := os.Remove(openPath); err != nil {
+				t.Fatalf("remove prechecked leaf: %v", err)
+			}
+			if err := unix.Mkfifo(openPath, 0o600); err != nil {
+				t.Fatalf("replace leaf with FIFO: %v", err)
+			}
+			if flags&unix.O_NONBLOCK == 0 {
+				return -1, unix.EINVAL
+			}
+			return unix.Open(openPath, flags, mode)
+		},
+	)
+	if err != ErrUnavailable {
+		t.Fatalf("loadFileWithUnixOpen() error = %v, want ErrUnavailable", err)
+	}
+	if snapshot.Valid() {
+		t.Fatal("FIFO replacement returned a valid snapshot")
+	}
+	if openCalls != 1 {
+		t.Fatalf("content open calls = %d, want 1", openCalls)
+	}
+	if seenFlags&unix.O_NONBLOCK == 0 {
+		t.Fatalf("content open flags = %#x, want O_NONBLOCK", seenFlags)
 	}
 }
 

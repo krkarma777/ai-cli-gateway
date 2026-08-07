@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -16,15 +17,26 @@ func loadFile(
 	distinctFrom []fs.FileInfo,
 	parse snapshotParser,
 ) (Snapshot, error) {
+	return loadFileWithUnixOpen(path, distinctFrom, parse, unix.Open)
+}
+
+type unixOpenFile func(string, int, uint32) (int, error)
+
+func loadFileWithUnixOpen(
+	path string,
+	distinctFrom []fs.FileInfo,
+	parse snapshotParser,
+	open unixOpenFile,
+) (Snapshot, error) {
 	clean, ok := cleanUnixKeyPath(path)
-	if !ok || parse == nil || !safeUnixKeyAncestors(clean) ||
+	if !ok || parse == nil || open == nil || !safeUnixKeyAncestors(clean) ||
 		!safeUnixKeyPath(clean) {
 		return Snapshot{}, ErrUnavailable
 	}
 
-	fd, err := unix.Open(
+	fd, err := open(
 		clean,
-		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK,
 		0,
 	)
 	if err != nil {
@@ -54,6 +66,7 @@ func loadFile(
 	if err != nil || !distinctUnixKeyIdentity(handleInfo, distinctFrom) {
 		return Snapshot{}, ErrUnavailable
 	}
+	openedMetadata := unixKeyMetadataFrom(opened, handleInfo)
 
 	snapshot, err := parse(file)
 	if err != nil || !snapshot.Valid() || !snapshot.Enabled() {
@@ -61,8 +74,11 @@ func loadFile(
 	}
 
 	var after unix.Stat_t
+	afterInfo, statErr := file.Stat()
 	if err := unix.Fstat(fd, &after); err != nil ||
 		!sameUnixIdentity(opened, after) ||
+		statErr != nil ||
+		!sameUnixKeyMetadata(openedMetadata, unixKeyMetadataFrom(after, afterInfo)) ||
 		!safeUnixKeyStat(after) ||
 		!sameUnixPathIdentity(clean, after) ||
 		!safeUnixKeyAncestors(clean) {
@@ -74,6 +90,81 @@ func loadFile(
 	}
 	closed = true
 	return snapshot, nil
+}
+
+type unixKeyMetadata struct {
+	mode           uint32
+	uid            uint32
+	nlink          uint64
+	size           int64
+	modTimeNanos   int64
+	changeSeconds  int64
+	changeNanos    int64
+	changeTimeSeen bool
+}
+
+func unixKeyMetadataFrom(stat unix.Stat_t, info fs.FileInfo) unixKeyMetadata {
+	metadata := unixKeyMetadata{
+		mode:  uint32(stat.Mode),
+		uid:   uint32(stat.Uid),
+		nlink: uint64(stat.Nlink),
+	}
+	if info != nil {
+		metadata.size = info.Size()
+		metadata.modTimeNanos = info.ModTime().UnixNano()
+	}
+	metadata.changeSeconds, metadata.changeNanos, metadata.changeTimeSeen =
+		unixKeyChangeTime(stat)
+	return metadata
+}
+
+func sameUnixKeyMetadata(left, right unixKeyMetadata) bool {
+	if left.mode != right.mode || left.uid != right.uid ||
+		left.nlink != right.nlink || left.size != right.size ||
+		left.modTimeNanos != right.modTimeNanos ||
+		left.changeTimeSeen != right.changeTimeSeen {
+		return false
+	}
+	return !left.changeTimeSeen ||
+		(left.changeSeconds == right.changeSeconds &&
+			left.changeNanos == right.changeNanos)
+}
+
+func unixKeyChangeTime(stat unix.Stat_t) (int64, int64, bool) {
+	value := reflect.ValueOf(stat)
+	for _, name := range []string{"Ctim", "Ctimespec"} {
+		field := value.FieldByName(name)
+		if !field.IsValid() || field.Kind() != reflect.Struct {
+			continue
+		}
+		seconds, secondsOK := unixKeyIntegerField(field.FieldByName("Sec"))
+		nanos, nanosOK := unixKeyIntegerField(field.FieldByName("Nsec"))
+		if secondsOK && nanosOK {
+			return seconds, nanos, true
+		}
+	}
+	seconds, secondsOK := unixKeyIntegerField(value.FieldByName("Ctime"))
+	for _, name := range []string{"Ctimensec", "CtimeNsec"} {
+		nanos, nanosOK := unixKeyIntegerField(value.FieldByName(name))
+		if secondsOK && nanosOK {
+			return seconds, nanos, true
+		}
+	}
+	return 0, 0, false
+}
+
+func unixKeyIntegerField(value reflect.Value) (int64, bool) {
+	if !value.IsValid() {
+		return 0, false
+	}
+	switch value.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return value.Int(), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return int64(value.Uint()), true //nolint:gosec // Native time fields fit in int64.
+	default:
+		return 0, false
+	}
 }
 
 func safeUnixKeyPath(path string) bool {

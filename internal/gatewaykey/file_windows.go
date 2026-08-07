@@ -64,6 +64,30 @@ type windowsKeyToken struct {
 	groups  []windowsKeyTokenGroup
 }
 
+type windowsKeyACEKind uint8
+
+const (
+	windowsKeyACEUnknown windowsKeyACEKind = iota
+	windowsKeyACEAllow
+	windowsKeyACEDeny
+)
+
+type windowsKeyACE struct {
+	kind  windowsKeyACEKind
+	flags uint8
+	mask  uint32
+	sid   string
+}
+
+type windowsKeyACLEvidence struct {
+	descriptorSupported bool
+	daclPresent         bool
+	daclNull            bool
+	daclProtected       bool
+	ownerSID            string
+	aces                []windowsKeyACE
+}
+
 func loadFile(
 	path string,
 	distinctFrom []fs.FileInfo,
@@ -109,8 +133,9 @@ func loadFile(
 	}
 
 	after, ok := windowsKeyFileInformation(file)
-	if !ok || windowsIdentity(before) != windowsIdentity(after) ||
+	if !ok || !sameWindowsKeyMetadata(before, after) ||
 		!safeWindowsKeyNative(file, after, false) ||
+		!safeWindowsKeyDACL(file, token, false) ||
 		!windowsKeyPathMatches(clean, file) ||
 		!safeWindowsKeyAncestors(clean, token) {
 		return Snapshot{}, ErrUnavailable
@@ -124,7 +149,17 @@ func loadFile(
 }
 
 func cleanWindowsKeyPath(path string) (string, bool) {
-	if path == "" || strings.IndexByte(path, 0) >= 0 || windowsDevicePath(path) {
+	return cleanWindowsKeyPathWithDriveType(path, windows.GetDriveType)
+}
+
+type windowsDriveType func(*uint16) uint32
+
+func cleanWindowsKeyPathWithDriveType(
+	path string,
+	driveType windowsDriveType,
+) (string, bool) {
+	if path == "" || strings.IndexByte(path, 0) >= 0 ||
+		windowsDevicePath(path) || driveType == nil {
 		return "", false
 	}
 	clean := filepath.Clean(path)
@@ -137,6 +172,15 @@ func cleanWindowsKeyPath(path string) (string, bool) {
 	}
 	drive := volume[0]
 	if !((drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')) {
+		return "", false
+	}
+	if strings.Contains(clean[len(volume):], ":") {
+		return "", false
+	}
+	rootPointer, err := windows.UTF16PtrFromString(
+		volume + string(filepath.Separator),
+	)
+	if err != nil || driveType(rootPointer) != windows.DRIVE_FIXED {
 		return "", false
 	}
 	return clean, true
@@ -159,7 +203,7 @@ func openWindowsKeyFile(path string) (*os.File, bool) {
 	handle, err := windows.CreateFile(
 		pointer,
 		windows.GENERIC_READ|windows.READ_CONTROL,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_DELETE,
 		nil,
 		windows.OPEN_EXISTING,
 		windows.FILE_FLAG_OPEN_REPARSE_POINT,
@@ -219,7 +263,15 @@ func safeWindowsKeyNative(
 	directory bool,
 ) bool {
 	typeValue, err := windows.GetFileType(windows.Handle(file.Fd()))
-	if err != nil || typeValue != windows.FILE_TYPE_DISK ||
+	return err == nil && safeWindowsKeyNativeEvidence(typeValue, information, directory)
+}
+
+func safeWindowsKeyNativeEvidence(
+	typeValue uint32,
+	information windows.ByHandleFileInformation,
+	directory bool,
+) bool {
+	if typeValue != windows.FILE_TYPE_DISK ||
 		information.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 ||
 		information.FileAttributes&windows.FILE_ATTRIBUTE_DEVICE != 0 {
 		return false
@@ -238,6 +290,17 @@ func windowsIdentity(information windows.ByHandleFileInformation) windowsKeyIden
 		index: uint64(information.FileIndexHigh)<<32 |
 			uint64(information.FileIndexLow),
 	}
+}
+
+func sameWindowsKeyMetadata(
+	left windows.ByHandleFileInformation,
+	right windows.ByHandleFileInformation,
+) bool {
+	return windowsIdentity(left) == windowsIdentity(right) &&
+		left.FileSizeHigh == right.FileSizeHigh &&
+		left.FileSizeLow == right.FileSizeLow &&
+		left.LastWriteTime.HighDateTime == right.LastWriteTime.HighDateTime &&
+		left.LastWriteTime.LowDateTime == right.LastWriteTime.LowDateTime
 }
 
 func windowsKeyPathMatches(path string, file *os.File) bool {
@@ -325,70 +388,116 @@ func safeWindowsKeyDACL(file *os.File, token windowsKeyToken, ancestor bool) boo
 		windows.SE_FILE_OBJECT,
 		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION,
 	)
-	if err != nil || descriptor == nil || !descriptor.IsValid() {
+	if err != nil {
 		return false
 	}
+	evidence, ok := normalizeWindowsKeyACL(descriptor)
+	return ok && evaluateWindowsKeyACL(evidence, token, ancestor)
+}
+
+func normalizeWindowsKeyACL(
+	descriptor *windows.SECURITY_DESCRIPTOR,
+) (windowsKeyACLEvidence, bool) {
+	evidence := windowsKeyACLEvidence{}
+	if descriptor == nil || !descriptor.IsValid() {
+		return evidence, false
+	}
+	evidence.descriptorSupported = true
 	control, _, err := descriptor.Control()
-	if err != nil || control&windows.SE_DACL_PRESENT == 0 {
-		return false
+	if err != nil {
+		return windowsKeyACLEvidence{}, false
 	}
+	evidence.daclPresent = control&windows.SE_DACL_PRESENT != 0
+	evidence.daclProtected = control&windows.SE_DACL_PROTECTED != 0
 	owner, _, err := descriptor.Owner()
 	if err != nil || owner == nil || !owner.IsValid() {
-		return false
+		return windowsKeyACLEvidence{}, false
 	}
-	ownerSID := owner.String()
-	if (!ancestor && ownerSID != token.userSID) ||
-		(ancestor && !trustedWindowsKeySID(ownerSID, token.userSID, true)) {
-		return false
-	}
+	evidence.ownerSID = owner.String()
 	dacl, _, err := descriptor.DACL()
-	if err != nil || dacl == nil {
+	if err != nil {
+		return windowsKeyACLEvidence{}, false
+	}
+	if dacl == nil {
+		evidence.daclNull = evidence.daclPresent
+		return evidence, true
+	}
+	evidence.aces = make([]windowsKeyACE, 0, dacl.AceCount)
+	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
+		var native *windows.ACCESS_ALLOWED_ACE
+		if windows.GetAce(dacl, index, &native) != nil || native == nil ||
+			native.Header.AceFlags&^windowsACLACEValidFlags != 0 {
+			return windowsKeyACLEvidence{}, false
+		}
+		kind := windowsKeyACEUnknown
+		switch native.Header.AceType {
+		case windows.ACCESS_ALLOWED_ACE_TYPE:
+			kind = windowsKeyACEAllow
+		case windows.ACCESS_DENIED_ACE_TYPE:
+			kind = windowsKeyACEDeny
+		default:
+			return windowsKeyACLEvidence{}, false
+		}
+		const minimumSIDBytes = uintptr(8)
+		sidOffset := unsafe.Offsetof(native.SidStart)
+		if uintptr(native.Header.AceSize) < sidOffset+minimumSIDBytes {
+			return windowsKeyACLEvidence{}, false
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&native.SidStart))
+		if !sid.IsValid() || uintptr(sid.Len()) > uintptr(native.Header.AceSize)-sidOffset {
+			return windowsKeyACLEvidence{}, false
+		}
+		evidence.aces = append(evidence.aces, windowsKeyACE{
+			kind:  kind,
+			flags: native.Header.AceFlags,
+			mask:  uint32(native.Mask),
+			sid:   sid.String(),
+		})
+	}
+	return evidence, true
+}
+
+func evaluateWindowsKeyACL(
+	evidence windowsKeyACLEvidence,
+	token windowsKeyToken,
+	ancestor bool,
+) bool {
+	if !evidence.descriptorSupported || !evidence.daclPresent ||
+		evidence.daclNull || evidence.ownerSID == "" || token.userSID == "" ||
+		(!ancestor && !evidence.daclProtected) ||
+		(!ancestor && evidence.ownerSID != token.userSID) ||
+		(ancestor && !trustedWindowsKeySID(evidence.ownerSID, token.userSID, true)) {
 		return false
 	}
-
-	required := windowsACLReadData | windowsACLReadAttributes
-	forbidden := windowsACLForbiddenLeaf
+	required := uint32(windowsACLReadData | windowsACLReadAttributes)
+	forbidden := uint32(windowsACLForbiddenLeaf)
 	if ancestor {
 		required = windowsACLExecute
 		forbidden = windowsACLForbiddenAncestor
 	}
 	remaining := required
-	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
-		var native *windows.ACCESS_ALLOWED_ACE
-		if windows.GetAce(dacl, index, &native) != nil || native == nil ||
-			native.Header.AceFlags&^windowsACLACEValidFlags != 0 {
+	for _, ace := range evidence.aces {
+		if (ace.kind != windowsKeyACEAllow && ace.kind != windowsKeyACEDeny) ||
+			ace.flags&^windowsACLACEValidFlags != 0 || ace.sid == "" {
 			return false
 		}
-		allow := native.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE
-		deny := native.Header.AceType == windows.ACCESS_DENIED_ACE_TYPE
-		if !allow && !deny {
-			return false
-		}
-		const minimumSIDBytes = uintptr(8)
-		sidOffset := unsafe.Offsetof(native.SidStart)
-		if uintptr(native.Header.AceSize) < sidOffset+minimumSIDBytes {
-			return false
-		}
-		sid := (*windows.SID)(unsafe.Pointer(&native.SidStart))
-		if !sid.IsValid() || uintptr(sid.Len()) > uintptr(native.Header.AceSize)-sidOffset {
-			return false
-		}
-		sidString := sid.String()
-		mask, ok := expandWindowsKeyGeneric(uint32(native.Mask))
+		mask, ok := expandWindowsKeyGeneric(ace.mask)
 		if !ok {
 			return false
 		}
-		if native.Header.AceFlags&windowsACLACEInheritOnly != 0 {
+		if ace.flags&windowsACLACEInheritOnly != 0 {
 			continue
 		}
-		if allow && !trustedWindowsKeySID(sidString, token.userSID, ancestor) &&
+		if ace.kind == windowsKeyACEAllow &&
+			!trustedWindowsKeySID(ace.sid, token.userSID, ancestor) &&
 			mask&forbidden != 0 {
 			return false
 		}
-		if deny && windowsKeySIDApplies(token, sidString, true) && mask&remaining != 0 {
+		if ace.kind == windowsKeyACEDeny &&
+			windowsKeySIDApplies(token, ace.sid, true) && mask&remaining != 0 {
 			return false
 		}
-		if allow && windowsKeySIDApplies(token, sidString, false) {
+		if ace.kind == windowsKeyACEAllow && windowsKeySIDApplies(token, ace.sid, false) {
 			remaining &^= mask
 		}
 	}
