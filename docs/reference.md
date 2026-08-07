@@ -241,15 +241,17 @@ Command grammar:
 ```text
 usage:
   ai-cli-gateway version
-  ai-cli-gateway serve --config PATH
-  ai-cli-gateway doctor --config PATH [--json]
+  ai-cli-gateway serve [--config PATH]
+  ai-cli-gateway doctor [--config PATH] [--json]
 ```
 
 Both JSON Doctor orders are accepted: `ai-cli-gateway doctor --config PATH --json` and `ai-cli-gateway doctor --json --config PATH`. The equals-sign form is intentionally not part of the grammar.
 
+When `--config` is omitted, POSIX uses `$XDG_CONFIG_HOME/ai-cli-gateway/config.toml` when `XDG_CONFIG_HOME` is an absolute nonempty path; otherwise it uses `$HOME/.config/ai-cli-gateway/config.toml`. Windows uses `%LOCALAPPDATA%\AI CLI Gateway\config\config.toml`. If a safe default path is unavailable, the command exits 2 and writes `default_config_path_unavailable: pass --config PATH`; pass an explicit `--config PATH` to continue.
+
 Help is available as `ai-cli-gateway --help`, `ai-cli-gateway version --help`, `ai-cli-gateway serve --help`, and `ai-cli-gateway doctor --help`.
 
-The exit status is 0 for success or a clean handled shutdown, 1 for readiness, runtime, serve, or cleanup failure, and 2 for usage or configuration failure. Stable CLI diagnostics include `configuration_invalid`, `gateway_not_ready: run ai-cli-gateway doctor`, `doctor_failed`, and `serve_failed: run ai-cli-gateway doctor`. `doctor` performs no inference and emits redacted text or JSON.
+The exit status is 0 for success or a clean handled shutdown, 1 for readiness, runtime, serve, or cleanup failure, and 2 for usage or configuration failure. Stable CLI diagnostics include `configuration_invalid`, `default_config_path_unavailable: pass --config PATH`, `gateway_not_ready: run ai-cli-gateway doctor`, `doctor_failed`, and `serve_failed: run ai-cli-gateway doctor`. `doctor` performs no inference and emits redacted text or JSON.
 
 ## Configuration and providers
 
