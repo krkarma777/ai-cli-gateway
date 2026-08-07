@@ -93,15 +93,35 @@ func loadFile(
 	distinctFrom []fs.FileInfo,
 	parse snapshotParser,
 ) (Snapshot, error) {
+	return loadFileWithWindowsPathIdentity(
+		path,
+		distinctFrom,
+		parse,
+		windowsKeyPathIdentity,
+	)
+}
+
+type windowsPathIdentity func(string) (windowsKeyIdentity, bool)
+
+func loadFileWithWindowsPathIdentity(
+	path string,
+	distinctFrom []fs.FileInfo,
+	parse snapshotParser,
+	pathIdentity windowsPathIdentity,
+) (Snapshot, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	clean, ok := cleanWindowsKeyPath(path)
-	if !ok || parse == nil {
+	if !ok || parse == nil || pathIdentity == nil {
 		return Snapshot{}, ErrUnavailable
 	}
 	token, ok := currentWindowsKeyToken()
 	if !ok || !safeWindowsKeyAncestors(clean, token) {
+		return Snapshot{}, ErrUnavailable
+	}
+	stabilizedDistinct, ok := stabilizeWindowsDistinct(distinctFrom)
+	if !ok {
 		return Snapshot{}, ErrUnavailable
 	}
 
@@ -119,11 +139,11 @@ func loadFile(
 	before, ok := windowsKeyFileInformation(file)
 	if !ok || !safeWindowsKeyNative(file, before, false) ||
 		!safeWindowsKeyDACL(file, token, false) ||
-		!windowsKeyPathMatches(clean, file) {
+		!windowsKeyPathMatches(clean, windowsIdentity(before), pathIdentity) {
 		return Snapshot{}, ErrUnavailable
 	}
 	handleInfo, err := file.Stat()
-	if err != nil || !distinctWindowsKeyIdentity(handleInfo, distinctFrom) {
+	if err != nil || !distinctWindowsKeyIdentity(handleInfo, stabilizedDistinct) {
 		return Snapshot{}, ErrUnavailable
 	}
 
@@ -136,7 +156,7 @@ func loadFile(
 	if !ok || !sameWindowsKeyMetadata(before, after) ||
 		!safeWindowsKeyNative(file, after, false) ||
 		!safeWindowsKeyDACL(file, token, false) ||
-		!windowsKeyPathMatches(clean, file) ||
+		!windowsKeyPathMatches(clean, windowsIdentity(after), pathIdentity) ||
 		!safeWindowsKeyAncestors(clean, token) {
 		return Snapshot{}, ErrUnavailable
 	}
@@ -303,13 +323,57 @@ func sameWindowsKeyMetadata(
 		left.LastWriteTime.LowDateTime == right.LastWriteTime.LowDateTime
 }
 
-func windowsKeyPathMatches(path string, file *os.File) bool {
-	pathInfo, err := os.Lstat(path)
-	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() {
-		return false
+func windowsKeyPathIdentity(path string) (windowsKeyIdentity, bool) {
+	pointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return windowsKeyIdentity{}, false
 	}
-	handleInfo, err := file.Stat()
-	return err == nil && os.SameFile(handleInfo, pathInfo)
+	handle, err := windows.CreateFile(
+		pointer,
+		windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	if err != nil {
+		return windowsKeyIdentity{}, false
+	}
+	var information windows.ByHandleFileInformation
+	informationErr := windows.GetFileInformationByHandle(handle, &information)
+	typeValue, typeErr := windows.GetFileType(handle)
+	closeErr := windows.CloseHandle(handle)
+	if informationErr != nil || typeErr != nil || closeErr != nil ||
+		!safeWindowsKeyNativeEvidence(typeValue, information, false) {
+		return windowsKeyIdentity{}, false
+	}
+	return windowsIdentity(information), true
+}
+
+func windowsKeyPathMatches(
+	path string,
+	handle windowsKeyIdentity,
+	pathIdentity windowsPathIdentity,
+) bool {
+	current, ok := pathIdentity(path)
+	return ok && current == handle
+}
+
+func stabilizeWindowsDistinct(
+	distinctFrom []fs.FileInfo,
+) ([]fs.FileInfo, bool) {
+	stabilized := make([]fs.FileInfo, 0, len(distinctFrom))
+	for _, other := range distinctFrom {
+		if other == nil {
+			continue
+		}
+		if !os.SameFile(other, other) {
+			return nil, false
+		}
+		stabilized = append(stabilized, other)
+	}
+	return stabilized, true
 }
 
 func distinctWindowsKeyIdentity(

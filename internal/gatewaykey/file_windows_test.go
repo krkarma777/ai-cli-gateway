@@ -26,6 +26,110 @@ func TestLoadFileAcceptsOwnerOnlyLocalRegularFile(t *testing.T) {
 	}
 }
 
+func TestLoadFileWindowsPathIdentityUsesCompatibleShareWithRetainedHandle(t *testing.T) {
+	path := writeWindowsKeyFile(t, testKey+"\n")
+	retained, ok := openWindowsKeyFile(path)
+	if !ok {
+		t.Fatal("open retained content handle")
+	}
+	defer retained.Close() //nolint:errcheck // Test reports the identity failure directly.
+	information, ok := windowsKeyFileInformation(retained)
+	if !ok {
+		t.Fatal("read retained identity")
+	}
+
+	pathIdentity, ok := windowsKeyPathIdentity(path)
+	if !ok {
+		t.Fatal("metadata-only path identity open conflicted with retained handle")
+	}
+	if pathIdentity != windowsIdentity(information) {
+		t.Fatalf("path identity = %#v, want retained %#v", pathIdentity, windowsIdentity(information))
+	}
+}
+
+func TestLoadFileWindowsDistinctIdentityIsStabilizedBeforeContentOpen(t *testing.T) {
+	path := writeWindowsKeyFile(t, testKey+"\n")
+	pathBacked, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat path-backed distinct identity: %v", err)
+	}
+	stabilized, ok := stabilizeWindowsDistinct([]fs.FileInfo{nil, pathBacked})
+	if !ok {
+		t.Fatal("stabilize path-backed distinct identity")
+	}
+
+	retained, ok := openWindowsKeyFile(path)
+	if !ok {
+		t.Fatal("open retained content handle")
+	}
+	defer retained.Close() //nolint:errcheck // Test reports collision behavior directly.
+	handleInfo, err := retained.Stat()
+	if err != nil {
+		t.Fatalf("stat retained handle: %v", err)
+	}
+	if distinctWindowsKeyIdentity(handleInfo, stabilized) {
+		t.Fatal("stabilized path-backed identity produced a false-negative collision")
+	}
+}
+
+func TestLoadFileWindowsPostReadPathIdentitySequence(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		post func(windowsKeyIdentity) (windowsKeyIdentity, bool)
+	}{
+		{
+			name: "replacement",
+			post: func(identity windowsKeyIdentity) (windowsKeyIdentity, bool) {
+				identity.index++
+				return identity, true
+			},
+		},
+		{
+			name: "reparse",
+			post: func(windowsKeyIdentity) (windowsKeyIdentity, bool) {
+				return windowsKeyIdentity{}, false
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeWindowsKeyFile(t, testKey+"\n")
+			retainedIdentity, ok := windowsKeyPathIdentity(path)
+			if !ok {
+				t.Fatal("capture fixture identity")
+			}
+			identityCalls := 0
+			parseCalls := 0
+			snapshot, err := loadFileWithWindowsPathIdentity(
+				path,
+				nil,
+				func(reader io.Reader) (Snapshot, error) {
+					parseCalls++
+					return Parse(reader)
+				},
+				func(string) (windowsKeyIdentity, bool) {
+					identityCalls++
+					if identityCalls == 1 {
+						return retainedIdentity, true
+					}
+					return tt.post(retainedIdentity)
+				},
+			)
+			if err != ErrUnavailable {
+				t.Fatalf("loadFileWithWindowsPathIdentity() error = %v, want ErrUnavailable", err)
+			}
+			if snapshot.Valid() {
+				t.Fatal("unstable post-read path returned a valid snapshot")
+			}
+			if identityCalls != 2 {
+				t.Fatalf("path identity calls = %d, want 2", identityCalls)
+			}
+			if parseCalls != 1 {
+				t.Fatalf("parser calls = %d, want 1", parseCalls)
+			}
+		})
+	}
+}
+
 func TestLoadFileRejectsWindowsADSAndUnsafeDriveTypesAtPolicyBoundary(t *testing.T) {
 	localDrive := func(root *uint16) uint32 {
 		if got := windows.UTF16PtrToString(root); got != `C:\` {
