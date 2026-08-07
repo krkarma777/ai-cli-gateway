@@ -35,6 +35,11 @@ import (
 
 const expectedModule = "github.com/krkarma777/ai-cli-gateway"
 
+// privateNotesDirectory holds untracked working notes. It is ignored by Git and
+// skipped by the repository scan, so drafts may reference local paths that the
+// published tree must never contain.
+const privateNotesDirectory = "docs/superpowers"
+
 const (
 	checkoutAction         = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"              // v7.0.1
 	setupGoAction          = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"              // v7.0.0
@@ -3203,7 +3208,8 @@ func TestPublicPolicyContributionSecurityAndIgnoreBoundary(t *testing.T) {
 	ignore := string(readRepositoryFile(t, ".gitignore"))
 	wantLines := []string{
 		"/ai-cli-gateway", "/fake-ai-cli", "*.test", "*.test.exe", "*.exe", "*.prof",
-		"coverage*.out", "/.idea/", "/.vscode/", "/config.toml", ".env", ".env.*", "!.env.example",
+		"coverage*.out", "/.idea/", "/.vscode/", "/docs/superpowers/",
+		"/config.toml", ".env", ".env.*", "!.env.example",
 		"/.codex/", "/.claude/", "/.gemini/", "auth.json", ".credentials.json",
 		"credentials.json", "oauth_creds.json", "google_accounts.json",
 	}
@@ -3211,7 +3217,13 @@ func TestPublicPolicyContributionSecurityAndIgnoreBoundary(t *testing.T) {
 	if !reflect.DeepEqual(gotLines, wantLines) {
 		t.Fatalf(".gitignore rules = %q, want exact narrow rules %q", gotLines, wantLines)
 	}
-	for _, forbidden := range []string{".superpowers", "config.example.toml", "docs/", "README", "settings.json", "internal/securitytest"} {
+	// The exact wantLines comparison above is what pins the rule set. This loop
+	// names the published paths that must never be hidden, so a rule covering one
+	// of them fails with a specific reason instead of a whole-file diff.
+	for _, forbidden := range []string{
+		"config.example.toml", "docs/getting-started", "docs/reference",
+		"docs/releases", "README", "settings.json", "internal/securitytest",
+	} {
 		if strings.Contains(ignore, forbidden) {
 			t.Fatalf(".gitignore contains forbidden broad/public rule %q", forbidden)
 		}
@@ -8279,17 +8291,27 @@ func TestScannerRejectsEverySymlinkEntry(t *testing.T) {
 	assertFinding(t, scanRepository(root), "symlink", "link.txt")
 }
 
-func TestScannerSkipsOnlyTopLevelGitMetadata(t *testing.T) {
+func TestScannerSkipsOnlyGitMetadataAndPrivateNotes(t *testing.T) {
 	root := t.TempDir()
 	secret := "actual-" + "credential"
-	for _, directory := range []string{".git"} {
+	username := "krkarma" + "777"
+	for _, directory := range []string{".git", privateNotesDirectory} {
 		writeFixtureFile(t, root, filepath.Join(directory, "hidden.env"), []byte("OPENAI_"+"API_KEY="+secret+"\n"))
 	}
+	writeFixtureFile(t, root, filepath.Join(privateNotesDirectory, "plan.md"), []byte("/Users/"+username+"/Dev/spawngate\n"))
 	writeFixtureFile(t, root, "clean.txt", []byte("clean\n"))
 	if err := scanRepository(root); err != nil {
 		t.Fatalf("scanRepository() error = %q, want skipped metadata", err)
 	}
 
+	// The skip is exact: a sibling under the same published parent is still scanned.
+	sibling := filepath.Join("docs", "superpowers-notes", "leak.md")
+	writeFixtureFile(t, root, sibling, []byte("/Users/"+username+"/Dev/spawngate\n"))
+	assertFinding(t, scanRepository(root), "developer_path", sibling)
+
+	if err := os.RemoveAll(filepath.Join(root, "docs", "superpowers-notes")); err != nil {
+		t.Fatalf("remove sibling: %v", err)
+	}
 	writeFixtureFile(t, root, filepath.Join(".other", "hidden.env"), []byte("OPENAI_"+"API_KEY="+secret+"\n"))
 	assertFinding(t, scanRepository(root), "secret_assignment", filepath.Join(".other", "hidden.env"), secret)
 }
@@ -8610,6 +8632,9 @@ func scanRepository(root string) error {
 			return scanFinding{category: "auth_artifact", relative: relative}
 		}
 		if entry.IsDir() {
+			if filepath.ToSlash(relative) == privateNotesDirectory {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 

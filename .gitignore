@@ -11,6 +11,9 @@ coverage*.out
 /.idea/
 /.vscode/
 
+# Untracked working notes
+/docs/superpowers/
+
 # Local configuration and environment files
 /config.toml
 .env
