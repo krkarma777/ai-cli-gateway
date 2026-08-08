@@ -331,7 +331,7 @@ func TestPlatformPathDefaultsRequireUnixFixedTails(t *testing.T) {
 func TestRunFileGatewayAuthIncludesUnixNodeExecutableAndEntrypointIdentity(t *testing.T) {
 	directory := newSecureUnixTestTree(t)
 	launcher := filepath.Join(directory, "provider-launcher")
-	if err := os.WriteFile(launcher, []byte("#!/usr/bin/env node\nfixture"), 0o700); err != nil {
+	if err := os.WriteFile(launcher, []byte("#!/usr/bin/env node\nfixture"), 0o700); err != nil { // #nosec G306 -- this TempDir fixture must be executable to model a Node launcher.
 		t.Fatalf("write launcher: %v", err)
 	}
 	node := filepath.Join(directory, "node")

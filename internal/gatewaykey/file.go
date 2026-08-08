@@ -1,3 +1,4 @@
+// Package gatewaykey creates and loads fail-closed gateway authentication snapshots.
 package gatewaykey
 
 import (

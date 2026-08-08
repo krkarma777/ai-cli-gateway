@@ -11,8 +11,10 @@ import (
 
 const entropySize = 32
 
+// ErrUnavailable reports that a valid gateway authentication snapshot could not be created.
 var ErrUnavailable = errors.New("gateway authentication is unavailable")
 
+// LookupEnv resolves an environment variable by name and reports whether it is present.
 type LookupEnv func(string) (string, bool)
 
 type snapshotState uint8
@@ -23,15 +25,18 @@ const (
 	snapshotEnabled
 )
 
+// Snapshot represents immutable, plaintext-free gateway authentication state.
 type Snapshot struct {
 	state  snapshotState
 	digest [sha256.Size]byte
 }
 
+// Disabled returns a valid snapshot for intentionally disabled authentication.
 func Disabled() Snapshot {
 	return Snapshot{state: snapshotDisabled}
 }
 
+// FromEnvironment returns an enabled snapshot for the named non-empty environment value.
 func FromEnvironment(name string, lookup LookupEnv) (Snapshot, error) {
 	if lookup == nil {
 		return Snapshot{}, ErrUnavailable
@@ -48,6 +53,7 @@ func FromEnvironment(name string, lookup LookupEnv) (Snapshot, error) {
 	}, nil
 }
 
+// Parse reads a lowercase 64-hex-character key with optional LF or CRLF termination.
 func Parse(r io.Reader) (Snapshot, error) {
 	if r == nil {
 		return Snapshot{}, ErrUnavailable
@@ -72,7 +78,7 @@ func Parse(r io.Reader) (Snapshot, error) {
 	}
 
 	for _, b := range token {
-		if !((b >= '0' && b <= '9') || (b >= 'a' && b <= 'f')) {
+		if (b < '0' || b > '9') && (b < 'a' || b > 'f') {
 			return Snapshot{}, ErrUnavailable
 		}
 	}
@@ -83,6 +89,7 @@ func Parse(r io.Reader) (Snapshot, error) {
 	}, nil
 }
 
+// Generate reads 32 bytes of entropy and returns a lowercase hex key terminated by LF.
 func Generate(random io.Reader) ([]byte, error) {
 	if random == nil {
 		return nil, ErrUnavailable
@@ -100,16 +107,22 @@ func Generate(random io.Reader) ([]byte, error) {
 	return key, nil
 }
 
+// Valid reports whether the snapshot is explicitly disabled or enabled.
 func (s Snapshot) Valid() bool {
 	return s.state == snapshotDisabled || s.state == snapshotEnabled
 }
 
+// Enabled reports whether the snapshot requires a matching gateway key.
 func (s Snapshot) Enabled() bool {
 	return s.state == snapshotEnabled
 }
 
+// Matches reports whether token is authorized by the snapshot.
+// Disabled snapshots accept every token; invalid snapshots reject every token.
 func (s Snapshot) Matches(token string) bool {
 	switch s.state {
+	case snapshotInvalid:
+		return false
 	case snapshotDisabled:
 		return true
 	case snapshotEnabled:

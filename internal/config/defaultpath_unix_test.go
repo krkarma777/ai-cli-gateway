@@ -2,7 +2,10 @@
 
 package config
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestDefaultPath(t *testing.T) {
 	tests := []struct {
@@ -56,7 +59,7 @@ func TestDefaultPath(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := defaultPath(lookupEnv(test.env))
-			if err != test.wantErr {
+			if !errors.Is(err, test.wantErr) {
 				t.Fatalf("defaultPath() error = %v, want %v", err, test.wantErr)
 			}
 			if got != test.want {
@@ -118,7 +121,7 @@ func TestDefaultInitRuntimeRoot(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := defaultInitRuntimeRoot(lookupEnv(test.env))
-			if err != test.wantErr {
+			if !errors.Is(err, test.wantErr) {
 				t.Fatalf("defaultInitRuntimeRoot() error = %v, want %v", err, test.wantErr)
 			}
 			if got != test.want {

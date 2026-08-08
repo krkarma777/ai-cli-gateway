@@ -118,7 +118,7 @@ func TestSnapshotRevalidateRejectsInPlaceContentChangeWithoutReplacingConfig(t *
 
 func TestSnapshotRevalidateRejectsMutationRestoredToOriginalDigestAndMtime(t *testing.T) {
 	path := writeSourceConfig(t, "ORIGINAL_KEY")
-	original, err := os.ReadFile(path)
+	original, err := os.ReadFile(path) // #nosec G304 -- path is created by writeSourceConfig in this test's private TempDir.
 	if err != nil {
 		t.Fatalf("read original source: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestSnapshotRevalidateRejectsMutationRestoredToOriginalDigestAndMtime(t *te
 
 func TestLoadRejectsMutationRestoredDuringInitialRetainedHandleRead(t *testing.T) {
 	path := writeSourceConfig(t, "ORIGINAL_KEY")
-	original, err := os.ReadFile(path)
+	original, err := os.ReadFile(path) // #nosec G304 -- path is created by writeSourceConfig in this test's private TempDir.
 	if err != nil {
 		t.Fatalf("read original source: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestLoadRejectsMutationRestoredDuringInitialRetainedHandleRead(t *testing.T
 
 func TestSnapshotRevalidateRejectsPathReplacement(t *testing.T) {
 	path := writeSourceConfig(t, "ORIGINAL_KEY")
-	payload, err := os.ReadFile(path)
+	payload, err := os.ReadFile(path) // #nosec G304 -- path is created by writeSourceConfig in this test's private TempDir.
 	if err != nil {
 		t.Fatalf("read original source: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSnapshotRevalidateRejectsPathReplacement(t *testing.T) {
 	if err := os.Rename(path, displaced); err != nil {
 		t.Fatalf("rename retained source: %v", err)
 	}
-	if err := os.WriteFile(path, payload, 0o600); err != nil {
+	if err := os.WriteFile(path, payload, 0o600); err != nil { // #nosec G703 -- path is the test-owned TempDir file just renamed above.
 		t.Fatalf("write replacement source: %v", err)
 	}
 	assertSourceUnavailable(t, snapshot.Revalidate())
@@ -326,10 +326,10 @@ func mutateAndRestoreSource(
 	t.Helper()
 	mutated := append([]byte(nil), original...)
 	mutated[len(mutated)/2] ^= 1
-	if err := os.WriteFile(path, mutated, 0o600); err != nil {
+	if err := os.WriteFile(path, mutated, 0o600); err != nil { // #nosec G703 -- path is created by writeSourceConfig in this test's private TempDir.
 		t.Fatalf("write mutated source: %v", err)
 	}
-	if err := os.WriteFile(path, original, 0o600); err != nil {
+	if err := os.WriteFile(path, original, 0o600); err != nil { // #nosec G703 -- path is created by writeSourceConfig in this test's private TempDir.
 		t.Fatalf("restore original source: %v", err)
 	}
 	restoreSourceModTime(t, path, modTime)

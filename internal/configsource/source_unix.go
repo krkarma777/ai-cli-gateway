@@ -67,16 +67,27 @@ func unixSourceMetadata(stat unix.Stat_t, info fs.FileInfo) (sourceMetadata, boo
 		uint32(stat.Mode)&unix.S_IFMT != unix.S_IFREG {
 		return sourceMetadata{}, false
 	}
+	device, deviceOK := checkedUnixSourceDevice(stat.Dev)
+	if !deviceOK {
+		return sourceMetadata{}, false
+	}
 	changeSeconds, changeNanos, changeSeen := unixSourceChangeTime(stat)
 	if !changeSeen {
 		return sourceMetadata{}, false
 	}
 	return sourceMetadata{
-		device: uint64(stat.Dev), inode: uint64(stat.Ino), mode: uint32(stat.Mode),
+		device: device, inode: uint64(stat.Ino), mode: uint32(stat.Mode),
 		uid: uint32(stat.Uid), gid: uint32(stat.Gid), nlink: uint64(stat.Nlink),
 		size: info.Size(), modTimeNanos: info.ModTime().UnixNano(),
 		changeSeconds: changeSeconds, changeNanos: changeNanos,
 	}, true
+}
+
+func checkedUnixSourceDevice[T ~int32 | ~uint64](device T) (uint64, bool) {
+	if device < 0 {
+		return 0, false
+	}
+	return uint64(device), true
 }
 
 func sameSourceMetadata(left, right sourceMetadata) bool {
@@ -115,6 +126,13 @@ func unixSourceIntegerField(value reflect.Value) (int64, bool) {
 		return value.Int(), true
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		return int64(value.Uint()), true //nolint:gosec // Native time fields fit in int64.
+	case reflect.Invalid, reflect.Bool, reflect.Uintptr,
+		reflect.Float32, reflect.Float64,
+		reflect.Complex64, reflect.Complex128,
+		reflect.Array, reflect.Chan, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Pointer, reflect.Slice, reflect.String,
+		reflect.Struct, reflect.UnsafePointer:
+		return 0, false
 	default:
 		return 0, false
 	}

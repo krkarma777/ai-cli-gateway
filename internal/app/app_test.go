@@ -945,7 +945,7 @@ func TestServeConfigSourceClosesExactlyOnceOnEveryPreHandoffExit(t *testing.T) {
 		{
 			name: "invalid dependencies",
 			run: func(t *testing.T, fixture *readyAppFixture, startup startupDependencies) {
-				if err := serve(context.Background(), fixture.configPath, Dependencies{}, startup); err != ErrStartup {
+				if err := serve(context.Background(), fixture.configPath, Dependencies{}, startup); !errors.Is(err, ErrStartup) {
 					t.Fatalf("Serve() error = %v, want exact %v", err, ErrStartup)
 				}
 			},
@@ -2003,7 +2003,8 @@ func appMemoryRequest(t *testing.T, listener *appMemoryListener, bearer string) 
 	t.Helper()
 	connection := listener.dial(t)
 	defer func() { _ = connection.Close() }()
-	request, err := http.NewRequest(
+	request, err := http.NewRequestWithContext(
+		context.Background(),
 		http.MethodGet,
 		"http://127.0.0.1:18080/v1/models",
 		nil,

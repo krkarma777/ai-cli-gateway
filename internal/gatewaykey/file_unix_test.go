@@ -128,7 +128,7 @@ func TestLoadFileRejectsUnsafeOwnershipModesLinksAndAncestors(t *testing.T) {
 		}
 		path := filepath.Join(ancestor, "gateway.key")
 		testutil.WriteTrustedFile(t, path, []byte(testKey+"\n"), 0o600)
-		if err := os.Chmod(ancestor, 0o770); err != nil {
+		if err := os.Chmod(ancestor, 0o770); err != nil { // #nosec G302 -- this fixture must model a group-writable unsafe ancestor.
 			t.Fatalf("chmod ancestor: %v", err)
 		}
 		assertLoadFileUnavailable(t, path, nil)

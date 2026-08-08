@@ -569,6 +569,9 @@ func TestRunEnvironmentGatewayAuthLooksUpExactlyOnceAndFailsClosed(t *testing.T)
 					t.Fatalf("check/auth = %+v/%#v", check, auth)
 				}
 				local := auth
+				if !local.Matches(test.value) {
+					t.Fatal("GatewayAuth local copy did not retain the diagnosed snapshot")
+				}
 				local = gatewaykey.Disabled()
 				if !local.Valid() || diagnosis.GatewayAuth().Matches("wrong-secret") {
 					t.Fatal("GatewayAuth defensive value access mutated diagnosis snapshot")

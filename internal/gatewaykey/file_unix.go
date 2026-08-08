@@ -106,7 +106,7 @@ type unixKeyMetadata struct {
 func unixKeyMetadataFrom(stat unix.Stat_t, info fs.FileInfo) unixKeyMetadata {
 	metadata := unixKeyMetadata{
 		mode:  uint32(stat.Mode),
-		uid:   uint32(stat.Uid),
+		uid:   stat.Uid,
 		nlink: uint64(stat.Nlink),
 	}
 	if info != nil {
@@ -162,6 +162,13 @@ func unixKeyIntegerField(value reflect.Value) (int64, bool) {
 		return value.Int(), true
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		return int64(value.Uint()), true //nolint:gosec // Native time fields fit in int64.
+	case reflect.Invalid, reflect.Bool, reflect.Uintptr,
+		reflect.Float32, reflect.Float64,
+		reflect.Complex64, reflect.Complex128,
+		reflect.Array, reflect.Chan, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Pointer, reflect.Slice, reflect.String,
+		reflect.Struct, reflect.UnsafePointer:
+		return 0, false
 	default:
 		return 0, false
 	}
@@ -183,7 +190,7 @@ func cleanUnixKeyPath(path string) (string, bool) {
 func safeUnixKeyStat(stat unix.Stat_t) bool {
 	permissions := uint32(stat.Mode) & 0o777
 	return uint32(stat.Mode)&unix.S_IFMT == unix.S_IFREG &&
-		uint32(stat.Uid) == uint32(os.Geteuid()) && //nolint:gosec // Kernel UIDs use uint32.
+		stat.Uid == uint32(os.Geteuid()) && //nolint:gosec // Kernel UIDs use uint32.
 		(permissions == 0o400 || permissions == 0o600) &&
 		uint32(stat.Mode)&(unix.S_ISUID|unix.S_ISGID|unix.S_ISVTX) == 0 &&
 		uint64(stat.Nlink) == 1
@@ -215,8 +222,7 @@ func sameUnixPathIdentity(path string, handle unix.Stat_t) bool {
 }
 
 func sameUnixIdentity(left, right unix.Stat_t) bool {
-	return uint64(left.Dev) == uint64(right.Dev) &&
-		uint64(left.Ino) == uint64(right.Ino)
+	return left.Dev == right.Dev && left.Ino == right.Ino
 }
 
 func distinctUnixKeyIdentity(
