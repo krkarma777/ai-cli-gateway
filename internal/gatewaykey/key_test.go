@@ -100,7 +100,7 @@ func TestParseRejectsMalformedInput(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			snapshot, err := Parse(strings.NewReader(tt.input))
-			if err != ErrUnavailable {
+			if !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("Parse() error = %v, want sentinel", err)
 			}
 			if snapshot.Valid() || snapshot.Enabled() || snapshot.Matches(testKey) {
@@ -122,7 +122,7 @@ func TestParseFailsClosedForNilAndReaderErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			snapshot, err := Parse(tt.reader)
-			if err != ErrUnavailable {
+			if !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("Parse() error = %v, want sentinel", err)
 			}
 			if strings.Contains(err.Error(), "detail") {
@@ -139,7 +139,7 @@ func TestParseObservesAtMost67Bytes(t *testing.T) {
 	reader := &countingReader{remaining: 1024}
 
 	snapshot, err := Parse(reader)
-	if err != ErrUnavailable {
+	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("Parse() error = %v, want sentinel", err)
 	}
 	if snapshot.Valid() {
@@ -198,7 +198,7 @@ func TestFromEnvironmentRejectsUnavailableValuesAfterOneLookup(t *testing.T) {
 			}
 
 			snapshot, err := FromEnvironment("GATEWAY_KEY", lookup)
-			if err != ErrUnavailable {
+			if !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("FromEnvironment() error = %v, want sentinel", err)
 			}
 			if calls != 1 {
@@ -213,7 +213,7 @@ func TestFromEnvironmentRejectsUnavailableValuesAfterOneLookup(t *testing.T) {
 
 func TestFromEnvironmentNilLookupFailsClosedWithoutPanic(t *testing.T) {
 	snapshot, err := FromEnvironment("GATEWAY_KEY", nil)
-	if err != ErrUnavailable {
+	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("FromEnvironment() error = %v, want sentinel", err)
 	}
 	if snapshot.Valid() || snapshot.Enabled() || snapshot.Matches("anything") {
