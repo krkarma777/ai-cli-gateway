@@ -83,11 +83,33 @@ func unixSourceMetadata(stat unix.Stat_t, info fs.FileInfo) (sourceMetadata, boo
 	}, true
 }
 
-func checkedUnixSourceDevice[T ~int32 | ~uint64](device T) (uint64, bool) {
-	if device < 0 {
+func checkedUnixSourceDevice[
+	T ~int | ~int8 | ~int16 | ~int32 | ~int64 |
+		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr,
+](device T) (uint64, bool) {
+	value := reflect.ValueOf(device)
+	switch value.Kind() {
+	case reflect.Int32:
+		return uint64(uint32(value.Int())), true // #nosec G115 -- Darwin dev_t is signed int32; uint32 preserves its kernel identity bit pattern.
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int64:
+		signed := value.Int()
+		if signed < 0 {
+			return 0, false
+		}
+		return uint64(signed), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32,
+		reflect.Uint64, reflect.Uintptr:
+		return value.Uint(), true
+	case reflect.Invalid, reflect.Bool,
+		reflect.Float32, reflect.Float64,
+		reflect.Complex64, reflect.Complex128,
+		reflect.Array, reflect.Chan, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Pointer, reflect.Slice, reflect.String,
+		reflect.Struct, reflect.UnsafePointer:
+		return 0, false
+	default:
 		return 0, false
 	}
-	return uint64(device), true
 }
 
 func sameSourceMetadata(left, right sourceMetadata) bool {

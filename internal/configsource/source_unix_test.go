@@ -69,6 +69,53 @@ func TestUnixSourceMetadataDetectsRestoredMutation(t *testing.T) {
 	}
 }
 
+func TestCheckedUnixSourceDevicePreservesDarwinInt32BitPatterns(t *testing.T) {
+	tests := []struct {
+		name   string
+		device int32
+		want   uint64
+	}{
+		{name: "high bit set", device: -2_147_483_648, want: 2_147_483_648},
+		{name: "all bits set", device: -1, want: 4_294_967_295},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := checkedUnixSourceDevice(test.device)
+			if !ok || got != test.want {
+				t.Fatalf("checkedUnixSourceDevice(%d) = %d, %t; want %d, true",
+					test.device, got, ok, test.want)
+			}
+		})
+	}
+}
+
+func TestCheckedUnixSourceDeviceKeepsDarwinInt32BitPatternsDistinct(t *testing.T) {
+	left, leftOK := checkedUnixSourceDevice(int32(-1))
+	right, rightOK := checkedUnixSourceDevice(int32(-2))
+	if !leftOK || !rightOK || left == right {
+		t.Fatalf("distinct Darwin devices normalized to %d/%t and %d/%t",
+			left, leftOK, right, rightOK)
+	}
+}
+
+func TestCheckedUnixSourceDevicePreservesUnsignedRange(t *testing.T) {
+	for _, device := range []uint64{0, 1, 1 << 63, 18_446_744_073_709_551_615} {
+		got, ok := checkedUnixSourceDevice(device)
+		if !ok || got != device {
+			t.Fatalf("checkedUnixSourceDevice(%d) = %d, %t; want %d, true",
+				device, got, ok, device)
+		}
+	}
+}
+
+func TestCheckedUnixSourceDeviceRejectsNegativeWiderSignedValues(t *testing.T) {
+	got, ok := checkedUnixSourceDevice(int64(-1))
+	if ok || got != 0 {
+		t.Fatalf("checkedUnixSourceDevice(int64(-1)) = %d, %t; want 0, false", got, ok)
+	}
+}
+
 func TestSameUnixSourceMetadataCoversIdentityAndChangeEvidence(t *testing.T) {
 	baseline := sourceMetadata{
 		device: 2, inode: 3, mode: uint32(unix.S_IFREG | 0o600),
