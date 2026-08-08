@@ -1,11 +1,13 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -13,12 +15,15 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/krkarma777/ai-cli-gateway/internal/config"
+	"github.com/krkarma777/ai-cli-gateway/internal/configsource"
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
 	"github.com/krkarma777/ai-cli-gateway/internal/doctor"
+	"github.com/krkarma777/ai-cli-gateway/internal/gatewaykey"
 	"github.com/krkarma777/ai-cli-gateway/internal/httpapi"
 	"github.com/krkarma777/ai-cli-gateway/internal/process"
 	"github.com/krkarma777/ai-cli-gateway/internal/provider"
@@ -561,45 +566,359 @@ func TestServeClosedTransferredRootFailsSafeBeforeServing(t *testing.T) {
 	}
 }
 
-func TestServeHTTPGatewayKeyLookupDriftUnwindsBeforeListener(t *testing.T) {
+func TestServeGatewayAuthEnvironmentSnapshotIsLookedUpOnceAndTransferred(t *testing.T) {
 	fixture := newReadyAppFixture(t)
 	const environmentName = "APP_TEST_GATEWAY_KEY"
 	addFixtureGatewayKey(t, fixture.configPath, environmentName)
+	currentKey := "initial-gateway-key"
 	keyLookups := 0
 	fixture.deps.LookupEnv = func(name string) (string, bool) {
 		if name != environmentName {
 			return "", false
 		}
 		keyLookups++
-		if keyLookups == 1 {
-			return "PLANTED_GATEWAY_KEY_SECRET", true
-		}
-		return "", false
+		return currentKey, true
 	}
-	fixture.deps.NewHTTPIDs = func() (httpapi.IDSource, error) {
-		fixture.httpIDCalls++
-		return httpapi.NewOpaqueIDSource(bytes.NewReader(make([]byte, 32)))
+	listener := newAppMemoryListener()
+	configureFixtureHTTP(t, fixture, listener)
+	observation := &appConfigSourceObservation{}
+	startup := observation.dependencies(t, fixture.configPath)
+	startup.postDiagnosis = func() {
+		currentKey = "rotated-gateway-key"
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- serve(ctx, fixture.configPath, fixture.deps, startup)
+	}()
+
+	awaitAppSignal(t, listener.acceptReady, "Gateway auth listener handoff")
+	if status := appMemoryRequest(t, listener, "initial-gateway-key"); status != http.StatusOK {
+		t.Fatalf("initial key status = %d, want %d", status, http.StatusOK)
+	}
+	if status := appMemoryRequest(t, listener, "rotated-gateway-key"); status != http.StatusUnauthorized {
+		t.Fatalf("rotated key status = %d, want %d", status, http.StatusUnauthorized)
+	}
+	cancel()
+	if err := awaitAppValue(t, result, "environment-auth Serve shutdown"); err != nil {
+		t.Fatalf("Serve() error = %v, want clean shutdown", err)
 	}
 
-	err := Serve(context.Background(), fixture.configPath, fixture.deps)
-
-	if err != ErrStartup { //nolint:errorlint // Successful cleanup promises exact identity.
-		t.Fatalf("Serve() error = %v, want exact %v", err, ErrStartup)
+	if keyLookups != 1 {
+		t.Fatalf("Gateway key lookups = %d, want 1", keyLookups)
 	}
-	if keyLookups != 2 || fixture.httpIDCalls != 1 || fixture.listenCalls != 0 {
+	observation.assertLifecycle(t, 1, 1, 1)
+	if fixture.listenCalls != 1 || fixture.janitorCalls != 2 || fixture.closeCalls != 1 {
 		t.Fatalf(
-			"key/HTTP ID/listen calls = %d/%d/%d, want 2/1/0",
-			keyLookups,
-			fixture.httpIDCalls,
+			"listen/janitor/root close calls = %d/%d/%d, want 1/2/1",
 			fixture.listenCalls,
-		)
-	}
-	if fixture.janitorCalls != 2 || fixture.closeCalls != 1 {
-		t.Fatalf(
-			"janitor/close calls = %d/%d, want 2/1",
 			fixture.janitorCalls,
 			fixture.closeCalls,
 		)
+	}
+}
+
+func TestServeGatewayAuthFileSnapshotLoadsOnceWithRetainedConfigIdentity(t *testing.T) {
+	fixture := newReadyAppFixture(t)
+	initialKey := strings.Repeat("1", 64)
+	rotatedKey := strings.Repeat("2", 64)
+	keyPath := addFixtureGatewayKeyFile(t, fixture.configPath, initialKey)
+	listener := newAppMemoryListener()
+	configureFixtureHTTP(t, fixture, listener)
+	observation := &appConfigSourceObservation{}
+	startup := observation.dependencies(t, fixture.configPath)
+	loaderCalls := 0
+	var loaderConfigIdentity fs.FileInfo
+	startup.LoadGatewayKey = func(path string, distinct []fs.FileInfo) (gatewaykey.Snapshot, error) {
+		loaderCalls++
+		if path != keyPath {
+			t.Fatalf("LoadGatewayKey path = %q, want %q", path, keyPath)
+		}
+		if len(distinct) == 0 {
+			t.Fatal("LoadGatewayKey received no config identity")
+		}
+		loaderConfigIdentity = distinct[0]
+		return gatewaykey.LoadFile(path, distinct)
+	}
+	startup.postDiagnosis = func() {
+		replacement := filepath.Join(filepath.Dir(keyPath), "replacement-gateway.key")
+		// Both paths are confined to this test's owner-private fixture.
+		//nolint:gosec
+		if err := os.WriteFile(replacement, []byte(rotatedKey+"\n"), 0o600); err != nil {
+			t.Fatalf("write replacement Gateway key: %v", err)
+		}
+		if err := os.Rename(replacement, keyPath); err != nil {
+			t.Fatalf("replace Gateway key: %v", err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- serve(ctx, fixture.configPath, fixture.deps, startup)
+	}()
+
+	awaitAppSignal(t, listener.acceptReady, "file-auth listener handoff")
+	if status := appMemoryRequest(t, listener, initialKey); status != http.StatusOK {
+		t.Fatalf("initial file key status = %d, want %d", status, http.StatusOK)
+	}
+	if status := appMemoryRequest(t, listener, rotatedKey); status != http.StatusUnauthorized {
+		t.Fatalf("replacement file key status = %d, want %d", status, http.StatusUnauthorized)
+	}
+	cancel()
+	if err := awaitAppValue(t, result, "file-auth Serve shutdown"); err != nil {
+		t.Fatalf("Serve() error = %v, want clean shutdown", err)
+	}
+
+	if loaderCalls != 1 {
+		t.Fatalf("LoadGatewayKey calls = %d, want 1", loaderCalls)
+	}
+	if observation.source == nil || loaderConfigIdentity != observation.source.info {
+		t.Fatal("key loader did not receive the exact retained config identity")
+	}
+	observation.assertLifecycle(t, 1, 1, 1)
+}
+
+func TestServeGatewayAuthDisabledSnapshotAcceptsRequests(t *testing.T) {
+	fixture := newReadyAppFixture(t)
+	listener := newAppMemoryListener()
+	configureFixtureHTTP(t, fixture, listener)
+	observation := &appConfigSourceObservation{}
+	startup := observation.dependencies(t, fixture.configPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- serve(ctx, fixture.configPath, fixture.deps, startup)
+	}()
+
+	awaitAppSignal(t, listener.acceptReady, "disabled-auth listener handoff")
+	if status := appMemoryRequest(t, listener, ""); status != http.StatusOK {
+		t.Fatalf("disabled-auth status = %d, want %d", status, http.StatusOK)
+	}
+	cancel()
+	if err := awaitAppValue(t, result, "disabled-auth Serve shutdown"); err != nil {
+		t.Fatalf("Serve() error = %v, want clean shutdown", err)
+	}
+	observation.assertLifecycle(t, 1, 1, 1)
+}
+
+func TestServeGatewayAuthFailureReturnsNotReadyWithoutListener(t *testing.T) {
+	fixture := newReadyAppFixture(t)
+	addFixtureGatewayKey(t, fixture.configPath, "APP_TEST_MISSING_GATEWAY_KEY")
+	lookupCalls := 0
+	fixture.deps.LookupEnv = func(name string) (string, bool) {
+		lookupCalls++
+		if name != "APP_TEST_MISSING_GATEWAY_KEY" {
+			t.Fatalf("LookupEnv name = %q", name)
+		}
+		return "", false
+	}
+	observation := &appConfigSourceObservation{}
+
+	err := serve(
+		context.Background(),
+		fixture.configPath,
+		fixture.deps,
+		observation.dependencies(t, fixture.configPath),
+	)
+
+	if err != ErrNotReady { //nolint:errorlint // The readiness boundary promises exact identity.
+		t.Fatalf("Serve() error = %v, want exact %v", err, ErrNotReady)
+	}
+	if lookupCalls != 1 || fixture.listenCalls != 0 || fixture.openCalls != 0 {
+		t.Fatalf(
+			"lookup/listen/root open calls = %d/%d/%d, want 1/0/0",
+			lookupCalls,
+			fixture.listenCalls,
+			fixture.openCalls,
+		)
+	}
+	observation.assertLifecycle(t, 1, 0, 1)
+}
+
+func TestDoctorGatewayAuthFailurePreservesClosedDiagnosticsAndClosesSource(t *testing.T) {
+	fixture := newReadyAppFixture(t)
+	addFixtureGatewayKey(t, fixture.configPath, "APP_TEST_MISSING_GATEWAY_KEY")
+	fixture.deps.LookupEnv = func(string) (string, bool) { return "", false }
+	observation := &appConfigSourceObservation{}
+	var stdout bytes.Buffer
+
+	code := runDoctor(
+		context.Background(),
+		fixture.configPath,
+		false,
+		&stdout,
+		fixture.deps,
+		observation.dependencies(t, fixture.configPath),
+	)
+
+	if code != 1 || !strings.Contains(
+		stdout.String(),
+		"gateway_auth\tfail\tgateway_key_missing\tgateway authentication is unavailable\n",
+	) {
+		t.Fatalf("Doctor() = code %d output %q, want closed Gateway auth failure", code, stdout.String())
+	}
+	for _, secret := range []string{
+		"APP_TEST_MISSING_GATEWAY_KEY",
+		fixture.configPath,
+	} {
+		if strings.Contains(stdout.String(), secret) {
+			t.Fatalf("Doctor output exposed %q: %q", secret, stdout.String())
+		}
+	}
+	observation.assertLifecycle(t, 1, 0, 1)
+}
+
+func TestServeGatewayAuthConfigRevalidationFailsClosedBeforeListener(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "in-place modification",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				// path is confined to this test's owner-private fixture.
+				//nolint:gosec
+				payload, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("read config for mutation: %v", err)
+				}
+				// path is confined to this test's owner-private fixture.
+				//nolint:gosec
+				if err := os.WriteFile(path, append(payload, '\n'), 0o600); err != nil {
+					t.Fatalf("mutate config: %v", err)
+				}
+			},
+		},
+		{
+			name: "path replacement",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				// path is confined to this test's owner-private fixture.
+				//nolint:gosec
+				payload, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("read config for replacement: %v", err)
+				}
+				replacement := filepath.Join(filepath.Dir(path), "replacement-config.toml")
+				// replacement is confined to this test's owner-private fixture.
+				//nolint:gosec
+				if err := os.WriteFile(replacement, payload, 0o600); err != nil {
+					t.Fatalf("write replacement config: %v", err)
+				}
+				if err := os.Rename(replacement, path); err != nil {
+					t.Fatalf("replace config: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newReadyAppFixture(t)
+			observation := &appConfigSourceObservation{}
+			startup := observation.dependencies(t, fixture.configPath)
+			startup.postDiagnosis = func() { test.mutate(t, fixture.configPath) }
+
+			err := serve(context.Background(), fixture.configPath, fixture.deps, startup)
+
+			if err != ErrNotReady { //nolint:errorlint // Unstable startup evidence is not ready.
+				t.Fatalf("Serve() error = %v, want exact %v", err, ErrNotReady)
+			}
+			if fixture.listenCalls != 0 || fixture.httpIDCalls != 0 {
+				t.Fatalf(
+					"HTTP ID/listen calls = %d/%d, want 0/0",
+					fixture.httpIDCalls,
+					fixture.listenCalls,
+				)
+			}
+			if fixture.janitorCalls != 2 || fixture.closeCalls != 1 {
+				t.Fatalf(
+					"janitor/root close calls = %d/%d, want 2/1",
+					fixture.janitorCalls,
+					fixture.closeCalls,
+				)
+			}
+			observation.assertLifecycle(t, 1, 1, 1)
+		})
+	}
+}
+
+func TestDoctorGatewayAuthFileLoaderUsesRetainedConfigIdentityAndClosesSource(t *testing.T) {
+	fixture := newReadyAppFixture(t)
+	keyPath := addFixtureGatewayKeyFile(t, fixture.configPath, strings.Repeat("3", 64))
+	observation := &appConfigSourceObservation{}
+	startup := observation.dependencies(t, fixture.configPath)
+	loaderCalls := 0
+	var loaderConfigIdentity fs.FileInfo
+	startup.LoadGatewayKey = func(path string, distinct []fs.FileInfo) (gatewaykey.Snapshot, error) {
+		loaderCalls++
+		if path != keyPath || len(distinct) == 0 {
+			t.Fatalf("LoadGatewayKey path/distinct = %q/%d", path, len(distinct))
+		}
+		loaderConfigIdentity = distinct[0]
+		return gatewaykey.LoadFile(path, distinct)
+	}
+	var stdout bytes.Buffer
+
+	code := runDoctor(
+		context.Background(),
+		fixture.configPath,
+		false,
+		&stdout,
+		fixture.deps,
+		startup,
+	)
+
+	if code != 0 {
+		t.Fatalf("Doctor() code = %d, want 0; output=%q", code, stdout.String())
+	}
+	if loaderCalls != 1 || observation.source == nil || loaderConfigIdentity != observation.source.info {
+		t.Fatal("Doctor key loader did not receive the exact retained config identity once")
+	}
+	observation.assertLifecycle(t, 1, 0, 1)
+}
+
+func TestServeConfigSourceClosesExactlyOnceOnEveryPreHandoffExit(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*testing.T, *readyAppFixture, startupDependencies)
+	}{
+		{
+			name: "pre-canceled",
+			run: func(t *testing.T, fixture *readyAppFixture, startup startupDependencies) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				if err := serve(ctx, fixture.configPath, Dependencies{}, startup); err != nil {
+					t.Fatalf("Serve() error = %v, want clean cancellation", err)
+				}
+			},
+		},
+		{
+			name: "invalid dependencies",
+			run: func(t *testing.T, fixture *readyAppFixture, startup startupDependencies) {
+				if err := serve(context.Background(), fixture.configPath, Dependencies{}, startup); err != ErrStartup {
+					t.Fatalf("Serve() error = %v, want exact %v", err, ErrStartup)
+				}
+			},
+		},
+		{
+			name: "doctor invalid dependencies",
+			run: func(t *testing.T, fixture *readyAppFixture, startup startupDependencies) {
+				var stdout bytes.Buffer
+				if code := runDoctor(
+					context.Background(), fixture.configPath, false, &stdout, Dependencies{}, startup,
+				); code != 1 || stdout.String() != "doctor_failed\n" {
+					t.Fatalf("Doctor() = code %d output %q", code, stdout.String())
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newReadyAppFixture(t)
+			observation := &appConfigSourceObservation{}
+			test.run(t, fixture, observation.dependencies(t, fixture.configPath))
+			observation.assertLifecycle(t, 1, 0, 1)
+		})
 	}
 }
 
@@ -1453,6 +1772,211 @@ func addFixtureGatewayKey(t *testing.T, configPath, environmentName string) {
 	if err := os.WriteFile(configPath, updated, 0o600); err != nil {
 		t.Fatalf("rewrite fixture config: %v", err)
 	}
+}
+
+func addFixtureGatewayKeyFile(t *testing.T, configPath, token string) string {
+	t.Helper()
+	keyPath := filepath.Join(filepath.Dir(configPath), "gateway.key")
+	testutil.WriteTrustedFile(t, keyPath, []byte(token+"\n"), 0o600)
+	// configPath is returned by this test's private trusted fixture.
+	//nolint:gosec
+	payload, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read fixture config: %v", err)
+	}
+	needle := []byte("listen = \"127.0.0.1:18080\"\n")
+	replacement := []byte(
+		"listen = \"127.0.0.1:18080\"\napi_key_file = " +
+			strconv.Quote(keyPath) + "\n",
+	)
+	updated := bytes.Replace(payload, needle, replacement, 1)
+	if bytes.Equal(updated, payload) {
+		t.Fatal("fixture Gateway key file was not added")
+	}
+	// configPath is returned by this test's private trusted fixture.
+	//nolint:gosec
+	if err := os.WriteFile(configPath, updated, 0o600); err != nil {
+		t.Fatalf("rewrite fixture config: %v", err)
+	}
+	return keyPath
+}
+
+type appConfigSourceObservation struct {
+	loadCalls int
+	source    *appTrackingConfigSource
+}
+
+func (observation *appConfigSourceObservation) dependencies(
+	t *testing.T,
+	wantPath string,
+) startupDependencies {
+	t.Helper()
+	return startupDependencies{
+		LoadConfigSource: func(path string) (ConfigSource, error) {
+			observation.loadCalls++
+			if path != wantPath {
+				t.Fatalf("LoadConfigSource path = %q, want %q", path, wantPath)
+			}
+			snapshot, err := configsource.Load(path)
+			if err != nil {
+				return nil, err
+			}
+			observation.source = &appTrackingConfigSource{Snapshot: snapshot}
+			return observation.source, nil
+		},
+		LoadGatewayKey: gatewaykey.LoadFile,
+	}
+}
+
+func (observation *appConfigSourceObservation) assertLifecycle(
+	t *testing.T,
+	wantLoad, wantRevalidate, wantClose int,
+) {
+	t.Helper()
+	if observation.source == nil {
+		t.Fatal("LoadConfigSource did not return a retained source")
+	}
+	if observation.loadCalls != wantLoad ||
+		observation.source.revalidateCalls != wantRevalidate ||
+		observation.source.closeCalls != wantClose {
+		t.Fatalf(
+			"source load/revalidate/close calls = %d/%d/%d, want %d/%d/%d",
+			observation.loadCalls,
+			observation.source.revalidateCalls,
+			observation.source.closeCalls,
+			wantLoad,
+			wantRevalidate,
+			wantClose,
+		)
+	}
+}
+
+type appTrackingConfigSource struct {
+	*configsource.Snapshot
+	info            fs.FileInfo
+	revalidateCalls int
+	closeCalls      int
+}
+
+func (source *appTrackingConfigSource) FileInfo() fs.FileInfo {
+	if source.info == nil {
+		source.info = source.Snapshot.FileInfo()
+	}
+	return source.info
+}
+
+func (source *appTrackingConfigSource) Revalidate() error {
+	source.revalidateCalls++
+	return source.Snapshot.Revalidate()
+}
+
+func (source *appTrackingConfigSource) Close() error {
+	source.closeCalls++
+	return source.Snapshot.Close()
+}
+
+func configureFixtureHTTP(
+	t *testing.T,
+	fixture *readyAppFixture,
+	listener *appMemoryListener,
+) {
+	t.Helper()
+	fixture.deps.NewHTTPIDs = func() (httpapi.IDSource, error) {
+		fixture.httpIDCalls++
+		return &appGatewayAuthIDSource{}, nil
+	}
+	fixture.deps.Listen = func(network, address string) (net.Listener, error) {
+		fixture.listenCalls++
+		if network != "tcp" || address != "127.0.0.1:18080" {
+			t.Fatalf("Listen args = %q/%q, want tcp/127.0.0.1:18080", network, address)
+		}
+		return listener, nil
+	}
+}
+
+type appGatewayAuthIDSource struct{}
+
+func (*appGatewayAuthIDSource) Next(string) string {
+	return "req_aaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+
+type appMemoryListener struct {
+	connections chan net.Conn
+	closed      chan struct{}
+	acceptReady chan struct{}
+	acceptOnce  sync.Once
+	closeOnce   sync.Once
+}
+
+func newAppMemoryListener() *appMemoryListener {
+	return &appMemoryListener{
+		connections: make(chan net.Conn),
+		closed:      make(chan struct{}),
+		acceptReady: make(chan struct{}),
+	}
+}
+
+func (listener *appMemoryListener) Accept() (net.Conn, error) {
+	listener.acceptOnce.Do(func() { close(listener.acceptReady) })
+	select {
+	case connection := <-listener.connections:
+		return connection, nil
+	case <-listener.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (listener *appMemoryListener) Close() error {
+	listener.closeOnce.Do(func() { close(listener.closed) })
+	return nil
+}
+
+func (*appMemoryListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 18080}
+}
+
+func (listener *appMemoryListener) dial(t *testing.T) net.Conn {
+	t.Helper()
+	server, client := net.Pipe()
+	select {
+	case listener.connections <- server:
+		return client
+	case <-listener.closed:
+		_ = server.Close()
+		_ = client.Close()
+		t.Fatal("memory listener closed before request")
+		return nil
+	}
+}
+
+func appMemoryRequest(t *testing.T, listener *appMemoryListener, bearer string) int {
+	t.Helper()
+	connection := listener.dial(t)
+	defer func() { _ = connection.Close() }()
+	request, err := http.NewRequest(
+		http.MethodGet,
+		"http://127.0.0.1:18080/v1/models",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("construct memory HTTP request: %v", err)
+	}
+	request.Close = true
+	if bearer != "" {
+		request.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	if err := request.Write(connection); err != nil {
+		t.Fatalf("write memory HTTP request: %v", err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(connection), request)
+	if err != nil {
+		t.Fatalf("read memory HTTP response: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		t.Fatalf("drain memory HTTP response: %v", err)
+	}
+	return response.StatusCode
 }
 
 func awaitAppSignal(t *testing.T, signal <-chan struct{}, name string) {
