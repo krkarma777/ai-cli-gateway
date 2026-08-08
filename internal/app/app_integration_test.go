@@ -136,9 +136,20 @@ func TestApplicationOptionalBearerAndMissingStartupKey(t *testing.T) {
 	t.Run("configured key protects requests", func(t *testing.T) {
 		harness := newAppIntegrationHarness(t, "SPAWNGATE_TEST_API_KEY")
 		harness.start(t)
+		if got := harness.gatewayKeyLookups.Load(); got != 1 {
+			t.Fatalf("Gateway key lookups after startup = %d, want 1", got)
+		}
+		harness.gatewayKeyValue.Store("rotated-integration-gateway-key")
 
 		missing := harness.request(t, http.MethodGet, "/v1/models", "", "")
 		wrong := harness.request(t, http.MethodGet, "/v1/models", "", "wrong-key")
+		rotated := harness.request(
+			t,
+			http.MethodGet,
+			"/v1/models",
+			"",
+			"rotated-integration-gateway-key",
+		)
 		allowed := harness.request(
 			t,
 			http.MethodGet,
@@ -149,6 +160,7 @@ func TestApplicationOptionalBearerAndMissingStartupKey(t *testing.T) {
 		for name, response := range map[string]appHTTPResult{
 			"missing": missing,
 			"wrong":   wrong,
+			"rotated": rotated,
 		} {
 			if response.status != http.StatusUnauthorized ||
 				!bytes.Contains(response.body, []byte(`"code":"invalid_bearer_key"`)) {
@@ -157,6 +169,9 @@ func TestApplicationOptionalBearerAndMissingStartupKey(t *testing.T) {
 		}
 		if allowed.status != http.StatusOK {
 			t.Fatalf("authorized response = %d %s", allowed.status, allowed.body)
+		}
+		if got := harness.gatewayKeyLookups.Load(); got != 1 {
+			t.Fatalf("Gateway key lookups after requests = %d, want 1", got)
 		}
 		harness.stop(t)
 		if strings.Contains(harness.logs.String(), "integration-gateway-key") {
@@ -607,6 +622,9 @@ type appIntegrationHarness struct {
 	result      chan error
 	listenTaken chan struct{}
 	gatewayKey  string
+
+	gatewayKeyValue   atomic.Value
+	gatewayKeyLookups atomic.Int64
 }
 
 type appIntegrationRecordingListener struct {
@@ -720,6 +738,7 @@ created = 12
 	}
 	if apiKeyEnv != "" {
 		harness.gatewayKey = "integration-gateway-key"
+		harness.gatewayKeyValue.Store(harness.gatewayKey)
 	}
 	deps := ProductionDependencies(&harness.logs)
 	ambientLookup := deps.LookupEnv
@@ -728,7 +747,8 @@ created = 12
 			return "", false
 		}
 		if apiKeyEnv != "" && name == apiKeyEnv {
-			return "integration-gateway-key", true
+			harness.gatewayKeyLookups.Add(1)
+			return harness.gatewayKeyValue.Load().(string), true
 		}
 		return ambientLookup(name)
 	}

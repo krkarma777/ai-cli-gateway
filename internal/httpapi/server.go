@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
+	"github.com/krkarma777/ai-cli-gateway/internal/gatewaykey"
 	"github.com/krkarma777/ai-cli-gateway/internal/observability"
 )
 
@@ -48,7 +49,7 @@ type Backend interface {
 // Config contains the complete bounded HTTP server configuration.
 type Config struct {
 	Listen            string
-	APIKeyEnv         string
+	GatewayAuth       gatewaykey.Snapshot
 	HTTPBodyBytes     int64
 	RequestLimits     RequestLimits
 	HandlerLimit      int
@@ -68,10 +69,9 @@ type CounterSink interface {
 
 // Dependencies contains trusted process-local HTTP dependencies.
 type Dependencies struct {
-	Now       func() time.Time
-	LookupEnv func(string) (string, bool)
-	IDs       IDSource
-	Counters  CounterSink
+	Now      func() time.Time
+	IDs      IDSource
+	Counters CounterSink
 }
 
 type applicationHandler struct {
@@ -101,17 +101,12 @@ func New(
 ) (*http.Server, http.Handler, error) {
 	port, ok := validateServerConfig(config)
 	if !ok ||
+		!config.GatewayAuth.Valid() ||
 		isNilInterface(backend) ||
 		dependencies.Now == nil ||
-		dependencies.LookupEnv == nil ||
 		isNilInterface(dependencies.IDs) ||
 		isNilInterface(dependencies.Counters) ||
 		logger == nil {
-		return nil, nil, errServerConfiguration
-	}
-
-	auth, err := newAuthenticator(config.APIKeyEnv, dependencies.LookupEnv)
-	if err != nil {
 		return nil, nil, errServerConfiguration
 	}
 
@@ -148,7 +143,7 @@ func New(
 
 	handler := &applicationHandler{
 		config:          config,
-		auth:            auth,
+		auth:            authenticator{snapshot: config.GatewayAuth},
 		backend:         backend,
 		now:             dependencies.Now,
 		ids:             dependencies.IDs,
@@ -185,9 +180,6 @@ func validateServerConfig(config Config) (string, bool) {
 	}
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
-		return "", false
-	}
-	if config.APIKeyEnv != "" && !validAPIKeyEnvironmentName(config.APIKeyEnv) {
 		return "", false
 	}
 	limits := config.RequestLimits

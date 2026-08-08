@@ -539,14 +539,10 @@ func TestTransportUnreadEarlyResponsesCloseWithoutDraining(t *testing.T) {
 						cfg.MaxModels = 100
 					}
 					if test.authEnabled {
-						cfg.APIKeyEnv = "AI_CLI_GATEWAY_API_KEY"
+						cfg.GatewayAuth = enabledGatewayAuth(t, "gateway-secret")
 					}
 				},
-				func(deps *Dependencies) {
-					if test.authEnabled {
-						deps.LookupEnv = func(string) (string, bool) { return "gateway-secret", true }
-					}
-				},
+				nil,
 				backend,
 				nil,
 			)

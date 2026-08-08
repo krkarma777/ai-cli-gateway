@@ -5,7 +5,9 @@ package doctor
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"net"
+	"os"
 	"reflect"
 	"slices"
 	"sort"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/krkarma777/ai-cli-gateway/internal/config"
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
+	"github.com/krkarma777/ai-cli-gateway/internal/gatewaykey"
 	"github.com/krkarma777/ai-cli-gateway/internal/process"
 	"github.com/krkarma777/ai-cli-gateway/internal/provider"
 )
@@ -71,7 +74,9 @@ type ProbeController interface {
 // Dependencies supplies the narrow side-effect seams used by Run.
 type Dependencies struct {
 	Adapters           map[core.ProviderName]provider.Adapter
+	ConfigIdentity     fs.FileInfo
 	LookupEnv          provider.LookupEnv
+	LoadGatewayKey     func(string, []fs.FileInfo) (gatewaykey.Snapshot, error)
 	LookupExecutable   func(string) (string, error)
 	NewRuntimeID       func() (string, error)
 	OpenRoot           func(string) (*process.Root, error)
@@ -218,7 +223,8 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 		dependencies.OpenRoot == nil ||
 		dependencies.Janitor == nil ||
 		dependencies.CloseRoot == nil ||
-		dependencies.NewProbeController == nil {
+		dependencies.NewProbeController == nil ||
+		(cfg.Server.APIKeyFile != "" && dependencies.LoadGatewayKey == nil) {
 		return Diagnosis{}, ErrInvalidDependencies
 	}
 	resolvedGateway, err := resolveGatewayExecutable(dependencies.GatewayExecutable)
@@ -236,19 +242,14 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 	}
 	builder := newReportBuilder(names, models, ranges)
 	checks := initialCoreChecks()
+	gatewayAuth, preflightFrozen, authReady := snapshotGatewayAuth(cfg, names, dependencies)
+	if !authReady {
+		checks[1] = gatewayAuthFailureCheck()
+	}
 	if !validListener(cfg.Server.Listen) {
 		checks[0] = Check{
 			Name: "listener", Status: checkStatusFail,
 			Code: "listener_unsafe", Message: "listener is unsafe",
-		}
-	}
-	if cfg.Server.APIKeyEnv != "" {
-		value, present := dependencies.LookupEnv(cfg.Server.APIKeyEnv)
-		if !present || value == "" || containsNUL(value) {
-			checks[1] = Check{
-				Name: "gateway_auth", Status: checkStatusFail,
-				Code: "gateway_key_missing", Message: "gateway authentication is unavailable",
-			}
 		}
 	}
 	if !validSchedulerConfig(cfg.Providers) {
@@ -261,7 +262,10 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 		checks[1].Status != checkStatusPass ||
 		checks[2].Status != checkStatusPass {
 		rows := skippedProviderRows(names)
-		diagnosis, finishErr := finishDiagnosis(builder, checks, rows, models, registry, nil, nil)
+		clearFrozenLookups(preflightFrozen)
+		diagnosis, finishErr := finishDiagnosis(
+			builder, checks, rows, models, registry, nil, gatewayAuth, nil,
+		)
 		if finishErr != nil {
 			return Diagnosis{}, ErrDiagnosis
 		}
@@ -274,6 +278,7 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 	root, openErr := dependencies.OpenRoot(cfg.Runtime.Root)
 	if root != nil && openErr != nil {
 		_ = dependencies.CloseRoot(root)
+		clearFrozenLookups(preflightFrozen)
 		return Diagnosis{}, ErrDiagnosis
 	}
 	if openErr != nil || root == nil {
@@ -287,7 +292,7 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 		}
 		return finishRun(
 			ctx, dependencies, builder, checks, skippedProviderRows(names), models,
-			registry, nil, nil, nil, false, false, nil,
+			registry, nil, gatewayAuth, nil, nil, false, false, preflightFrozen,
 		)
 	}
 	checks[3] = Check{Name: "runtime_root", Status: checkStatusPass}
@@ -295,7 +300,7 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 		checks[4] = runtimeCleanupFailureCheck("runtime_janitor")
 		return finishRun(
 			ctx, dependencies, builder, checks, skippedProviderRows(names), models,
-			registry, nil, root, nil, false, false, nil,
+			registry, nil, gatewayAuth, root, nil, false, false, preflightFrozen,
 		)
 	}
 	checks[4] = Check{Name: "runtime_janitor", Status: checkStatusPass}
@@ -310,12 +315,12 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 		if controllerErr != nil && !nilInterface(controller) {
 			return finishRun(
 				ctx, dependencies, builder, checks, skippedProviderRows(names), models,
-				registry, nil, root, controller, false, false, nil,
+				registry, nil, gatewayAuth, root, controller, false, false, preflightFrozen,
 			)
 		}
 		return finishRun(
 			ctx, dependencies, builder, checks, skippedProviderRows(names), models,
-			registry, nil, root, nil, false, false, nil,
+			registry, nil, gatewayAuth, root, nil, false, false, preflightFrozen,
 		)
 	}
 	selfTestErr := controller.SelfTest(ctx, resolvedGateway)
@@ -324,7 +329,7 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 		checks[5] = containmentFailureCheck()
 		return finishRun(
 			ctx, dependencies, builder, checks, skippedProviderRows(names), models,
-			registry, nil, root, controller, false, cleanupFailed, nil,
+			registry, nil, gatewayAuth, root, controller, false, cleanupFailed, preflightFrozen,
 		)
 	}
 	checks[5] = Check{Name: "containment", Status: checkStatusPass}
@@ -332,7 +337,10 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 	defaults, defaultsErr := platformPathDefaults()
 	rows := skippedProviderRows(names)
 	resolved := make(map[core.ProviderName]ResolvedProvider, len(names))
-	frozen := make(map[core.ProviderName]*frozenLookup, len(names))
+	frozen := preflightFrozen
+	if frozen == nil {
+		frozen = make(map[core.ProviderName]*frozenLookup, len(names))
+	}
 	for index, name := range names {
 		row, resolvedProvider, lookup, resolvable, probed := resolveProvider(
 			ctx,
@@ -345,6 +353,7 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 			dependencies.LookupExecutable,
 			defaults,
 			defaultsErr,
+			frozen[name],
 		)
 		rows[index] = row
 		if lookup != nil {
@@ -361,8 +370,139 @@ func Run(ctx context.Context, cfg config.Config, dependencies Dependencies) (Dia
 	candidateTransfer := !cleanupFailed
 	return finishRun(
 		ctx, dependencies, builder, checks, rows, models, registry, resolved,
-		root, controller, candidateTransfer, cleanupFailed, frozen,
+		gatewayAuth, root, controller, candidateTransfer, cleanupFailed, frozen,
 	)
+}
+
+func gatewayAuthFailureCheck() Check {
+	return Check{
+		Name: "gateway_auth", Status: checkStatusFail,
+		Code: "gateway_key_missing", Message: "gateway authentication is unavailable",
+	}
+}
+
+func snapshotGatewayAuth(
+	cfg config.Config,
+	names []core.ProviderName,
+	dependencies Dependencies,
+) (gatewaykey.Snapshot, map[core.ProviderName]*frozenLookup, bool) {
+	if cfg.Server.APIKeyEnv != "" && cfg.Server.APIKeyFile != "" {
+		return gatewaykey.Snapshot{}, nil, false
+	}
+	if cfg.Server.APIKeyFile != "" {
+		return snapshotFileGatewayAuth(cfg, names, dependencies)
+	}
+	if cfg.Server.APIKeyEnv != "" {
+		snapshot, err := gatewaykey.FromEnvironment(
+			cfg.Server.APIKeyEnv,
+			gatewaykey.LookupEnv(dependencies.LookupEnv),
+		)
+		if err != nil || !snapshot.Valid() || !snapshot.Enabled() {
+			return gatewaykey.Snapshot{}, nil, false
+		}
+		return snapshot, nil, true
+	}
+	return gatewaykey.Disabled(), nil, true
+}
+
+func snapshotFileGatewayAuth(
+	cfg config.Config,
+	names []core.ProviderName,
+	dependencies Dependencies,
+) (gatewaykey.Snapshot, map[core.ProviderName]*frozenLookup, bool) {
+	if dependencies.ConfigIdentity == nil ||
+		!dependencies.ConfigIdentity.Mode().IsRegular() ||
+		dependencies.LoadGatewayKey == nil {
+		return gatewaykey.Snapshot{}, nil, false
+	}
+	evidence := []fs.FileInfo{dependencies.ConfigIdentity}
+	credentialEvidence := make([]fs.FileInfo, 0, len(names))
+	frozen := make(map[core.ProviderName]*frozenLookup, len(names))
+	for _, name := range names {
+		configured, present := cfg.Providers[string(name)]
+		if !present {
+			clearFrozenLookups(frozen)
+			return gatewaykey.Snapshot{}, nil, false
+		}
+		executable, disposition := validateExecutablePath(configured.Executable)
+		if disposition != pathSafe {
+			clearFrozenLookups(frozen)
+			return gatewaykey.Snapshot{}, nil, false
+		}
+		command, valid := resolveProviderCommand(
+			executable,
+			slices.Clone(configured.PrefixArgs),
+			dependencies.LookupExecutable,
+		)
+		if !valid || command.Executable.Info == nil {
+			clearFrozenLookups(frozen)
+			return gatewaykey.Snapshot{}, nil, false
+		}
+		evidence = appendDistinctIdentity(evidence, command.Executable.Info)
+		if command.Entrypoint != nil {
+			if command.Entrypoint.Info == nil {
+				clearFrozenLookups(frozen)
+				return gatewaykey.Snapshot{}, nil, false
+			}
+			evidence = appendDistinctIdentity(evidence, command.Entrypoint.Info)
+		}
+
+		lookup := freezeConfiguredEnvironment(configured.CredentialEnv, dependencies.LookupEnv)
+		frozen[name] = lookup
+		if name != core.ProviderGemini {
+			continue
+		}
+		credential, present := lookup.values["GOOGLE_APPLICATION_CREDENTIALS"]
+		if !present || !credential.present {
+			continue
+		}
+		validated, disposition := validateCredentialPath(credential.value)
+		if disposition != pathSafe || validated.Info == nil {
+			continue
+		}
+		credential.value = validated.Resolved
+		lookup.values["GOOGLE_APPLICATION_CREDENTIALS"] = credential
+		credentialEvidence = appendDistinctIdentity(credentialEvidence, validated.Info)
+	}
+	for _, identity := range credentialEvidence {
+		evidence = appendDistinctIdentity(evidence, identity)
+	}
+	snapshot, err := dependencies.LoadGatewayKey(cfg.Server.APIKeyFile, evidence)
+	if err != nil || !snapshot.Valid() || !snapshot.Enabled() {
+		clearFrozenLookups(frozen)
+		return gatewaykey.Snapshot{}, nil, false
+	}
+	return snapshot, frozen, true
+}
+
+func freezeConfiguredEnvironment(
+	names []string,
+	lookup provider.LookupEnv,
+) *frozenLookup {
+	selected := slices.Clone(names)
+	slices.Sort(selected)
+	frozen := &frozenLookup{values: make(map[string]frozenValue, len(selected))}
+	for _, name := range selected {
+		value, present := lookup(name)
+		if !present || value == "" || containsNUL(value) {
+			frozen.values[name] = frozenValue{}
+			continue
+		}
+		frozen.values[name] = frozenValue{value: value, present: true}
+	}
+	return frozen
+}
+
+func appendDistinctIdentity(values []fs.FileInfo, candidate fs.FileInfo) []fs.FileInfo {
+	if candidate == nil {
+		return values
+	}
+	for _, existing := range values {
+		if existing != nil && os.SameFile(existing, candidate) {
+			return values
+		}
+	}
+	return append(values, candidate)
 }
 
 func doctorProbeLimits() process.Limits {
@@ -398,6 +538,7 @@ func finishRun(
 	models []string,
 	registry *core.Registry,
 	resolved map[core.ProviderName]ResolvedProvider,
+	gatewayAuth gatewaykey.Snapshot,
 	root *process.Root,
 	controller ProbeController,
 	candidateTransfer bool,
@@ -453,7 +594,7 @@ func finishRun(
 		resolved = nil
 	}
 	diagnosis, finishErr := finishDiagnosis(
-		builder, checks, rows, models, registry, transferred, root,
+		builder, checks, rows, models, registry, transferred, gatewayAuth, root,
 	)
 	if finishErr != nil {
 		if root != nil {
@@ -530,6 +671,7 @@ func resolveProvider(
 	lookupExecutable func(string) (string, error),
 	defaults platformDefaults,
 	defaultsErr error,
+	seeded *frozenLookup,
 ) (Provider, ResolvedProvider, *frozenLookup, bool, bool) {
 	executable, executableDisposition := validateExecutablePath(configured.Executable)
 	executableMissing := executableDisposition == pathMissing
@@ -565,21 +707,20 @@ func resolveProvider(
 	configHome, configDisposition := validateConfigHomePath(configured.ConfigHome)
 	configUnsafe := configDisposition != pathSafe
 	baseSafe := !executableMissing && !executableUnsafe && !configUnsafe
-	var frozen *frozenLookup
+	frozen := seeded
 	credentialMissing := false
 	credentialFileUnsafe := false
 	credentialNames := slices.Clone(configured.CredentialEnv)
 	slices.Sort(credentialNames)
 	if baseSafe {
-		frozen = &frozenLookup{values: make(map[string]frozenValue, len(credentialNames)+1)}
+		if frozen == nil {
+			frozen = freezeConfiguredEnvironment(credentialNames, ambient)
+		}
 		for _, environmentName := range credentialNames {
-			value, present := ambient(environmentName)
-			if !present || value == "" || containsNUL(value) {
+			value, present := frozen.values[environmentName]
+			if !present || !value.present {
 				credentialMissing = true
-				frozen.values[environmentName] = frozenValue{}
-				continue
 			}
-			frozen.values[environmentName] = frozenValue{value: value, present: true}
 		}
 		if defaults.FrozenSystemRoot != "" {
 			frozen.values["SystemRoot"] = frozenValue{
@@ -949,8 +1090,14 @@ func finishDiagnosis(
 	models []string,
 	registry *core.Registry,
 	resolved map[core.ProviderName]ResolvedProvider,
+	gatewayAuth gatewaykey.Snapshot,
 	root *process.Root,
 ) (Diagnosis, error) {
+	if len(checks) < 2 ||
+		(checks[1].Status == checkStatusPass && !gatewayAuth.Valid()) ||
+		(checks[1].Status == checkStatusFail && gatewayAuth.Valid()) {
+		return Diagnosis{}, ErrInvalidReport
+	}
 	if err := builder.setCore(checks); err != nil {
 		return Diagnosis{}, err
 	}
@@ -962,7 +1109,8 @@ func finishDiagnosis(
 		return Diagnosis{}, err
 	}
 	return Diagnosis{
-		report: report, providers: resolved, registry: registry, RuntimeRoot: root,
+		report: report, providers: resolved, registry: registry,
+		gatewayAuth: gatewayAuth, RuntimeRoot: root,
 	}, nil
 }
 
@@ -995,6 +1143,7 @@ type Diagnosis struct {
 	report      Report
 	providers   map[core.ProviderName]ResolvedProvider
 	registry    *core.Registry
+	gatewayAuth gatewaykey.Snapshot
 	RuntimeRoot *process.Root
 }
 
@@ -1123,6 +1272,12 @@ func (d Diagnosis) ResolvedProviders() map[core.ProviderName]ResolvedProvider {
 // Registry returns the canonical immutable model registry.
 func (d Diagnosis) Registry() *core.Registry {
 	return d.registry
+}
+
+// GatewayAuth returns the immutable Gateway authentication snapshot captured
+// before runtime or provider probes.
+func (d Diagnosis) GatewayAuth() gatewaykey.Snapshot {
+	return d.gatewayAuth
 }
 
 func (r Report) clone() Report {

@@ -892,6 +892,18 @@ func readGettingStarted(t *testing.T) string {
 	return string(readRepositoryFile(t, "docs/getting-started.md"))
 }
 
+func TestReferenceGatewayKeyWindowsRuntimePathPolicy(t *testing.T) {
+	contents := string(readRepositoryFile(t, "docs/reference.md"))
+	for _, required := range []string{
+		"runtime loading of `server.api_key_file` requires a drive-qualified, drive-absolute path on a fixed local drive",
+		"UNC, network, mapped, removable, and reparse locations are rejected",
+	} {
+		if !strings.Contains(contents, required) {
+			t.Fatalf("reference is missing Windows gateway-key runtime path policy %q", required)
+		}
+	}
+}
+
 func TestSDKContractRecoveryGuidance(t *testing.T) {
 	contents := readGettingStarted(t)
 	for _, required := range []string{

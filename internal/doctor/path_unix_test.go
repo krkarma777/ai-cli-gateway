@@ -3,6 +3,7 @@
 package doctor
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -13,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/krkarma777/ai-cli-gateway/internal/core"
+	"github.com/krkarma777/ai-cli-gateway/internal/gatewaykey"
+	"github.com/krkarma777/ai-cli-gateway/internal/provider"
 	"github.com/krkarma777/ai-cli-gateway/internal/testutil"
 )
 
@@ -321,6 +325,68 @@ func TestPlatformPathDefaultsRequireUnixFixedTails(t *testing.T) {
 	}
 	if want := []string{"/usr/bin", "/bin"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("fixed tail clean paths=%q, want %q", got, want)
+	}
+}
+
+func TestRunFileGatewayAuthIncludesUnixNodeExecutableAndEntrypointIdentity(t *testing.T) {
+	directory := newSecureUnixTestTree(t)
+	launcher := filepath.Join(directory, "provider-launcher")
+	if err := os.WriteFile(launcher, []byte("#!/usr/bin/env node\nfixture"), 0o700); err != nil { // #nosec G306 -- this TempDir fixture must be executable to model a Node launcher.
+		t.Fatalf("write launcher: %v", err)
+	}
+	node := filepath.Join(directory, "node")
+	writeUnixTestFile(t, node, 0o700)
+	configPath := filepath.Join(directory, "config.toml")
+	writeUnixTestFile(t, configPath, 0o600)
+
+	cfg := doctorTestConfig(t, core.ProviderCodex)
+	cfg.Server.Listen = "localhost:8080"
+	cfg.Server.APIKeyFile = filepath.Join(directory, "gateway.key")
+	configured := cfg.Providers["codex"]
+	configured.Executable = launcher
+	configured.PrefixArgs = nil
+	cfg.Providers["codex"] = configured
+	adapter := &doctorTestAdapter{name: core.ProviderCodex, interval: reportTestRange()}
+	dependencies := doctorTestDependencies(map[core.ProviderName]provider.Adapter{
+		core.ProviderCodex: adapter,
+	})
+	dependencies.GatewayExecutable = doctorTestExecutable(t)
+	dependencies.ConfigIdentity = mustDoctorFileInfo(t, configPath)
+	lookupCalls := 0
+	dependencies.LookupExecutable = func(name string) (string, error) {
+		lookupCalls++
+		if name != "node" {
+			t.Fatalf("executable lookup name = %q", name)
+		}
+		return node, nil
+	}
+	wantAuth := doctorGatewaySnapshot(t, "unix-node-key")
+	loaderCalls := 0
+	dependencies.LoadGatewayKey = func(_ string, distinct []fs.FileInfo) (gatewaykey.Snapshot, error) {
+		loaderCalls++
+		validatedNode, nodeDisposition := validateExecutablePath(node)
+		validatedLauncher, launcherDisposition := validateExecutablePath(launcher)
+		if nodeDisposition != pathSafe || launcherDisposition != pathSafe {
+			t.Fatalf("node/launcher dispositions = %v/%v", nodeDisposition, launcherDisposition)
+		}
+		want := []fs.FileInfo{
+			dependencies.ConfigIdentity,
+			validatedNode.Info,
+			validatedLauncher.Info,
+		}
+		if !sameDoctorIdentityList(distinct, want) {
+			t.Fatalf("distinct identities = %#v, want config/node/entrypoint", distinct)
+		}
+		return wantAuth, nil
+	}
+
+	diagnosis, err := Run(context.Background(), cfg, dependencies)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if loaderCalls != 1 || lookupCalls != 1 ||
+		!diagnosis.GatewayAuth().Matches("unix-node-key") {
+		t.Fatalf("loader/lookup/auth = %d/%d/%#v", loaderCalls, lookupCalls, diagnosis.GatewayAuth())
 	}
 }
 

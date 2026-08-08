@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
+	"github.com/krkarma777/ai-cli-gateway/internal/gatewaykey"
 )
 
 const serverTestIDBody = "aaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -66,6 +67,7 @@ func (c *testCounters) ClientCanceled() {
 func validServerConfig() Config {
 	return Config{
 		Listen:            "127.0.0.1:8080",
+		GatewayAuth:       gatewaykey.Disabled(),
 		HTTPBodyBytes:     1 << 20,
 		RequestLimits:     DefaultRequestLimits(),
 		HandlerLimit:      4,
@@ -91,11 +93,21 @@ func validServerBackend() *testBackend {
 func validServerDependencies() (Dependencies, *testCounters) {
 	counters := &testCounters{}
 	return Dependencies{
-		Now:       func() time.Time { return time.Unix(1_785_369_600, 0) },
-		LookupEnv: func(string) (string, bool) { return "", false },
-		IDs:       &fixedIDs{},
-		Counters:  counters,
+		Now:      func() time.Time { return time.Unix(1_785_369_600, 0) },
+		IDs:      &fixedIDs{},
+		Counters: counters,
 	}, counters
+}
+
+func enabledGatewayAuth(t *testing.T, token string) gatewaykey.Snapshot {
+	t.Helper()
+	snapshot, err := gatewaykey.FromEnvironment("GATEWAY_KEY", func(string) (string, bool) {
+		return token, true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
 
 func newTestServer(
@@ -170,7 +182,7 @@ func TestNewServerValidatesConfigurationDependenciesAndModels(t *testing.T) {
 			{"hostname listener", func(cfg *Config) { cfg.Listen = "localhost:8080" }},
 			{"wildcard listener", func(cfg *Config) { cfg.Listen = "0.0.0.0:8080" }},
 			{"zero port", func(cfg *Config) { cfg.Listen = "127.0.0.1:0" }},
-			{"bad environment name", func(cfg *Config) { cfg.APIKeyEnv = "bad-key" }},
+			{"zero gateway auth", func(cfg *Config) { cfg.GatewayAuth = gatewaykey.Snapshot{} }},
 			{"zero body", func(cfg *Config) { cfg.HTTPBodyBytes = 0 }},
 			{"large body", func(cfg *Config) { cfg.HTTPBodyBytes = 16<<20 + 1 }},
 			{"input above body", func(cfg *Config) { cfg.RequestLimits.InputBytes = int(cfg.HTTPBodyBytes) + 1 }},
@@ -230,31 +242,20 @@ func TestNewServerValidatesConfigurationDependenciesAndModels(t *testing.T) {
 		}
 	})
 
-	t.Run("authentication lookup and model validation fail closed", func(t *testing.T) {
+	t.Run("authentication snapshot and model validation fail closed", func(t *testing.T) {
 		cfg := validServerConfig()
-		cfg.APIKeyEnv = "AI_CLI_GATEWAY_API_KEY"
 		deps, _ := validServerDependencies()
-		var lookups atomic.Int32
-		deps.LookupEnv = func(name string) (string, bool) {
-			lookups.Add(1)
-			if name != cfg.APIKeyEnv {
-				t.Fatalf("name=%q", name)
-			}
-			return "", false
-		}
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-		if _, _, err := New(cfg, deps, validServerBackend(), logger); !errors.Is(err, errServerConfiguration) {
+		cfg.GatewayAuth = gatewaykey.Snapshot{}
+		backend := validServerBackend()
+		if _, _, err := New(cfg, deps, backend, logger); !errors.Is(err, errServerConfiguration) {
 			t.Fatalf("auth err=%v", err)
 		}
-		if lookups.Load() != 1 {
-			t.Fatalf("lookups=%d", lookups.Load())
+		if backend.modelsCalls.Load() != 0 {
+			t.Fatalf("models calls=%d after invalid auth", backend.modelsCalls.Load())
 		}
 
-		cfg.APIKeyEnv = ""
-		deps.LookupEnv = func(string) (string, bool) {
-			t.Fatal("lookup called while authentication disabled")
-			return "", false
-		}
+		cfg.GatewayAuth = gatewaykey.Disabled()
 		badModels := []struct {
 			name   string
 			models []core.Model
@@ -283,11 +284,8 @@ func TestNewServerValidatesConfigurationDependenciesAndModels(t *testing.T) {
 
 func TestServerRouteAuthHostQueryAndMediaPrecedence(t *testing.T) {
 	cfg := validServerConfig()
-	cfg.APIKeyEnv = "AI_CLI_GATEWAY_API_KEY"
+	cfg.GatewayAuth = enabledGatewayAuth(t, "gateway-secret")
 	deps, _ := validServerDependencies()
-	deps.LookupEnv = func(name string) (string, bool) {
-		return "gateway-secret", name == cfg.APIKeyEnv
-	}
 	_, handler := newTestServer(t, cfg, validServerBackend(), deps, nil)
 
 	validBody := `{"model":"codex-default","input":"hello"}`
@@ -411,9 +409,8 @@ func TestServerModelsContentEncodingContract(t *testing.T) {
 
 func TestServerEncodedPathsNeverMatchLiteralRoutes(t *testing.T) {
 	cfg := validServerConfig()
-	cfg.APIKeyEnv = "AI_CLI_GATEWAY_API_KEY"
+	cfg.GatewayAuth = enabledGatewayAuth(t, "gateway-secret")
 	deps, _ := validServerDependencies()
-	deps.LookupEnv = func(string) (string, bool) { return "gateway-secret", true }
 	var logs bytes.Buffer
 	_, handler := newTestServer(t, cfg, validServerBackend(), deps, &logs)
 
@@ -795,9 +792,8 @@ func TestServerPreRouteFailuresUseOnlyUnmatchedEndpoint(t *testing.T) {
 
 	t.Run("Host query and auth failures stay unmatched", func(t *testing.T) {
 		cfg := validServerConfig()
-		cfg.APIKeyEnv = "AI_CLI_GATEWAY_API_KEY"
+		cfg.GatewayAuth = enabledGatewayAuth(t, "gateway-secret")
 		deps, _ := validServerDependencies()
-		deps.LookupEnv = func(string) (string, bool) { return "gateway-secret", true }
 		var logs bytes.Buffer
 		_, handler := newTestServer(t, cfg, validServerBackend(), deps, &logs)
 		tests := []struct {

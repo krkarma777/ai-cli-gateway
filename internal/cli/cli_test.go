@@ -13,8 +13,8 @@ import (
 
 const wantUsage = "usage:\n" +
 	"  ai-cli-gateway version\n" +
-	"  ai-cli-gateway serve --config PATH\n" +
-	"  ai-cli-gateway doctor --config PATH [--json]\n"
+	"  ai-cli-gateway serve [--config PATH]\n" +
+	"  ai-cli-gateway doctor [--config PATH] [--json]\n"
 
 func TestRunVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -113,14 +113,22 @@ func TestRunContextDispatchesAcceptedServeAndDoctorCommands(t *testing.T) {
 	requestContext := context.WithValue(context.Background(), contextKey{}, "marker")
 
 	tests := []struct {
-		name       string
-		args       []string
-		wantCode   int
-		wantPath   string
-		wantJSON   bool
-		wantServe  int
-		wantDoctor int
+		name        string
+		args        []string
+		wantCode    int
+		wantPath    string
+		wantJSON    bool
+		wantServe   int
+		wantDoctor  int
+		wantDefault int
 	}{
+		{
+			name:        "serve default",
+			args:        []string{"serve"},
+			wantPath:    "default/config.toml",
+			wantServe:   1,
+			wantDefault: 1,
+		},
 		{
 			name:      "serve",
 			args:      []string{"serve", "--config", "config/local.toml"},
@@ -133,6 +141,23 @@ func TestRunContextDispatchesAcceptedServeAndDoctorCommands(t *testing.T) {
 			wantCode:   7,
 			wantPath:   "doctor.toml",
 			wantDoctor: 1,
+		},
+		{
+			name:        "doctor text default",
+			args:        []string{"doctor"},
+			wantCode:    7,
+			wantPath:    "default/config.toml",
+			wantDoctor:  1,
+			wantDefault: 1,
+		},
+		{
+			name:        "doctor json default",
+			args:        []string{"doctor", "--json"},
+			wantCode:    7,
+			wantPath:    "default/config.toml",
+			wantJSON:    true,
+			wantDoctor:  1,
+			wantDefault: 1,
 		},
 		{
 			name:       "doctor json after config",
@@ -157,9 +182,14 @@ func TestRunContextDispatchesAcceptedServeAndDoctorCommands(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			serveCalls := 0
 			doctorCalls := 0
+			defaultCalls := 0
 			gotPath := ""
 			gotJSON := false
 			commandSet := commands{
+				defaultConfigPath: func() (string, error) {
+					defaultCalls++
+					return "default/config.toml", nil
+				},
 				serve: func(ctx context.Context, path string) error {
 					serveCalls++
 					if ctx != requestContext {
@@ -197,6 +227,9 @@ func TestRunContextDispatchesAcceptedServeAndDoctorCommands(t *testing.T) {
 					tt.wantDoctor,
 				)
 			}
+			if defaultCalls != tt.wantDefault {
+				t.Fatalf("default path calls=%d, want %d", defaultCalls, tt.wantDefault)
+			}
 			if gotPath != tt.wantPath {
 				t.Fatalf("path=%q, want %q", gotPath, tt.wantPath)
 			}
@@ -211,6 +244,63 @@ func TestRunContextDispatchesAcceptedServeAndDoctorCommands(t *testing.T) {
 			}
 			if stderr.Len() != 0 {
 				t.Fatalf("stderr=%q, want empty", stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunContextDefaultConfigPathFailureDoesNotDispatch(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "serve", args: []string{"serve"}},
+		{name: "doctor", args: []string{"doctor"}},
+		{name: "doctor json", args: []string{"doctor", "--json"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			serveCalls := 0
+			doctorCalls := 0
+			defaultCalls := 0
+
+			code := runContext(
+				context.Background(),
+				tt.args,
+				&stdout,
+				&stderr,
+				commands{
+					defaultConfigPath: func() (string, error) {
+						defaultCalls++
+						return "", errors.New("private resolver failure")
+					},
+					serve: func(context.Context, string) error {
+						serveCalls++
+						return nil
+					},
+					doctor: func(context.Context, string, bool, io.Writer) int {
+						doctorCalls++
+						return 0
+					},
+				},
+			)
+
+			if code != 2 {
+				t.Fatalf("code=%d, want 2", code)
+			}
+			if defaultCalls != 1 {
+				t.Fatalf("default path calls=%d, want 1", defaultCalls)
+			}
+			if serveCalls != 0 || doctorCalls != 0 {
+				t.Fatalf("serve calls=%d doctor calls=%d, want 0 and 0", serveCalls, doctorCalls)
+			}
+			if got := stdout.String(); got != "" {
+				t.Fatalf("stdout=%q, want empty", got)
+			}
+			if got, want := stderr.String(), "default_config_path_unavailable: pass --config PATH\n"; got != want {
+				t.Fatalf("stderr=%q, want %q", got, want)
 			}
 		})
 	}
@@ -249,11 +339,12 @@ func TestRunContextRejectsEveryUnsupportedSyntaxWithoutDispatch(t *testing.T) {
 	}{
 		{name: "empty argv"},
 		{name: "config equals", args: []string{"serve", "--config=config.toml"}},
+		{name: "doctor config equals", args: []string{"doctor", "--config=config.toml"}},
 		{name: "short help", args: []string{"-h"}},
 		{name: "help command", args: []string{"help"}},
-		{name: "serve missing flags", args: []string{"serve"}},
 		{name: "serve missing path", args: []string{"serve", "--config"}},
 		{name: "serve empty path", args: []string{"serve", "--config", ""}},
+		{name: "serve positional path", args: []string{"serve", "config.toml"}},
 		{name: "serve flag path", args: []string{"serve", "--config", "--secret"}},
 		{
 			name: "duplicate config",
@@ -263,9 +354,9 @@ func TestRunContextRejectsEveryUnsupportedSyntaxWithoutDispatch(t *testing.T) {
 			name: "serve json",
 			args: []string{"serve", "--config", "config.toml", "--json"},
 		},
-		{name: "doctor missing flags", args: []string{"doctor"}},
 		{name: "doctor missing path", args: []string{"doctor", "--config"}},
-		{name: "doctor json only", args: []string{"doctor", "--json"}},
+		{name: "doctor empty path", args: []string{"doctor", "--config", ""}},
+		{name: "doctor unsupported ordering", args: []string{"doctor", "--json", "doctor.toml"}},
 		{
 			name: "duplicate json",
 			args: []string{"doctor", "--config", "config.toml", "--json", "--json"},
@@ -292,7 +383,12 @@ func TestRunContextRejectsEveryUnsupportedSyntaxWithoutDispatch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			calls := 0
+			defaultCalls := 0
 			commandSet := commands{
+				defaultConfigPath: func() (string, error) {
+					defaultCalls++
+					return "default/config.toml", nil
+				},
 				serve: func(context.Context, string) error {
 					calls++
 					return nil
@@ -310,6 +406,9 @@ func TestRunContextRejectsEveryUnsupportedSyntaxWithoutDispatch(t *testing.T) {
 			}
 			if calls != 0 {
 				t.Fatalf("command calls=%d, want 0", calls)
+			}
+			if defaultCalls != 0 {
+				t.Fatalf("default path calls=%d, want 0", defaultCalls)
 			}
 			if got := stdout.String(); got != "" {
 				t.Fatalf("stdout=%q, want empty", got)
@@ -342,7 +441,12 @@ func TestRunContextVersionAndHelpNeverDispatch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			calls := 0
+			defaultCalls := 0
 			commandSet := commands{
+				defaultConfigPath: func() (string, error) {
+					defaultCalls++
+					return "default/config.toml", nil
+				},
 				serve: func(context.Context, string) error {
 					calls++
 					return nil
@@ -360,6 +464,9 @@ func TestRunContextVersionAndHelpNeverDispatch(t *testing.T) {
 			}
 			if calls != 0 {
 				t.Fatalf("command calls=%d, want 0", calls)
+			}
+			if defaultCalls != 0 {
+				t.Fatalf("default path calls=%d, want 0", defaultCalls)
 			}
 			if got := stdout.String(); got != tt.wantStdout {
 				t.Fatalf("stdout=%q, want %q", got, tt.wantStdout)

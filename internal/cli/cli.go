@@ -9,16 +9,18 @@ import (
 
 	"github.com/krkarma777/ai-cli-gateway/internal/app"
 	"github.com/krkarma777/ai-cli-gateway/internal/buildinfo"
+	"github.com/krkarma777/ai-cli-gateway/internal/config"
 )
 
 const usage = "usage:\n" +
 	"  ai-cli-gateway version\n" +
-	"  ai-cli-gateway serve --config PATH\n" +
-	"  ai-cli-gateway doctor --config PATH [--json]\n"
+	"  ai-cli-gateway serve [--config PATH]\n" +
+	"  ai-cli-gateway doctor [--config PATH] [--json]\n"
 
 type commands struct {
-	serve  func(context.Context, string) error
-	doctor func(context.Context, string, bool, io.Writer) int
+	defaultConfigPath func() (string, error)
+	serve             func(context.Context, string) error
+	doctor            func(context.Context, string, bool, io.Writer) int
 }
 
 // Run executes a command and returns its process exit code.
@@ -35,6 +37,7 @@ func RunContext(
 	stderr io.Writer,
 ) int {
 	return runContext(ctx, args, stdout, stderr, commands{
+		defaultConfigPath: config.DefaultPath,
 		serve: func(ctx context.Context, configPath string) error {
 			return app.Serve(
 				ctx,
@@ -82,35 +85,63 @@ func runContext(
 		_, _ = io.WriteString(stdout, usage)
 		return 0
 	}
-	if len(args) == 3 && args[0] == "serve" && args[1] == "--config" && validPath(args[2]) {
+	configPath, jsonOutput, explicit, ok := commandConfig(args)
+	if !ok {
+		_, _ = io.WriteString(stderr, usage)
+		return 2
+	}
+	if !explicit {
+		if commands.defaultConfigPath == nil {
+			_, _ = io.WriteString(stderr, "default_config_path_unavailable: pass --config PATH\n")
+			return 2
+		}
+		var err error
+		configPath, err = commands.defaultConfigPath()
+		if err != nil {
+			_, _ = io.WriteString(stderr, "default_config_path_unavailable: pass --config PATH\n")
+			return 2
+		}
+	}
+	if args[0] == "serve" {
 		if commands.serve == nil {
 			_, _ = io.WriteString(stderr, "serve_failed: run ai-cli-gateway doctor\n")
 			return 1
 		}
-		return serveResult(commands.serve(ctx, args[2]), stderr)
+		return serveResult(commands.serve(ctx, configPath), stderr)
 	}
-	if len(args) == 3 && args[0] == "doctor" && args[1] == "--config" && validPath(args[2]) {
-		if commands.doctor == nil {
-			return 1
+	if commands.doctor == nil {
+		return 1
+	}
+	return commands.doctor(ctx, configPath, jsonOutput, stdout)
+}
+
+func commandConfig(args []string) (path string, jsonOutput, explicit, ok bool) {
+	if len(args) == 1 {
+		switch args[0] {
+		case "serve", "doctor":
+			return "", false, false, true
 		}
-		return commands.doctor(ctx, args[2], false, stdout)
+	}
+	if len(args) == 2 && args[0] == "doctor" && args[1] == "--json" {
+		return "", true, false, true
+	}
+	if len(args) == 3 && args[1] == "--config" && validPath(args[2]) {
+		switch args[0] {
+		case "serve":
+			return args[2], false, true, true
+		case "doctor":
+			return args[2], false, true, true
+		}
 	}
 	if len(args) == 4 && args[0] == "doctor" {
 		if args[1] == "--config" && validPath(args[2]) && args[3] == "--json" {
-			if commands.doctor == nil {
-				return 1
-			}
-			return commands.doctor(ctx, args[2], true, stdout)
+			return args[2], true, true, true
 		}
 		if args[1] == "--json" && args[2] == "--config" && validPath(args[3]) {
-			if commands.doctor == nil {
-				return 1
-			}
-			return commands.doctor(ctx, args[3], true, stdout)
+			return args[3], true, true, true
 		}
 	}
-	_, _ = io.WriteString(stderr, usage)
-	return 2
+	return "", false, false, false
 }
 
 func isCommand(value string) bool {

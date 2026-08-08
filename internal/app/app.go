@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -19,9 +20,11 @@ import (
 	"time"
 
 	"github.com/krkarma777/ai-cli-gateway/internal/config"
+	"github.com/krkarma777/ai-cli-gateway/internal/configsource"
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
 	"github.com/krkarma777/ai-cli-gateway/internal/doctor"
 	"github.com/krkarma777/ai-cli-gateway/internal/gateway"
+	"github.com/krkarma777/ai-cli-gateway/internal/gatewaykey"
 	"github.com/krkarma777/ai-cli-gateway/internal/httpapi"
 	"github.com/krkarma777/ai-cli-gateway/internal/observability"
 	"github.com/krkarma777/ai-cli-gateway/internal/process"
@@ -71,6 +74,30 @@ type Dependencies struct {
 	Logger     *slog.Logger
 }
 
+// ConfigSource is the private startup evidence boundary retained across
+// diagnosis and the final pre-listener revalidation.
+type ConfigSource interface {
+	Config() config.Config
+	FileInfo() fs.FileInfo
+	Revalidate() error
+	Close() error
+}
+
+type startupDependencies struct {
+	LoadConfigSource func(string) (ConfigSource, error)
+	LoadGatewayKey   func(string, []fs.FileInfo) (gatewaykey.Snapshot, error)
+	postDiagnosis    func()
+}
+
+func productionStartupDependencies() startupDependencies {
+	return startupDependencies{
+		LoadConfigSource: func(path string) (ConfigSource, error) {
+			return configsource.Load(path)
+		},
+		LoadGatewayKey: gatewaykey.LoadFile,
+	}
+}
+
 // ProductionDependencies constructs lazy production seams without performing
 // filesystem, environment, entropy, provider, or listener work.
 func ProductionDependencies(logWriter io.Writer) Dependencies {
@@ -115,10 +142,31 @@ func newProductionRuntimeID() (string, error) {
 
 // Serve loads configuration before touching any injected dependency.
 func Serve(ctx context.Context, configPath string, deps Dependencies) error {
-	cfg, err := config.Load(configPath)
-	if err != nil {
+	return serve(ctx, configPath, deps, productionStartupDependencies())
+}
+
+func serve(
+	ctx context.Context,
+	configPath string,
+	deps Dependencies,
+	startup startupDependencies,
+) (result error) {
+	if startup.LoadConfigSource == nil {
+		return ErrStartup
+	}
+	source, err := startup.LoadConfigSource(configPath)
+	if err != nil || nilLike(source) {
+		if !nilLike(source) {
+			_ = source.Close()
+		}
 		return ErrConfigInvalid
 	}
+	defer func() {
+		if source.Close() != nil {
+			result = joinShutdown(result, true)
+		}
+	}()
+	cfg := source.Config()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -138,7 +186,9 @@ func Serve(ctx context.Context, configPath string, deps Dependencies) error {
 	}
 	diagnosis, runErr := doctor.Run(ctx, cfg, doctor.Dependencies{
 		Adapters:           selected,
+		ConfigIdentity:     source.FileInfo(),
 		LookupEnv:          deps.LookupEnv,
+		LoadGatewayKey:     startup.LoadGatewayKey,
 		LookupExecutable:   deps.LookupExecutable,
 		NewRuntimeID:       deps.NewRuntimeID,
 		OpenRoot:           deps.OpenRoot,
@@ -153,12 +203,14 @@ func Serve(ctx context.Context, configPath string, deps Dependencies) error {
 		}
 		return ErrStartup
 	}
+	if startup.postDiagnosis != nil {
+		startup.postDiagnosis()
+	}
 	report := diagnosis.Report()
 	if !report.CoreReady() {
 		return ErrNotReady
 	}
 	root := diagnosis.RuntimeRoot
-	diagnosis.RuntimeRoot = nil
 	registry := diagnosis.Registry()
 	resolved := diagnosis.ResolvedProviders()
 	if root == nil || registry == nil {
@@ -228,10 +280,16 @@ func Serve(ctx context.Context, configPath string, deps Dependencies) error {
 		return joinShutdown(ErrStartup, failed)
 	}
 	counters := &observability.Counters{}
+	if source.Revalidate() != nil {
+		failed := unwindRuntime(cfg, deps, applicationGateway, nil, supervisors, root)
+		return joinShutdown(ErrNotReady, failed)
+	}
+	auth := diagnosis.GatewayAuth()
+	diagnosis.RuntimeRoot = nil
 	server, handler, err := httpapi.New(
 		httpapi.Config{
 			Listen:            cfg.Server.Listen,
-			APIKeyEnv:         cfg.Server.APIKeyEnv,
+			GatewayAuth:       auth,
 			HTTPBodyBytes:     cfg.Server.HTTPBodyBytes,
 			RequestLimits:     requestLimits,
 			HandlerLimit:      cfg.Server.HandlerLimit,
@@ -244,10 +302,9 @@ func Serve(ctx context.Context, configPath string, deps Dependencies) error {
 			MaxModels:         len(cfg.Models),
 		},
 		httpapi.Dependencies{
-			Now:       deps.Now,
-			LookupEnv: deps.LookupEnv,
-			IDs:       ids,
-			Counters:  counters,
+			Now:      deps.Now,
+			IDs:      ids,
+			Counters: counters,
 		},
 		applicationGateway,
 		deps.Logger,
@@ -708,11 +765,42 @@ func Doctor(
 	stdout io.Writer,
 	deps Dependencies,
 ) int {
-	cfg, err := config.Load(configPath)
-	if err != nil {
+	return runDoctor(
+		ctx,
+		configPath,
+		jsonOutput,
+		stdout,
+		deps,
+		productionStartupDependencies(),
+	)
+}
+
+func runDoctor(
+	ctx context.Context,
+	configPath string,
+	jsonOutput bool,
+	stdout io.Writer,
+	deps Dependencies,
+	startup startupDependencies,
+) (code int) {
+	if startup.LoadConfigSource == nil {
+		writeFixed(stdout, "doctor_failed\n")
+		return 1
+	}
+	source, err := startup.LoadConfigSource(configPath)
+	if err != nil || nilLike(source) {
+		if !nilLike(source) {
+			_ = source.Close()
+		}
 		writeFixed(stdout, "configuration_invalid\n")
 		return 2
 	}
+	defer func() {
+		if source.Close() != nil && code == 0 {
+			code = 1
+		}
+	}()
+	cfg := source.Config()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -732,7 +820,9 @@ func Doctor(
 	}
 	diagnosis, runErr := doctor.Run(ctx, cfg, doctor.Dependencies{
 		Adapters:           adapters,
+		ConfigIdentity:     source.FileInfo(),
 		LookupEnv:          deps.LookupEnv,
+		LoadGatewayKey:     startup.LoadGatewayKey,
 		LookupExecutable:   deps.LookupExecutable,
 		NewRuntimeID:       deps.NewRuntimeID,
 		OpenRoot:           deps.OpenRoot,
@@ -747,6 +837,9 @@ func Doctor(
 		}
 		writeFixed(stdout, "doctor_failed\n")
 		return 1
+	}
+	if startup.postDiagnosis != nil {
+		startup.postDiagnosis()
 	}
 
 	report := diagnosis.Report()

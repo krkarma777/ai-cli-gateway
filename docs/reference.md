@@ -54,7 +54,7 @@ Structured JSON remains a validated string in `output_text.text`; AI CLI Gateway
 
 ## Requests and responses
 
-The optional gateway key is read from the environment variable named by `server.api_key_env`. Put request data in a file so prompts and keys do not become command-line arguments.
+The optional gateway key is configured with exactly one source: the backward-compatible environment variable named by `server.api_key_env`, or the absolute key-file path named by `server.api_key_file`. Omit both to disable Bearer authentication. Put request data in a file so prompts and keys do not become command-line arguments.
 
 ### Text request
 
@@ -241,15 +241,17 @@ Command grammar:
 ```text
 usage:
   ai-cli-gateway version
-  ai-cli-gateway serve --config PATH
-  ai-cli-gateway doctor --config PATH [--json]
+  ai-cli-gateway serve [--config PATH]
+  ai-cli-gateway doctor [--config PATH] [--json]
 ```
 
 Both JSON Doctor orders are accepted: `ai-cli-gateway doctor --config PATH --json` and `ai-cli-gateway doctor --json --config PATH`. The equals-sign form is intentionally not part of the grammar.
 
+When `--config` is omitted, POSIX uses `$XDG_CONFIG_HOME/ai-cli-gateway/config.toml` when `XDG_CONFIG_HOME` is an absolute nonempty path; otherwise it uses `$HOME/.config/ai-cli-gateway/config.toml`. Windows uses `%LOCALAPPDATA%\AI CLI Gateway\config\config.toml`. If a safe default path is unavailable, the command exits 2 and writes `default_config_path_unavailable: pass --config PATH`; pass an explicit `--config PATH` to continue.
+
 Help is available as `ai-cli-gateway --help`, `ai-cli-gateway version --help`, `ai-cli-gateway serve --help`, and `ai-cli-gateway doctor --help`.
 
-The exit status is 0 for success or a clean handled shutdown, 1 for readiness, runtime, serve, or cleanup failure, and 2 for usage or configuration failure. Stable CLI diagnostics include `configuration_invalid`, `gateway_not_ready: run ai-cli-gateway doctor`, `doctor_failed`, and `serve_failed: run ai-cli-gateway doctor`. `doctor` performs no inference and emits redacted text or JSON.
+The exit status is 0 for success or a clean handled shutdown, 1 for readiness, runtime, serve, or cleanup failure, and 2 for usage or configuration failure. Stable CLI diagnostics include `configuration_invalid`, `default_config_path_unavailable: pass --config PATH`, `gateway_not_ready: run ai-cli-gateway doctor`, `doctor_failed`, and `serve_failed: run ai-cli-gateway doctor`. `doctor` performs no inference and emits redacted text or JSON.
 
 ## Configuration and providers
 
@@ -305,7 +307,7 @@ Unix starts each provider in a new process group. A descendant that deliberately
 
 AI CLI Gateway makes one adapter attempt: there is no gateway retry, fallback, or provider switching. A provider CLI may perform provider-internal network retries that the gateway cannot observe or eliminate. A provider request may incur provider usage and cost.
 
-The listener accepts loopback literals only and defaults to `127.0.0.1:8080`. Bearer authentication is optional; when enabled, the value is read only from the configured environment name and compared without timing-sensitive string equality. Callers are trusted at the same-OS-user boundary, so a dedicated service OS user is recommended.
+The listener accepts loopback literals only and defaults to `127.0.0.1:8080`. Bearer authentication is optional. Configure either `server.api_key_env` (including the compatible explicit empty value) or `server.api_key_file`, never both. The configuration parser recognizes drive-absolute and UNC forms as absolute on Windows, but runtime loading of `server.api_key_file` requires a drive-qualified, drive-absolute path on a fixed local drive; UNC, network, mapped, removable, and reparse locations are rejected. When enabled, the value is read from the configured source and compared without timing-sensitive string equality. Callers are trusted at the same-OS-user boundary, so a dedicated service OS user is recommended.
 
 Provider binaries are absolute validated paths. Processes are started from argv arrays without a shell, and the prompt is passed through stdin. Each admitted request receives a `0700` temporary runtime and `0600` request files. One process owns the runtime root exclusively, and configuration, aliases, provider readiness, and the key are immutable startup snapshots; there is no hot reload.
 
