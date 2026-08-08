@@ -44,7 +44,7 @@ func TestGenerateFailuresReturnOnlyErrUnavailable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := Generate(tt.reader)
-			if err != ErrUnavailable {
+			if !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("Generate() error = %v, want sentinel", err)
 			}
 			if got != nil {

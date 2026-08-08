@@ -270,7 +270,7 @@ func TestLoadFileFIFOReplacementBeforeOpenCannotBlock(t *testing.T) {
 			return unix.Open(openPath, flags, mode)
 		},
 	)
-	if err != ErrUnavailable {
+	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("loadFileWithUnixOpen() error = %v, want ErrUnavailable", err)
 	}
 	if snapshot.Valid() {
@@ -287,7 +287,7 @@ func TestLoadFileFIFOReplacementBeforeOpenCannotBlock(t *testing.T) {
 func assertLoadFileUnavailable(t *testing.T, path string, distinct []fs.FileInfo) {
 	t.Helper()
 	snapshot, err := LoadFile(path, distinct)
-	if err != ErrUnavailable {
+	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("LoadFile() error = %v, want exact ErrUnavailable", err)
 	}
 	if snapshot.Valid() || snapshot.Enabled() || snapshot.Matches(testKey) {
