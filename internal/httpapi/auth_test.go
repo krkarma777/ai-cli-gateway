@@ -62,7 +62,7 @@ func TestAuthenticatorUsesImmutableFileSnapshot(t *testing.T) {
 	if err := os.WriteFile(path, []byte(original+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	file, err := os.Open(path)
+	file, err := os.Open(path) // #nosec G304 -- path is the test-owned TempDir file created immediately above.
 	if err != nil {
 		t.Fatal(err)
 	}

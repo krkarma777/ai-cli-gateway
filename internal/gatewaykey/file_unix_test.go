@@ -193,7 +193,7 @@ func TestLoadFileParsesRetainedHandleOnceAndRejectsPathReplacement(t *testing.T)
 		}
 		return Parse(reader)
 	})
-	if err != ErrUnavailable {
+	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("loadFile() error = %v, want ErrUnavailable", err)
 	}
 	if snapshot.Valid() {
@@ -235,7 +235,7 @@ func TestLoadFileRejectsSameInodeMutationRestoredAfterParse(t *testing.T) {
 		}
 		return parsed, parseErr
 	})
-	if err != ErrUnavailable {
+	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("loadFile() error = %v, want ErrUnavailable", err)
 	}
 	if snapshot.Valid() {

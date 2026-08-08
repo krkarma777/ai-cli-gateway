@@ -41,7 +41,7 @@ func TestLoadRejectsUnixSymlinkAndNonRegularSources(t *testing.T) {
 
 func TestUnixSourceMetadataDetectsRestoredMutation(t *testing.T) {
 	path := writeSourceConfig(t, "SOURCE_KEY")
-	original, err := os.ReadFile(path)
+	original, err := os.ReadFile(path) // #nosec G304 -- path is created by writeSourceConfig in this test's private TempDir.
 	if err != nil {
 		t.Fatalf("read original source: %v", err)
 	}

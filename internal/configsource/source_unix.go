@@ -76,8 +76,8 @@ func unixSourceMetadata(stat unix.Stat_t, info fs.FileInfo) (sourceMetadata, boo
 		return sourceMetadata{}, false
 	}
 	return sourceMetadata{
-		device: device, inode: uint64(stat.Ino), mode: uint32(stat.Mode),
-		uid: uint32(stat.Uid), gid: uint32(stat.Gid), nlink: uint64(stat.Nlink),
+		device: device, inode: stat.Ino, mode: uint32(stat.Mode),
+		uid: stat.Uid, gid: stat.Gid, nlink: uint64(stat.Nlink),
 		size: info.Size(), modTimeNanos: info.ModTime().UnixNano(),
 		changeSeconds: changeSeconds, changeNanos: changeNanos,
 	}, true

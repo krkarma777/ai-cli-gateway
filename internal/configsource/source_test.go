@@ -309,7 +309,7 @@ provider_model = "trusted-model"
 
 func assertSourceUnavailable(t *testing.T, err error) {
 	t.Helper()
-	if err != ErrUnavailable {
+	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("error = %v, want exact ErrUnavailable", err)
 	}
 	if errors.Unwrap(err) != nil {

@@ -202,7 +202,7 @@ func safeUnixKeyAncestors(path string) bool {
 		var stat unix.Stat_t
 		if err := unix.Lstat(current, &stat); err != nil ||
 			uint32(stat.Mode)&unix.S_IFMT != unix.S_IFDIR ||
-			(uint32(stat.Uid) != 0 && uint32(stat.Uid) != uint32(os.Geteuid())) || //nolint:gosec // Kernel UIDs use uint32.
+			(stat.Uid != 0 && stat.Uid != uint32(os.Geteuid())) || //nolint:gosec // Kernel UIDs use uint32.
 			uint32(stat.Mode)&0o022 != 0 {
 			return false
 		}
