@@ -631,6 +631,8 @@ func TestIsAbsolutePathRecognizesGatewayAPIKeyFilePlatformSpellings(t *testing.T
 	}{
 		{"linux", "/var/lib/ai-cli-gateway/gateway.key", true},
 		{"linux", "gateway.key", false},
+		{"darwin", "/Users/example/.config/ai-cli-gateway/gateway.key", true},
+		{"darwin", "gateway.key", false},
 		{"windows", `C:\Gateway\gateway.key`, true},
 		{"windows", `C:/Gateway/gateway.key`, true},
 		{"windows", `\\server\share\gateway.key`, true},

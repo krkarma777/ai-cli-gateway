@@ -103,11 +103,27 @@ type unixKeyMetadata struct {
 	changeTimeSeen bool
 }
 
+type unixModeField interface {
+	~uint16 | ~uint32
+}
+
+type unixLinkCountField interface {
+	~int16 | ~uint16 | ~uint32 | ~uint64
+}
+
+func normalizedUnixMode[T unixModeField](mode T) uint32 {
+	return uint32(mode)
+}
+
+func normalizedUnixLinkCount[T unixLinkCountField](count T) uint64 {
+	return uint64(count) //nolint:gosec // AIX nlink_t is signed, but successful stat link counts are nonnegative.
+}
+
 func unixKeyMetadataFrom(stat unix.Stat_t, info fs.FileInfo) unixKeyMetadata {
 	metadata := unixKeyMetadata{
-		mode:  uint32(stat.Mode),
+		mode:  normalizedUnixMode(stat.Mode),
 		uid:   stat.Uid,
-		nlink: uint64(stat.Nlink),
+		nlink: normalizedUnixLinkCount(stat.Nlink),
 	}
 	if info != nil {
 		metadata.size = info.Size()
@@ -188,22 +204,25 @@ func cleanUnixKeyPath(path string) (string, bool) {
 }
 
 func safeUnixKeyStat(stat unix.Stat_t) bool {
-	permissions := uint32(stat.Mode) & 0o777
-	return uint32(stat.Mode)&unix.S_IFMT == unix.S_IFREG &&
+	mode := normalizedUnixMode(stat.Mode)
+	return mode&unix.S_IFMT == unix.S_IFREG &&
 		stat.Uid == uint32(os.Geteuid()) && //nolint:gosec // Kernel UIDs use uint32.
-		(permissions == 0o400 || permissions == 0o600) &&
-		uint32(stat.Mode)&(unix.S_ISUID|unix.S_ISGID|unix.S_ISVTX) == 0 &&
-		uint64(stat.Nlink) == 1
+		(mode&0o777 == 0o400 || mode&0o777 == 0o600) &&
+		mode&(unix.S_ISUID|unix.S_ISGID|unix.S_ISVTX) == 0 &&
+		normalizedUnixLinkCount(stat.Nlink) == 1
 }
 
 func safeUnixKeyAncestors(path string) bool {
 	current := filepath.Dir(path)
 	for {
 		var stat unix.Stat_t
-		if err := unix.Lstat(current, &stat); err != nil ||
-			uint32(stat.Mode)&unix.S_IFMT != unix.S_IFDIR ||
+		if err := unix.Lstat(current, &stat); err != nil {
+			return false
+		}
+		mode := normalizedUnixMode(stat.Mode)
+		if mode&unix.S_IFMT != unix.S_IFDIR ||
 			(stat.Uid != 0 && stat.Uid != uint32(os.Geteuid())) || //nolint:gosec // Kernel UIDs use uint32.
-			uint32(stat.Mode)&0o022 != 0 {
+			mode&0o022 != 0 {
 			return false
 		}
 		parent := filepath.Dir(current)

@@ -58,15 +58,8 @@ func TestLoadBindsDecodedConfigIdentityAndDigestToOneRetainedHandle(t *testing.T
 
 func TestLoadPreservesStableCallerSelectedRelativePathSemantics(t *testing.T) {
 	absolute := writeSourceConfig(t, "SOURCE_KEY")
-	workingDirectory, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd() error = %v", err)
-	}
-	relative, err := filepath.Rel(workingDirectory, absolute)
-	if err != nil {
-		t.Fatalf("Rel() error = %v", err)
-	}
-	snapshot, err := Load(relative)
+	t.Chdir(filepath.Dir(absolute))
+	snapshot, err := Load(filepath.Base(absolute))
 	if err != nil {
 		t.Fatalf("Load(relative) error = %v", err)
 	}

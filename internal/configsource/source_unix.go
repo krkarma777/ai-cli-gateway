@@ -23,6 +23,22 @@ type sourceMetadata struct {
 	changeNanos   int64
 }
 
+type unixModeField interface {
+	~uint16 | ~uint32
+}
+
+type unixLinkCountField interface {
+	~int16 | ~uint16 | ~uint32 | ~uint64
+}
+
+func normalizedUnixMode[T unixModeField](mode T) uint32 {
+	return uint32(mode)
+}
+
+func normalizedUnixLinkCount[T unixLinkCountField](count T) uint64 {
+	return uint64(count) //nolint:gosec // AIX nlink_t is signed, but successful stat link counts are nonnegative.
+}
+
 func openSourceFile(path string) (*os.File, error) {
 	fd, err := unix.Open(
 		path,
@@ -64,7 +80,7 @@ func platformSourceMetadata(path string, file *os.File) (sourceMetadata, bool) {
 
 func unixSourceMetadata(stat unix.Stat_t, info fs.FileInfo) (sourceMetadata, bool) {
 	if info == nil || !info.Mode().IsRegular() ||
-		uint32(stat.Mode)&unix.S_IFMT != unix.S_IFREG {
+		normalizedUnixMode(stat.Mode)&unix.S_IFMT != unix.S_IFREG {
 		return sourceMetadata{}, false
 	}
 	device, deviceOK := checkedUnixSourceDevice(stat.Dev)
@@ -76,8 +92,8 @@ func unixSourceMetadata(stat unix.Stat_t, info fs.FileInfo) (sourceMetadata, boo
 		return sourceMetadata{}, false
 	}
 	return sourceMetadata{
-		device: device, inode: stat.Ino, mode: uint32(stat.Mode),
-		uid: stat.Uid, gid: stat.Gid, nlink: uint64(stat.Nlink),
+		device: device, inode: stat.Ino, mode: normalizedUnixMode(stat.Mode),
+		uid: stat.Uid, gid: stat.Gid, nlink: normalizedUnixLinkCount(stat.Nlink),
 		size: info.Size(), modTimeNanos: info.ModTime().UnixNano(),
 		changeSeconds: changeSeconds, changeNanos: changeNanos,
 	}, true

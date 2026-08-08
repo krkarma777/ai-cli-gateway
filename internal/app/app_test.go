@@ -647,9 +647,7 @@ func TestServeGatewayAuthFileSnapshotLoadsOnceWithRetainedConfigIdentity(t *test
 		if err := os.WriteFile(replacement, []byte(rotatedKey+"\n"), 0o600); err != nil {
 			t.Fatalf("write replacement Gateway key: %v", err)
 		}
-		if err := os.Rename(replacement, keyPath); err != nil {
-			t.Fatalf("replace Gateway key: %v", err)
-		}
+		replaceAppFixturePath(t, replacement, keyPath)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
@@ -806,9 +804,7 @@ func TestServeGatewayAuthConfigRevalidationFailsClosedBeforeListener(t *testing.
 				if err := os.WriteFile(replacement, payload, 0o600); err != nil {
 					t.Fatalf("write replacement config: %v", err)
 				}
-				if err := os.Rename(replacement, path); err != nil {
-					t.Fatalf("replace config: %v", err)
-				}
+				replaceAppFixturePath(t, replacement, path)
 			},
 		},
 	} {
@@ -843,6 +839,36 @@ func TestServeGatewayAuthConfigRevalidationFailsClosedBeforeListener(t *testing.
 			}
 			observation.assertLifecycle(t, 1, 1, 1)
 		})
+	}
+}
+
+func replaceAppFixturePath(t *testing.T, replacement, selected string) {
+	t.Helper()
+	if filepath.Dir(replacement) != filepath.Dir(selected) {
+		t.Fatal("replacement and selected fixture paths are in different directories")
+	}
+	root, err := os.OpenRoot(filepath.Dir(selected))
+	if err != nil {
+		t.Fatalf("open fixture root: %v", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close fixture root: %v", err)
+		}
+	}()
+
+	replacementName := filepath.Base(replacement)
+	selectedName := filepath.Base(selected)
+	displacedName := selectedName + ".displaced"
+	if err := root.Rename(selectedName, displacedName); err != nil {
+		t.Fatalf("displace selected fixture path: %v", err)
+	}
+	if err := root.Rename(replacementName, selectedName); err != nil {
+		restoreErr := root.Rename(displacedName, selectedName)
+		if restoreErr != nil {
+			t.Fatalf("replace fixture path: %v (restore failed: %v)", err, restoreErr)
+		}
+		t.Fatalf("replace fixture path: %v", err)
 	}
 }
 

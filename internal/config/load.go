@@ -8,7 +8,7 @@ import (
 	"math"
 	"net"
 	"os"
-	"path/filepath"
+	"path"
 	"regexp"
 	"runtime"
 	"sort"
@@ -639,7 +639,7 @@ func isAbsolutePath(platform, value string) bool {
 		return false
 	}
 	if platform != "windows" {
-		return filepath.IsAbs(value)
+		return path.IsAbs(value)
 	}
 
 	if len(value) >= 3 &&
