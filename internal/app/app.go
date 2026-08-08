@@ -210,17 +210,7 @@ func serve(
 	if !report.CoreReady() {
 		return ErrNotReady
 	}
-	if source.Revalidate() != nil {
-		root := diagnosis.RuntimeRoot
-		diagnosis.RuntimeRoot = nil
-		if root != nil {
-			return joinShutdown(ErrNotReady, cleanupRoot(cfg, deps, root))
-		}
-		return ErrNotReady
-	}
-	auth := diagnosis.GatewayAuth()
 	root := diagnosis.RuntimeRoot
-	diagnosis.RuntimeRoot = nil
 	registry := diagnosis.Registry()
 	resolved := diagnosis.ResolvedProviders()
 	if root == nil || registry == nil {
@@ -290,6 +280,12 @@ func serve(
 		return joinShutdown(ErrStartup, failed)
 	}
 	counters := &observability.Counters{}
+	if source.Revalidate() != nil {
+		failed := unwindRuntime(cfg, deps, applicationGateway, nil, supervisors, root)
+		return joinShutdown(ErrNotReady, failed)
+	}
+	auth := diagnosis.GatewayAuth()
+	diagnosis.RuntimeRoot = nil
 	server, handler, err := httpapi.New(
 		httpapi.Config{
 			Listen:            cfg.Server.Listen,

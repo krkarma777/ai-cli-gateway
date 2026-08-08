@@ -814,6 +814,10 @@ func TestServeGatewayAuthConfigRevalidationFailsClosedBeforeListener(t *testing.
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newReadyAppFixture(t)
+			fixture.deps.NewHTTPIDs = func() (httpapi.IDSource, error) {
+				fixture.httpIDCalls++
+				return httpapi.NewOpaqueIDSource(bytes.NewReader(make([]byte, 32)))
+			}
 			observation := &appConfigSourceObservation{}
 			startup := observation.dependencies(t, fixture.configPath)
 			startup.postDiagnosis = func() { test.mutate(t, fixture.configPath) }
@@ -823,9 +827,9 @@ func TestServeGatewayAuthConfigRevalidationFailsClosedBeforeListener(t *testing.
 			if err != ErrNotReady { //nolint:errorlint // Unstable startup evidence is not ready.
 				t.Fatalf("Serve() error = %v, want exact %v", err, ErrNotReady)
 			}
-			if fixture.listenCalls != 0 || fixture.httpIDCalls != 0 {
+			if fixture.listenCalls != 0 || fixture.httpIDCalls != 1 {
 				t.Fatalf(
-					"HTTP ID/listen calls = %d/%d, want 0/0",
+					"HTTP ID/listen calls = %d/%d, want 1/0",
 					fixture.httpIDCalls,
 					fixture.listenCalls,
 				)
@@ -840,6 +844,52 @@ func TestServeGatewayAuthConfigRevalidationFailsClosedBeforeListener(t *testing.
 			observation.assertLifecycle(t, 1, 1, 1)
 		})
 	}
+}
+
+func TestServeGatewayAuthConfigMutationDuringHTTPIDCreationFailsClosedBeforeListener(t *testing.T) {
+	fixture := newReadyAppFixture(t)
+	observation := &appConfigSourceObservation{}
+	fixture.deps.NewHTTPIDs = func() (httpapi.IDSource, error) {
+		fixture.httpIDCalls++
+		// configPath is confined to this test's owner-private fixture.
+		//nolint:gosec
+		payload, err := os.ReadFile(fixture.configPath)
+		if err != nil {
+			t.Fatalf("read config during HTTP ID creation: %v", err)
+		}
+		// configPath is confined to this test's owner-private fixture.
+		//nolint:gosec
+		if err := os.WriteFile(fixture.configPath, append(payload, '\n'), 0o600); err != nil {
+			t.Fatalf("mutate config during HTTP ID creation: %v", err)
+		}
+		return httpapi.NewOpaqueIDSource(bytes.NewReader(make([]byte, 32)))
+	}
+
+	err := serve(
+		context.Background(),
+		fixture.configPath,
+		fixture.deps,
+		observation.dependencies(t, fixture.configPath),
+	)
+
+	if err != ErrNotReady { //nolint:errorlint // Unstable startup evidence is not ready.
+		t.Fatalf("Serve() error = %v, want exact %v", err, ErrNotReady)
+	}
+	if fixture.httpIDCalls != 1 || fixture.listenCalls != 0 {
+		t.Fatalf(
+			"HTTP ID/listen calls = %d/%d, want 1/0",
+			fixture.httpIDCalls,
+			fixture.listenCalls,
+		)
+	}
+	if fixture.janitorCalls != 2 || fixture.closeCalls != 1 {
+		t.Fatalf(
+			"janitor/root close calls = %d/%d, want 2/1",
+			fixture.janitorCalls,
+			fixture.closeCalls,
+		)
+	}
+	observation.assertLifecycle(t, 1, 1, 1)
 }
 
 func TestDoctorGatewayAuthFileLoaderUsesRetainedConfigIdentityAndClosesSource(t *testing.T) {
