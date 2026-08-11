@@ -3,12 +3,43 @@
 package configsource
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"golang.org/x/sys/windows"
 )
+
+func TestWindowsRetainedSourceDeniesDataWriteUntilClose(t *testing.T) {
+	path := writeSourceConfig(t, "SOURCE_KEY")
+	snapshot, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	t.Cleanup(func() { _ = snapshot.Close() })
+
+	writer, openErr := os.OpenFile(path, os.O_WRONLY, 0)
+	if writer != nil {
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close unexpectedly admitted writer: %v", err)
+		}
+	}
+	if !errors.Is(openErr, windows.ERROR_SHARING_VIOLATION) {
+		t.Fatalf("open writer while retained error = %v, want ERROR_SHARING_VIOLATION", openErr)
+	}
+
+	if err := snapshot.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	writer, err = os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open writer after Close() error = %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer after Close(): %v", err)
+	}
+}
 
 func TestSameWindowsSourceIdentityUsesVolumeAndFileIndex(t *testing.T) {
 	left := windows.ByHandleFileInformation{
