@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -768,11 +769,13 @@ func TestDoctorGatewayAuthFailurePreservesClosedDiagnosticsAndClosesSource(t *te
 
 func TestServeGatewayAuthConfigRevalidationFailsClosedBeforeListener(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		mutate func(*testing.T, string)
+		name           string
+		windowsInPlace bool
+		mutate         func(*testing.T, string)
 	}{
 		{
-			name: "in-place modification",
+			name:           "in-place modification",
+			windowsInPlace: true,
 			mutate: func(t *testing.T, path string) {
 				t.Helper()
 				// path is confined to this test's owner-private fixture.
@@ -809,6 +812,9 @@ func TestServeGatewayAuthConfigRevalidationFailsClosedBeforeListener(t *testing.
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.windowsInPlace && runtime.GOOS == "windows" {
+				t.Skip("retained Windows configuration denies in-place writes")
+			}
 			fixture := newReadyAppFixture(t)
 			fixture.deps.NewHTTPIDs = func() (httpapi.IDSource, error) {
 				fixture.httpIDCalls++
@@ -883,11 +889,16 @@ func TestServeGatewayAuthConfigMutationDuringHTTPIDCreationFailsClosedBeforeList
 		if err != nil {
 			t.Fatalf("read config during HTTP ID creation: %v", err)
 		}
-		// configPath is confined to this test's owner-private fixture.
+		replacement := filepath.Join(
+			filepath.Dir(fixture.configPath),
+			"http-id-replacement-config.toml",
+		)
+		// replacement is confined to this test's owner-private fixture.
 		//nolint:gosec
-		if err := os.WriteFile(fixture.configPath, append(payload, '\n'), 0o600); err != nil {
-			t.Fatalf("mutate config during HTTP ID creation: %v", err)
+		if err := os.WriteFile(replacement, append(payload, '\n'), 0o600); err != nil {
+			t.Fatalf("write replacement config during HTTP ID creation: %v", err)
 		}
+		replaceAppFixturePath(t, replacement, fixture.configPath)
 		return httpapi.NewOpaqueIDSource(bytes.NewReader(make([]byte, 32)))
 	}
 
