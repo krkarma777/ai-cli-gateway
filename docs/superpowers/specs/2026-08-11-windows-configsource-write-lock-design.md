@@ -2,7 +2,7 @@
 
 Date: 2026-08-11
 
-Status: Design approved; written review pending
+Status: Approved
 
 ## Context
 
@@ -22,12 +22,12 @@ occurred.
 
 The retained Windows handle currently requests `GENERIC_READ` while sharing
 read, write, and delete access. The Windows API therefore allows another handle
-to request data or attribute write access while the snapshot remains live.
+to request data-write access while the snapshot remains live.
 
 ## Goals
 
-- Prevent in-place data and timestamp mutation of a successfully retained
-  Windows configuration source for the snapshot lifetime.
+- Prevent in-place content mutation of a successfully retained Windows
+  configuration source for the snapshot lifetime.
 - Preserve atomic path replacement so deployment tools and editors that replace
   a file can still operate.
 - Keep the existing retained-handle, metadata, path-identity, and digest checks.
@@ -43,6 +43,8 @@ to request data or attribute write access while the snapshot remains live.
 - Changing Unix open or mutation semantics.
 - Adding polling, sleeps, retries, or forced timestamp advancement to tests.
 - Introducing oplocks, directory watchers, or change-notification machinery.
+- Preventing attribute-only operations such as `FILE_WRITE_ATTRIBUTES`, which
+  Windows explicitly excludes from `CreateFileW` share-mode enforcement.
 - Changing application-level error mapping or exposing Windows error details.
 
 ## Chosen design
@@ -58,10 +60,11 @@ after:          FILE_SHARE_READ | FILE_SHARE_DELETE
 ```
 
 Omitting `FILE_SHARE_WRITE` makes successful acquisition of the retained handle
-the write-stability boundary. While that handle is open, later opens requesting
-data-write or attribute-write access to the same file are rejected by Windows
-sharing checks. If a conflicting writer is already open, `Load` cannot acquire
-the retained handle and continues to fail closed as `ErrUnavailable`.
+the content-stability boundary. While that handle is open, later opens
+requesting data-write access to the same file are rejected by Windows sharing
+checks. Attribute-only requests are not governed by this share flag. If a
+conflicting content writer is already open, `Load` cannot acquire the retained
+handle and continues to fail closed as `ErrUnavailable`.
 
 `FILE_SHARE_DELETE` remains present. A process may therefore rename or delete
 the directory entry and create a replacement at the selected path. The retained
@@ -87,15 +90,16 @@ The existing flow remains:
    identity, and digest again.
 6. Release the retained handle only when `Snapshot.Close` runs.
 
-The stronger share mode removes in-place Windows writes from the set of changes
-that must be inferred after the fact. Existing identity checks still reject a
-path replacement that occurs during startup. A replacement after startup does
-not hot-reload or alter the immutable in-memory snapshot.
+The stronger share mode removes in-place Windows content writes from the set of
+changes that must be inferred after the fact. Existing identity checks still
+reject a path replacement that occurs during startup. A replacement after
+startup does not hot-reload or alter the immutable in-memory snapshot.
 
 ### Platform behavior
 
-- Windows: a live configuration snapshot denies new in-place data and attribute
-  writers; delete/rename sharing remains enabled.
+- Windows: a live configuration snapshot denies new in-place content writers;
+  attribute-only opens remain possible and delete/rename sharing remains
+  enabled.
 - Unix: writers remain possible, and metadata plus digest revalidation continues
   to detect changes. Restoring bytes and mtime still changes ctime.
 - All platforms: atomic replacement leaves the retained file object unchanged;
@@ -144,10 +148,7 @@ Remove the restored-mtime helper and add real filesystem contract tests that:
 
 - load and retain a configuration snapshot;
 - verify a new data-write handle fails with `ERROR_SHARING_VIOLATION`;
-- verify a new `FILE_WRITE_ATTRIBUTES` handle also fails with
-  `ERROR_SHARING_VIOLATION`;
-- close the snapshot and verify each previously denied access can then be
-  acquired; and
+- close the snapshot and verify data-write access can then be acquired; and
 - continue to pass the existing path-replacement test, demonstrating that
   delete sharing was not removed.
 
@@ -157,14 +158,18 @@ passed to a mocked function.
 ## Documentation
 
 Update `docs/reference.md` with one concise Windows-specific operational note:
-while the process retains its startup configuration, in-place edits are denied;
-stop/edit/restart is supported, and atomic replacement still does not hot-reload
-the running process.
+while the process retains its startup configuration, in-place content edits are
+denied; stop/edit/restart is supported, and atomic replacement still does not
+hot-reload the running process.
 
 ## Risks and mitigations
 
 - Some editors save in place on Windows and will receive a sharing violation
   while the gateway runs. This is intentional and will be documented.
+- Attribute-only operations remain possible because Windows share flags do not
+  govern attribute access. They cannot alter decoded configuration bytes;
+  existing metadata checks still reject observable, non-restored changes during
+  revalidation.
 - Accidentally removing delete sharing would break atomic-save workflows. The
   cross-platform path-replacement test remains an acceptance test.
 - A test that only inspects constants could miss actual Windows behavior. Native
@@ -177,8 +182,8 @@ the running process.
 - `openSourceFile` on Windows shares read and delete access, but not write
   access.
 - The short-lived Windows path metadata open remains fully shared.
-- Data and attribute writes are denied while a snapshot is retained and succeed
-  after `Close`.
+- Content writes are denied while a snapshot is retained and succeed after
+  `Close`.
 - Atomic path replacement remains possible and is rejected at revalidation.
 - Digest mismatch coverage is deterministic and platform-independent.
 - Restored-mutation tests run only where the Unix ctime contract applies.
