@@ -18,6 +18,81 @@ func restoreSourceModTime(t *testing.T, path string, modTime time.Time) {
 	}
 }
 
+func mutateAndRestoreSource(
+	t *testing.T,
+	path string,
+	original []byte,
+	modTime time.Time,
+) {
+	t.Helper()
+	mutated := append([]byte(nil), original...)
+	mutated[len(mutated)/2] ^= 1
+	if err := os.WriteFile(path, mutated, 0o600); err != nil { // #nosec G703 -- path is created by writeSourceConfig in this test's private TempDir.
+		t.Fatalf("write mutated source: %v", err)
+	}
+	if err := os.WriteFile(path, original, 0o600); err != nil { // #nosec G703 -- path is created by writeSourceConfig in this test's private TempDir.
+		t.Fatalf("restore original source: %v", err)
+	}
+	restoreSourceModTime(t, path, modTime)
+}
+
+func TestSnapshotRevalidateRejectsMutationRestoredToOriginalDigestAndMtime(t *testing.T) {
+	path := writeSourceConfig(t, "ORIGINAL_KEY")
+	original, err := os.ReadFile(path) // #nosec G304 -- path is created by writeSourceConfig in this test's private TempDir.
+	if err != nil {
+		t.Fatalf("read original source: %v", err)
+	}
+	snapshot, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	t.Cleanup(func() { _ = snapshot.Close() })
+	baseline, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat baseline source: %v", err)
+	}
+
+	mutateAndRestoreSource(t, path, original, baseline.ModTime())
+
+	assertSourceUnavailable(t, snapshot.Revalidate())
+}
+
+func TestLoadRejectsMutationRestoredDuringInitialRetainedHandleRead(t *testing.T) {
+	path := writeSourceConfig(t, "ORIGINAL_KEY")
+	original, err := os.ReadFile(path) // #nosec G304 -- path is created by writeSourceConfig in this test's private TempDir.
+	if err != nil {
+		t.Fatalf("read original source: %v", err)
+	}
+	baseline, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat baseline source: %v", err)
+	}
+	opens := 0
+	reads := 0
+	snapshot, err := loadWithOpenAndRead(
+		path,
+		func(actual string) (*os.File, error) {
+			opens++
+			return openSourceFile(actual)
+		},
+		func(file *os.File) ([]byte, bool) {
+			reads++
+			if reads == 1 {
+				mutateAndRestoreSource(t, path, original, baseline.ModTime())
+			}
+			return readSourceBytes(file)
+		},
+	)
+	if snapshot != nil {
+		_ = snapshot.Close()
+		t.Fatalf("loadWithOpenAndRead() snapshot = %#v, want nil", snapshot)
+	}
+	assertSourceUnavailable(t, err)
+	if opens != 1 || reads != 1 {
+		t.Fatalf("open/read calls = %d/%d, want 1/1", opens, reads)
+	}
+}
+
 func TestLoadRejectsUnixSymlinkAndNonRegularSources(t *testing.T) {
 	regular := writeSourceConfig(t, "SOURCE_KEY")
 	symlink := filepath.Join(t.TempDir(), "config-link.toml")

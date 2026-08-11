@@ -6,35 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/windows"
 )
-
-func restoreSourceModTime(t *testing.T, path string, modTime time.Time) {
-	t.Helper()
-	path16, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		t.Fatalf("encode source path: %v", err)
-	}
-	handle, err := windows.CreateFile(
-		path16,
-		windows.FILE_WRITE_ATTRIBUTES,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		nil,
-		windows.OPEN_EXISTING,
-		windows.FILE_FLAG_OPEN_REPARSE_POINT,
-		0,
-	)
-	if err != nil {
-		t.Fatalf("open source mtime handle: %v", err)
-	}
-	defer windows.CloseHandle(handle) //nolint:errcheck // Test cleanup reports through the assertion path.
-	filetime := windows.NsecToFiletime(modTime.UnixNano())
-	if err := windows.SetFileTime(handle, nil, &filetime, &filetime); err != nil {
-		t.Fatalf("restore source mtime: %v", err)
-	}
-}
 
 func TestSameWindowsSourceIdentityUsesVolumeAndFileIndex(t *testing.T) {
 	left := windows.ByHandleFileInformation{
