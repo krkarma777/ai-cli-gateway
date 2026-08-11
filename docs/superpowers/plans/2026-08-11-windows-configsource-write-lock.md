@@ -200,6 +200,7 @@ Expected: one tests-only commit; `git status --short` is empty.
 **Files:**
 - Modify: `internal/configsource/source_windows_test.go:5-120`
 - Modify: `internal/configsource/source_windows.go:42-55`
+- Modify: `internal/app/app_test.go:770-910`
 
 **Interfaces:**
 - Consumes: existing `Load(string) (*Snapshot, error)`, `Snapshot.Close() error`, `os.OpenFile`, and `windows.ERROR_SHARING_VIOLATION`.
@@ -321,7 +322,49 @@ git commit -m "fix: deny writes to retained Windows config source"
 git push origin fix/windows-configsource-write-lock
 ```
 
-- [ ] **Step 8: Watch the native Windows contract turn green**
+- [ ] **Step 8: Align downstream app mutation tests with the new Windows contract**
+
+If the first GREEN run shows `internal/configsource` passing but downstream app
+tests failing because their test setup still calls `os.WriteFile` against the
+retained Windows source, align those tests with the new platform contract before
+re-running the matrix:
+
+1. Add `runtime` to `internal/app/app_test.go` imports.
+2. Add `windowsInPlace bool` to the mutation-case table, set it for the
+   `in-place modification` case, and begin the subtest with:
+
+```go
+if test.windowsInPlace && runtime.GOOS == "windows" {
+	t.Skip("retained Windows configuration denies in-place writes")
+}
+```
+
+3. In `TestServeGatewayAuthConfigMutationDuringHTTPIDCreationFailsClosedBeforeListener`,
+   replace the direct write to `fixture.configPath` with:
+
+```go
+replacement := filepath.Join(filepath.Dir(fixture.configPath), "http-id-replacement-config.toml")
+// replacement is confined to this test's owner-private fixture.
+//nolint:gosec
+if err := os.WriteFile(replacement, append(payload, '\n'), 0o600); err != nil {
+	t.Fatalf("write replacement config during HTTP ID creation: %v", err)
+}
+replaceAppFixturePath(t, replacement, fixture.configPath)
+```
+
+Run:
+
+```bash
+gofmt -w internal/app/app_test.go
+go test -count=1 ./internal/app ./internal/configsource
+GOOS=windows GOARCH=amd64 go test -exec=/usr/bin/true ./internal/app ./internal/configsource
+```
+
+Expected: host tests pass and both Windows packages cross-compile. Commit with
+`test: align app config mutation coverage with Windows locking`, then push the
+branch.
+
+- [ ] **Step 9: Watch the native Windows contract turn green**
 
 Run:
 
