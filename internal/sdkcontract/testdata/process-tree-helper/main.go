@@ -70,16 +70,47 @@ func parentMain() int {
 	}
 	readyPath := filepath.Join(filepath.Dir(executable), "process-tree.ready")
 	payload := []byte(fmt.Sprintf("%d %d %d\n", pid, descendantPID, pgid))
-	if err := os.WriteFile(readyPath, payload, 0o600); err != nil {
-		return 1
-	}
-	if err := os.Chmod(readyPath, 0o600); err != nil {
+	if err := publishReadiness(readyPath, payload); err != nil {
 		return 1
 	}
 	cleanup = false
 	for {
 		<-term
 	}
+}
+
+func publishReadiness(path string, payload []byte) error {
+	return publishReadinessWith(path, payload, os.Rename)
+}
+
+func publishReadinessWith(
+	path string,
+	payload []byte,
+	rename func(string, string) error,
+) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".process-tree.ready-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryPath)
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return err
+	}
+	written, err := temporary.Write(payload)
+	if err != nil {
+		return err
+	}
+	if written != len(payload) {
+		return io.ErrShortWrite
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return rename(temporaryPath, path)
 }
 
 func descendantMain() {
