@@ -498,6 +498,17 @@ func TestRealHelperBoundariesCancelInheritedDescendantTrees(t *testing.T) {
 		t.Fatalf("look up go: %v", err)
 	}
 	helper := filepath.Join(root, "process-tree-helper")
+	helperTest := filepath.Join(root, "process-tree-helper.test")
+	if _, err := runGroupCommand(context.Background(), goExecutable, repository,
+		[]string{"test", "-c", "-trimpath", "-o", helperTest, "./internal/sdkcontract/testdata/process-tree-helper"},
+		minimalBuildEnvironment(), time.Second, 0, 8<<10); err != nil {
+		t.Fatalf("compile process-tree helper tests: %v", err)
+	}
+	if _, err := runGroupCommand(context.Background(), helperTest, "",
+		[]string{"-test.run=^TestPublishReadinessStagesCompletePrivateRecordBeforeRename$", "-test.count=1"},
+		[]string{}, 50*time.Millisecond, 8<<10, 8<<10); err != nil {
+		t.Fatalf("run process-tree helper tests: %v", err)
+	}
 	if _, err := runGroupCommand(context.Background(), goExecutable, repository,
 		[]string{"build", "-trimpath", "-o", helper, "./internal/sdkcontract/testdata/process-tree-helper"},
 		minimalBuildEnvironment(), time.Second, 0, 8<<10); err != nil {
