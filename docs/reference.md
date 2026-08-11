@@ -311,6 +311,8 @@ The listener accepts loopback literals only and defaults to `127.0.0.1:8080`. Be
 
 Provider binaries are absolute validated paths. Processes are started from argv arrays without a shell, and the prompt is passed through stdin. Each admitted request receives a `0700` temporary runtime and `0600` request files. One process owns the runtime root exclusively, and configuration, aliases, provider readiness, and the key are immutable startup snapshots; there is no hot reload.
 
+On Windows, the retained configuration handle denies in-place content writes until shutdown. Stop the gateway before editing the file in place, then restart it. Atomic replacement can still succeed, but the running process keeps its original startup snapshot and does not hot-reload the replacement.
+
 The gateway does not issue, discover, extract, copy, parse, refresh, or store login tokens. It only relays an explicitly allowlisted credential value in child memory. It does not log any prompt, output, schema, credentials, raw stdout or stderr, full argv, environment, config path, or authentication identity.
 
 `instructions` is a separately length-framed prompt section. Its priority is provider-dependent; it is not an enforceable OpenAI-style developer-message isolation boundary against adversarial `input`.

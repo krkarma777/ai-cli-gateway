@@ -3,36 +3,41 @@
 package configsource
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/windows"
 )
 
-func restoreSourceModTime(t *testing.T, path string, modTime time.Time) {
-	t.Helper()
-	path16, err := windows.UTF16PtrFromString(path)
+func TestWindowsRetainedSourceDeniesDataWriteUntilClose(t *testing.T) {
+	path := writeSourceConfig(t, "SOURCE_KEY")
+	snapshot, err := Load(path)
 	if err != nil {
-		t.Fatalf("encode source path: %v", err)
+		t.Fatalf("Load() error = %v", err)
 	}
-	handle, err := windows.CreateFile(
-		path16,
-		windows.FILE_WRITE_ATTRIBUTES,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		nil,
-		windows.OPEN_EXISTING,
-		windows.FILE_FLAG_OPEN_REPARSE_POINT,
-		0,
-	)
+	t.Cleanup(func() { _ = snapshot.Close() })
+
+	writer, openErr := os.OpenFile(path, os.O_WRONLY, 0)
+	if writer != nil {
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close unexpectedly admitted writer: %v", err)
+		}
+	}
+	if !errors.Is(openErr, windows.ERROR_SHARING_VIOLATION) {
+		t.Fatalf("open writer while retained error = %v, want ERROR_SHARING_VIOLATION", openErr)
+	}
+
+	if err := snapshot.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	writer, err = os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
-		t.Fatalf("open source mtime handle: %v", err)
+		t.Fatalf("open writer after Close() error = %v", err)
 	}
-	defer windows.CloseHandle(handle) //nolint:errcheck // Test cleanup reports through the assertion path.
-	filetime := windows.NsecToFiletime(modTime.UnixNano())
-	if err := windows.SetFileTime(handle, nil, &filetime, &filetime); err != nil {
-		t.Fatalf("restore source mtime: %v", err)
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer after Close(): %v", err)
 	}
 }
 

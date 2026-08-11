@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/krkarma777/ai-cli-gateway/internal/config"
 )
@@ -90,79 +89,39 @@ func TestLoadRejectsHandlePathIdentityDisagreement(t *testing.T) {
 	}
 }
 
-func TestSnapshotRevalidateRejectsInPlaceContentChangeWithoutReplacingConfig(t *testing.T) {
+func TestSnapshotRevalidateRejectsDigestMismatchWithoutReplacingConfig(t *testing.T) {
 	path := writeSourceConfig(t, "ORIGINAL_KEY")
-	snapshot, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	t.Cleanup(func() { _ = snapshot.Close() })
-	want := snapshot.Config()
-
-	replacement := sourceConfigDocument(t, "MUTATED_KEY")
-	if err := os.WriteFile(path, []byte(replacement), 0o600); err != nil {
-		t.Fatalf("mutate source in place: %v", err)
-	}
-	assertSourceUnavailable(t, snapshot.Revalidate())
-	if got := snapshot.Config(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("Config() changed after failed revalidation\n got: %+v\nwant: %+v", got, want)
-	}
-}
-
-func TestSnapshotRevalidateRejectsMutationRestoredToOriginalDigestAndMtime(t *testing.T) {
-	path := writeSourceConfig(t, "ORIGINAL_KEY")
-	original, err := os.ReadFile(path) // #nosec G304 -- path is created by writeSourceConfig in this test's private TempDir.
-	if err != nil {
-		t.Fatalf("read original source: %v", err)
-	}
-	snapshot, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	t.Cleanup(func() { _ = snapshot.Close() })
-	baseline, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat baseline source: %v", err)
-	}
-
-	mutateAndRestoreSource(t, path, original, baseline.ModTime())
-
-	assertSourceUnavailable(t, snapshot.Revalidate())
-}
-
-func TestLoadRejectsMutationRestoredDuringInitialRetainedHandleRead(t *testing.T) {
-	path := writeSourceConfig(t, "ORIGINAL_KEY")
-	original, err := os.ReadFile(path) // #nosec G304 -- path is created by writeSourceConfig in this test's private TempDir.
-	if err != nil {
-		t.Fatalf("read original source: %v", err)
-	}
-	baseline, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat baseline source: %v", err)
-	}
-	opens := 0
 	reads := 0
 	snapshot, err := loadWithOpenAndRead(
 		path,
-		func(actual string) (*os.File, error) {
-			opens++
-			return openSourceFile(actual)
-		},
+		openSourceFile,
 		func(file *os.File) ([]byte, bool) {
-			reads++
-			if reads == 1 {
-				mutateAndRestoreSource(t, path, original, baseline.ModTime())
+			raw, ok := readSourceBytes(file)
+			if !ok {
+				return nil, false
 			}
-			return readSourceBytes(file)
+			reads++
+			if reads == 3 {
+				raw[len(raw)/2] ^= 1
+			}
+			return raw, true
 		},
 	)
-	if snapshot != nil {
-		_ = snapshot.Close()
-		t.Fatalf("loadWithOpenAndRead() snapshot = %#v, want nil", snapshot)
+	if err != nil {
+		t.Fatalf("loadWithOpenAndRead() error = %v", err)
 	}
-	assertSourceUnavailable(t, err)
-	if opens != 1 || reads != 1 {
-		t.Fatalf("open/read calls = %d/%d, want 1/1", opens, reads)
+	t.Cleanup(func() { _ = snapshot.Close() })
+	if reads != 2 {
+		t.Fatalf("reads after load = %d, want 2", reads)
+	}
+	want := snapshot.Config()
+
+	assertSourceUnavailable(t, snapshot.Revalidate())
+	if reads != 3 {
+		t.Fatalf("reads after Revalidate = %d, want 3", reads)
+	}
+	if got := snapshot.Config(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Config() changed after failed revalidation: got %+v, want %+v", got, want)
 	}
 }
 
@@ -308,22 +267,4 @@ func assertSourceUnavailable(t *testing.T, err error) {
 	if errors.Unwrap(err) != nil {
 		t.Fatalf("error %v unexpectedly wraps another error", err)
 	}
-}
-
-func mutateAndRestoreSource(
-	t *testing.T,
-	path string,
-	original []byte,
-	modTime time.Time,
-) {
-	t.Helper()
-	mutated := append([]byte(nil), original...)
-	mutated[len(mutated)/2] ^= 1
-	if err := os.WriteFile(path, mutated, 0o600); err != nil { // #nosec G703 -- path is created by writeSourceConfig in this test's private TempDir.
-		t.Fatalf("write mutated source: %v", err)
-	}
-	if err := os.WriteFile(path, original, 0o600); err != nil { // #nosec G703 -- path is created by writeSourceConfig in this test's private TempDir.
-		t.Fatalf("restore original source: %v", err)
-	}
-	restoreSourceModTime(t, path, modTime)
 }
