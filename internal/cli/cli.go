@@ -10,22 +10,25 @@ import (
 	"github.com/krkarma777/ai-cli-gateway/internal/app"
 	"github.com/krkarma777/ai-cli-gateway/internal/buildinfo"
 	"github.com/krkarma777/ai-cli-gateway/internal/config"
+	"github.com/krkarma777/ai-cli-gateway/internal/initconfig"
 )
 
 const usage = "usage:\n" +
 	"  ai-cli-gateway version\n" +
+	"  ai-cli-gateway init [OPTIONS]\n" +
 	"  ai-cli-gateway serve [--config PATH]\n" +
 	"  ai-cli-gateway doctor [--config PATH] [--json]\n"
 
 type commands struct {
 	defaultConfigPath func() (string, error)
+	init              func(context.Context, initconfig.Options, io.Writer) app.InitResult
 	serve             func(context.Context, string) error
 	doctor            func(context.Context, string, bool, io.Writer) int
 }
 
 // Run executes a command and returns its process exit code.
-func Run(args []string, stdout, stderr io.Writer) int {
-	return RunContext(context.Background(), args, stdout, stderr)
+func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return RunContext(context.Background(), args, stdin, stdout, stderr)
 }
 
 // RunContext executes a command with cancellation and returns its process exit
@@ -33,11 +36,24 @@ func Run(args []string, stdout, stderr io.Writer) int {
 func RunContext(
 	ctx context.Context,
 	args []string,
+	stdin io.Reader,
 	stdout io.Writer,
 	stderr io.Writer,
 ) int {
-	return runContext(ctx, args, stdout, stderr, commands{
+	return runContext(ctx, args, stdin, stdout, stderr, commands{
 		defaultConfigPath: config.DefaultPath,
+		init: func(
+			ctx context.Context,
+			options initconfig.Options,
+			output io.Writer,
+		) app.InitResult {
+			return app.Init(
+				ctx,
+				options,
+				output,
+				app.ProductionInitDependencies(stderr),
+			)
+		},
 		serve: func(ctx context.Context, configPath string) error {
 			return app.Serve(
 				ctx,
@@ -65,6 +81,7 @@ func RunContext(
 func runContext(
 	ctx context.Context,
 	args []string,
+	stdin io.Reader,
 	stdout io.Writer,
 	stderr io.Writer,
 	commands commands,
@@ -72,7 +89,7 @@ func runContext(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if stdout == nil || stderr == nil {
+	if stdin == nil || stdout == nil || stderr == nil {
 		return 2
 	}
 	if len(args) == 1 && args[0] == "version" {
@@ -84,6 +101,9 @@ func runContext(
 		len(args) == 2 && args[1] == "--help" && isCommand(args[0]) {
 		_, _ = io.WriteString(stdout, usage)
 		return 0
+	}
+	if len(args) != 0 && args[0] == "init" {
+		return runInitCommand(ctx, args[1:], stdout, stderr, commands)
 	}
 	configPath, jsonOutput, explicit, ok := commandConfig(args)
 	if !ok {
@@ -145,7 +165,59 @@ func commandConfig(args []string) (path string, jsonOutput, explicit, ok bool) {
 }
 
 func isCommand(value string) bool {
-	return value == "version" || value == "serve" || value == "doctor"
+	return value == "version" || value == "init" || value == "serve" || value == "doctor"
+}
+
+func runInitCommand(
+	ctx context.Context,
+	args []string,
+	stdout io.Writer,
+	stderr io.Writer,
+	commands commands,
+) int {
+	options, err := parseInitArgs(args)
+	if err != nil {
+		_, _ = io.WriteString(stderr, usage)
+		return 2
+	}
+	if !options.NonInteractive {
+		_, _ = io.WriteString(
+			stderr,
+			"init_requires_non_interactive: pass --non-interactive and all required flags\n",
+		)
+		return 2
+	}
+	if options.ConfigPath == "" {
+		if commands.defaultConfigPath == nil {
+			_, _ = io.WriteString(stderr, "default_config_path_unavailable: pass --config PATH\n")
+			return 2
+		}
+		options.ConfigPath, err = commands.defaultConfigPath()
+		if err != nil || !validPath(options.ConfigPath) {
+			_, _ = io.WriteString(stderr, "default_config_path_unavailable: pass --config PATH\n")
+			return 2
+		}
+	}
+	if commands.init == nil {
+		_, _ = io.WriteString(stderr, "init_failed\n")
+		return 1
+	}
+	return initExitCode(commands.init(ctx, options, stdout).Outcome)
+}
+
+func initExitCode(outcome app.InitOutcome) int {
+	switch outcome {
+	case app.InitReady, app.InitDeclined, app.InitDryRun:
+		return 0
+	case app.InitNotReady, app.InitFailed, app.InitRecoveryRequired:
+		return 1
+	case app.InitUsage:
+		return 2
+	case app.InitCanceled:
+		return 130
+	default:
+		return 1
+	}
 }
 
 func validPath(value string) bool {

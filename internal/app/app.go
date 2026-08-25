@@ -783,63 +783,15 @@ func runDoctor(
 	deps Dependencies,
 	startup startupDependencies,
 ) (code int) {
-	if startup.LoadConfigSource == nil {
-		writeFixed(stdout, "doctor_failed\n")
-		return 1
-	}
-	source, err := startup.LoadConfigSource(configPath)
-	if err != nil || nilLike(source) {
-		if !nilLike(source) {
-			_ = source.Close()
-		}
+	diagnosis, diagnoseErr := diagnoseWithStartup(ctx, configPath, deps, startup)
+	if errors.Is(diagnoseErr, ErrConfigInvalid) {
 		writeFixed(stdout, "configuration_invalid\n")
 		return 2
 	}
-	defer func() {
-		if source.Close() != nil && code == 0 {
-			code = 1
-		}
-	}()
-	cfg := source.Config()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if ctx.Err() != nil || !validDoctorDependencies(deps) {
+	sourceCloseFailed := errors.Is(diagnoseErr, errDiagnosisSourceClose)
+	if diagnoseErr != nil && !sourceCloseFailed {
 		writeFixed(stdout, "doctor_failed\n")
 		return 1
-	}
-	adapters, ok := selectAdapters(cfg, deps.Adapters)
-	if !ok {
-		writeFixed(stdout, "doctor_failed\n")
-		return 1
-	}
-	executable, err := deps.GatewayExecutable()
-	if err != nil {
-		writeFixed(stdout, "doctor_failed\n")
-		return 1
-	}
-	diagnosis, runErr := doctor.Run(ctx, cfg, doctor.Dependencies{
-		Adapters:           adapters,
-		ConfigIdentity:     source.FileInfo(),
-		LookupEnv:          deps.LookupEnv,
-		LoadGatewayKey:     startup.LoadGatewayKey,
-		LookupExecutable:   deps.LookupExecutable,
-		NewRuntimeID:       deps.NewRuntimeID,
-		OpenRoot:           deps.OpenRoot,
-		Janitor:            deps.Janitor,
-		CloseRoot:          deps.CloseRoot,
-		NewProbeController: deps.NewProbeController,
-		GatewayExecutable:  executable,
-	})
-	if runErr != nil {
-		if diagnosis.RuntimeRoot != nil {
-			_ = deps.CloseRoot(diagnosis.RuntimeRoot)
-		}
-		writeFixed(stdout, "doctor_failed\n")
-		return 1
-	}
-	if startup.postDiagnosis != nil {
-		startup.postDiagnosis()
 	}
 
 	report := diagnosis.Report()
@@ -853,7 +805,8 @@ func runDoctor(
 	if diagnosis.RuntimeRoot != nil {
 		closeErr = deps.CloseRoot(diagnosis.RuntimeRoot)
 	}
-	if writeErr != nil || closeErr != nil || !report.CoreReady() || report.ReadyCount() == 0 {
+	if writeErr != nil || closeErr != nil || sourceCloseFailed ||
+		!report.CoreReady() || report.ReadyCount() == 0 {
 		return 1
 	}
 	return 0

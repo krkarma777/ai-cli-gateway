@@ -13,12 +13,13 @@ import (
 
 const wantUsage = "usage:\n" +
 	"  ai-cli-gateway version\n" +
+	"  ai-cli-gateway init [OPTIONS]\n" +
 	"  ai-cli-gateway serve [--config PATH]\n" +
 	"  ai-cli-gateway doctor [--config PATH] [--json]\n"
 
 func TestRunVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"version"}, &stdout, &stderr)
+	code := Run([]string{"version"}, bytes.NewReader(nil), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
@@ -33,7 +34,7 @@ func TestRunVersion(t *testing.T) {
 func TestRunHelpWritesExactUsageToStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
-	code := Run([]string{"--help"}, &stdout, &stderr)
+	code := Run([]string{"--help"}, bytes.NewReader(nil), &stdout, &stderr)
 
 	if code != 0 {
 		t.Fatalf("code=%d, want 0", code)
@@ -47,11 +48,11 @@ func TestRunHelpWritesExactUsageToStdout(t *testing.T) {
 }
 
 func TestRunCommandHelpWritesExactUsageToStdout(t *testing.T) {
-	for _, command := range []string{"version", "serve", "doctor"} {
+	for _, command := range []string{"version", "init", "serve", "doctor"} {
 		t.Run(command, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 
-			code := Run([]string{command, "--help"}, &stdout, &stderr)
+			code := Run([]string{command, "--help"}, bytes.NewReader(nil), &stdout, &stderr)
 
 			if code != 0 {
 				t.Fatalf("code=%d, want 0", code)
@@ -80,7 +81,7 @@ func TestRunRejectsNilWritersWithoutPanicking(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			code := Run(tt.args, tt.stdout, tt.stderr)
+			code := Run(tt.args, bytes.NewReader(nil), tt.stdout, tt.stderr)
 			if code != 2 {
 				t.Fatalf("code=%d, want 2", code)
 			}
@@ -94,9 +95,21 @@ func TestRunRejectsNilWritersWithoutPanicking(t *testing.T) {
 	}
 }
 
+func TestRunRejectsNilReaderWithoutDispatchOrOutput(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"version"}, nil, &stdout, &stderr); code != 2 {
+		t.Fatalf("Run() code = %d, want 2", code)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("Run() stdout/stderr = %q/%q, want empty", stdout.String(), stderr.String())
+	}
+}
+
 func TestRunUnknownCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"unknown"}, &stdout, &stderr)
+	code := Run([]string{"unknown"}, bytes.NewReader(nil), &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("code=%d, want 2", code)
 	}
@@ -213,7 +226,7 @@ func TestRunContextDispatchesAcceptedServeAndDoctorCommands(t *testing.T) {
 				},
 			}
 
-			code := runContext(requestContext, tt.args, &stdout, &stderr, commandSet)
+			code := runContext(requestContext, tt.args, bytes.NewReader(nil), &stdout, &stderr, commandSet)
 
 			if code != tt.wantCode {
 				t.Fatalf("code=%d, want %d", code, tt.wantCode)
@@ -269,6 +282,7 @@ func TestRunContextDefaultConfigPathFailureDoesNotDispatch(t *testing.T) {
 			code := runContext(
 				context.Background(),
 				tt.args,
+				bytes.NewReader(nil),
 				&stdout,
 				&stderr,
 				commands{
@@ -314,6 +328,7 @@ func TestRunContextNormalizesNilContextBeforeDispatch(t *testing.T) {
 	code := runContext(
 		nil,
 		[]string{"serve", "--config", "config.toml"},
+		bytes.NewReader(nil),
 		&stdout,
 		&stderr,
 		commands{
@@ -399,7 +414,7 @@ func TestRunContextRejectsEveryUnsupportedSyntaxWithoutDispatch(t *testing.T) {
 				},
 			}
 
-			code := runContext(context.Background(), tt.args, &stdout, &stderr, commandSet)
+			code := runContext(context.Background(), tt.args, bytes.NewReader(nil), &stdout, &stderr, commandSet)
 
 			if code != 2 {
 				t.Fatalf("code=%d, want 2", code)
@@ -435,6 +450,7 @@ func TestRunContextVersionAndHelpNeverDispatch(t *testing.T) {
 		{name: "version help", args: []string{"version", "--help"}, wantStdout: wantUsage},
 		{name: "serve help", args: []string{"serve", "--help"}, wantStdout: wantUsage},
 		{name: "doctor help", args: []string{"doctor", "--help"}, wantStdout: wantUsage},
+		{name: "init help", args: []string{"init", "--help"}, wantStdout: wantUsage},
 	}
 
 	for _, tt := range tests {
@@ -457,7 +473,7 @@ func TestRunContextVersionAndHelpNeverDispatch(t *testing.T) {
 				},
 			}
 
-			code := runContext(context.Background(), tt.args, &stdout, &stderr, commandSet)
+			code := runContext(context.Background(), tt.args, bytes.NewReader(nil), &stdout, &stderr, commandSet)
 
 			if code != 0 {
 				t.Fatalf("code=%d, want 0", code)
@@ -493,6 +509,7 @@ func TestRunContextNilWriterPreventsDispatch(t *testing.T) {
 			code := runContext(
 				context.Background(),
 				[]string{"serve", "--config", "config.toml"},
+				bytes.NewReader(nil),
 				tt.stdout,
 				tt.stderr,
 				commands{
@@ -581,6 +598,7 @@ func TestRunContextMapsServeResultsToFixedOutput(t *testing.T) {
 			code := runContext(
 				context.Background(),
 				[]string{"serve", "--config", "config.toml"},
+				bytes.NewReader(nil),
 				&stdout,
 				&stderr,
 				commands{
@@ -611,6 +629,7 @@ func TestRunContextProductionCommandsDelegateConfigurationFailures(t *testing.T)
 		code := RunContext(
 			context.Background(),
 			[]string{"serve", "--config", missingConfig},
+			bytes.NewReader(nil),
 			&stdout,
 			&stderr,
 		)
@@ -631,6 +650,7 @@ func TestRunContextProductionCommandsDelegateConfigurationFailures(t *testing.T)
 		code := RunContext(
 			context.Background(),
 			[]string{"doctor", "--config", missingConfig, "--json"},
+			bytes.NewReader(nil),
 			&stdout,
 			&stderr,
 		)

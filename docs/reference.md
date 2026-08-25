@@ -241,15 +241,60 @@ Command grammar:
 ```text
 usage:
   ai-cli-gateway version
+  ai-cli-gateway init [OPTIONS]
   ai-cli-gateway serve [--config PATH]
   ai-cli-gateway doctor [--config PATH] [--json]
 ```
 
 Both JSON Doctor orders are accepted: `ai-cli-gateway doctor --config PATH --json` and `ai-cli-gateway doctor --json --config PATH`. The equals-sign form is intentionally not part of the grammar.
 
+### Non-interactive initialization
+
+This slice supports the strict non-interactive form. Bare interactive `ai-cli-gateway init` is reserved for the next guided-init slice and currently exits 2 with instructions to pass `--non-interactive` and every required value. Non-interactive init never reads stdin, searches `PATH`, guesses a provider home, runs a login command, starts a listener, or performs inference.
+
+Select one or more providers with repeatable `--provider codex|claude|gemini`. A provider that is not already complete in the selected configuration needs its absolute executable and config home, plus at least one model mapping:
+
+```text
+--codex-executable PATH       --codex-config-home PATH
+--codex-model ALIAS=PROVIDER_MODEL
+
+--claude-executable PATH      --claude-config-home PATH
+--claude-model ALIAS=PROVIDER_MODEL
+--claude-auth config-home|anthropic-api-key
+
+--gemini-executable PATH      --gemini-config-home PATH
+--gemini-model ALIAS=PROVIDER_MODEL
+--gemini-auth gemini-api-key|google-api-key|vertex-service-account
+```
+
+Each `--*-model` option is repeatable. On Windows, a Node-distributed provider also uses the matching `--codex-entrypoint`, `--claude-entrypoint`, or `--gemini-entrypoint` with an absolute `.js` or `.mjs` path. Native executables do not use an entrypoint.
+
+Gateway authentication is selected with one of these exact forms:
+
+```text
+--gateway-auth file [--gateway-key-file ABSOLUTE_PATH]
+--gateway-auth environment --gateway-key-env ENVIRONMENT_NAME
+--gateway-auth none
+```
+
+A fresh configuration defaults to file authentication and a private `gateway.key` beside the configuration. Init generates a missing key without printing it. Its completion output is authentication-aware: file mode shows commands that load the private key for a client, environment mode maps the configured environment variable without reading or printing its value, and `none` mode shows requests without an `Authorization` header. An explicitly selected valid key file is reused; an unapproved orphan at the implicit path is not reused in non-interactive mode.
+
+Existing TOML is merged without rewriting unrelated text. Omitted values for an already configured selected provider are preserved. Changing an existing provider requires the matching repeatable `--replace-provider NAME`; changing an existing model alias requires `--replace-model ALIAS`. Without that explicit authority, init prints the redacted semantic diff and exits 2 without mutation. `--dry-run` performs configuration validation and read-only filesystem preflight, prints the same redacted diff, and states that no files changed and post-write Doctor was not run.
+
+After a successful commit or semantic no-op, init runs the no-inference Doctor checks and prints the complete report. Readiness is determined by core checks and the providers selected in this invocation; an unselected, pre-existing provider remains visible in the report but does not change the init result.
+
+Init exit codes are:
+
+| Exit | Meaning |
+|---:|---|
+| 0 | selected providers ready, dry run complete, or a future interactive confirmation declined |
+| 1 | saved but not ready, operational failure, indeterminate state, or backup recovery required |
+| 2 | invalid/incomplete input, invalid existing configuration, or an unapproved replacement/key reuse |
+| 130 | canceled before commit, or canceled after a commit that was already saved |
+
 When `--config` is omitted, POSIX uses `$XDG_CONFIG_HOME/ai-cli-gateway/config.toml` when `XDG_CONFIG_HOME` is an absolute nonempty path; otherwise it uses `$HOME/.config/ai-cli-gateway/config.toml`. Windows uses `%LOCALAPPDATA%\AI CLI Gateway\config\config.toml`. If a safe default path is unavailable, the command exits 2 and writes `default_config_path_unavailable: pass --config PATH`; pass an explicit `--config PATH` to continue.
 
-Help is available as `ai-cli-gateway --help`, `ai-cli-gateway version --help`, `ai-cli-gateway serve --help`, and `ai-cli-gateway doctor --help`.
+Help is available as `ai-cli-gateway --help`, `ai-cli-gateway version --help`, `ai-cli-gateway init --help`, `ai-cli-gateway serve --help`, and `ai-cli-gateway doctor --help`.
 
 The exit status is 0 for success or a clean handled shutdown, 1 for readiness, runtime, serve, or cleanup failure, and 2 for usage or configuration failure. Stable CLI diagnostics include `configuration_invalid`, `default_config_path_unavailable: pass --config PATH`, `gateway_not_ready: run ai-cli-gateway doctor`, `doctor_failed`, and `serve_failed: run ai-cli-gateway doctor`. `doctor` performs no inference and emits redacted text or JSON.
 

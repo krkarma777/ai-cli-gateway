@@ -8379,7 +8379,9 @@ func TestScannerRejectsAuthAndGeneratedArtifactBasenames(t *testing.T) {
 	artifacts := []string{
 		"config.toml", ".env", ".env.local", "coverage.out", "coverage-unit.out",
 		"gateway.test", "gateway.test.exe", "gateway.exe", "cpu.prof",
-		"ai-cli-gateway", "fake-ai-cli",
+		"ai-cli-gateway", "fake-ai-cli", "gateway.key", "gateway.key.tmp",
+		"config.toml.bak", "config.toml.lock", "config.toml.tmp",
+		"config.toml.rollback.tmp", "config.toml.bak.tmp", "config.toml.bak.restore.tmp",
 	}
 	for _, name := range artifacts {
 		root := t.TempDir()
@@ -8791,8 +8793,17 @@ func isAuthArtifact(base string, directory bool) bool {
 }
 
 func isGeneratedArtifact(base string) bool {
-	if base == "config.toml" || base == ".env" || base == "ai-cli-gateway" || base == "fake-ai-cli" {
+	if base == "config.toml" || base == ".env" || base == "ai-cli-gateway" ||
+		base == "fake-ai-cli" || base == "gateway.key" || base == "gateway.key.tmp" {
 		return true
+	}
+	for _, suffix := range []string{
+		".toml.bak", ".toml.lock", ".toml.tmp", ".toml.rollback.tmp",
+		".toml.bak.tmp", ".toml.bak.restore.tmp",
+	} {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
 	}
 	if strings.HasPrefix(base, ".env.") && base != ".env.example" {
 		return true
