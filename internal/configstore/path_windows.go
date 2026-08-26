@@ -484,19 +484,15 @@ func windowsStoreFinalPathMatches(file *os.File, selected string) bool {
 }
 
 func windowsStoreVolumeRootMatches(file *os.File, selected string) bool {
-	// GetFinalPathNameByHandle can reject a mounted volume root. Resolve only a
-	// genuine volume mount point to its GUID path, then compare the two open
-	// directory identities. DOS aliases such as SUBST do not resolve this way.
+	// A bare mounted volume root intentionally cannot pass the config-target
+	// canonicalizer. Resolve only a genuine volume mount point to its GUID path,
+	// then compare the two open directory identities. DOS aliases such as SUBST
+	// do not resolve this way.
 	if file == nil {
 		return false
 	}
-	clean, ok := cleanWindowsStorePath(selected)
+	root, ok := cleanWindowsStoreVolumeRoot(selected)
 	if !ok {
-		return false
-	}
-	volume := filepath.VolumeName(clean)
-	root := filepath.Clean(volume + `\`)
-	if !strings.EqualFold(clean, root) {
 		return false
 	}
 	pointer, err := windows.UTF16PtrFromString(root)
@@ -525,6 +521,36 @@ func windowsStoreVolumeRootMatches(file *os.File, selected string) bool {
 	closeErr := canonical.Close()
 	return selectedOK && canonicalOK &&
 		sameNativeDirectoryIdentity(selectedMetadata, canonicalMetadata) && closeErr == nil
+}
+
+func cleanWindowsStoreVolumeRoot(path string) (string, bool) {
+	// A bare volume root intentionally fails cleanWindowsStorePath because it
+	// has no path component and must never be accepted as a config target. The
+	// ancestor walk still needs to validate that root as its terminal object.
+	if path == "" || strings.IndexByte(path, 0) >= 0 || windowsStoreDevicePath(path) ||
+		strings.HasPrefix(path, `\\`) {
+		return "", false
+	}
+	clean := filepath.Clean(path)
+	if clean != path || !filepath.IsAbs(clean) || windowsStoreDevicePath(clean) {
+		return "", false
+	}
+	volume := filepath.VolumeName(clean)
+	if len(volume) != 2 || volume[1] != ':' {
+		return "", false
+	}
+	drive := volume[0]
+	if !((drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')) {
+		return "", false
+	}
+	root := filepath.Clean(volume + `\`)
+	if !strings.EqualFold(clean, root) {
+		return "", false
+	}
+	if _, ok := windowsStoreVolumePolicy(volume); !ok {
+		return "", false
+	}
+	return root, true
 }
 
 func windowsStoreFinalPath(file *os.File) (string, bool) {

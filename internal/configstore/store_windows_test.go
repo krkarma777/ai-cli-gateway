@@ -141,15 +141,27 @@ func TestWindowsStoreFinalPathAcceptsTrustedTempLongName(t *testing.T) {
 func TestWindowsStoreFinalPathAcceptsMountedVolumeRootByIdentity(t *testing.T) {
 	fixture := testutil.TrustedTempDir(t)
 	root := filepath.Clean(filepath.VolumeName(fixture) + `\`)
+	if _, ok := cleanWindowsStorePath(root); ok {
+		t.Fatalf("config path validation accepted bare volume root %q", root)
+	}
+	cleanRoot, ok := cleanWindowsStoreVolumeRoot(root)
+	if !ok || !strings.EqualFold(cleanRoot, root) {
+		t.Fatalf("volume root validation = %q/%t, want %q/true", cleanRoot, ok, root)
+	}
+	if _, ok := cleanWindowsStoreVolumeRoot(fixture); ok {
+		t.Fatalf("volume root validation accepted non-root directory %q", fixture)
+	}
 	rootHandle, err := openWindowsStorePath(root, true)
 	if err != nil {
 		t.Fatalf("open mounted volume root: %v", err)
 	}
 	defer rootHandle.Close() //nolint:errcheck // Test cleanup after assertion.
 
-	if !windowsStoreFinalPathMatches(rootHandle, root) ||
-		!windowsStoreVolumeRootMatches(rootHandle, root) {
+	if !windowsStoreVolumeRootMatches(rootHandle, root) {
 		t.Fatalf("mounted volume root identity did not match %q", root)
+	}
+	if !windowsStoreFinalPathMatches(rootHandle, root) {
+		t.Fatalf("final path fallback did not match mounted volume root %q", root)
 	}
 	fixtureHandle, err := openWindowsStorePath(fixture, true)
 	if err != nil {
