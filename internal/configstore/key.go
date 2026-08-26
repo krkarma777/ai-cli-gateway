@@ -230,6 +230,16 @@ func (writer *Writer) stageNewKey(
 		afterWrite.Size() != 65 || !os.SameFile(staged.identity, afterWrite) {
 		return nil, ErrStore
 	}
+	file, err = sealNativePrivateFile(staged.directory, file, staged.tempName)
+	staged.file = file
+	if err != nil {
+		return nil, err
+	}
+	afterSeal, err := file.Stat()
+	if err != nil || afterSeal == nil || !afterSeal.Mode().IsRegular() ||
+		afterSeal.Size() != 65 || !os.SameFile(staged.identity, afterSeal) {
+		return nil, ErrUnsafePath
+	}
 	if err := staged.validatePath(staged.tempName, staged.tempPath); err != nil {
 		return nil, err
 	}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -304,7 +305,7 @@ func validWindowsStoreConfig(t *testing.T, root string, keyPath string) []byte {
 }
 
 func windowsStoreTOMLValue(value string) string {
-	return `"` + strings.ReplaceAll(filepath.ToSlash(value), `"`, `\"`) + `"`
+	return strconv.Quote(value)
 }
 
 func installUnsafeWindowsStoreDACL(t *testing.T, path string) {
