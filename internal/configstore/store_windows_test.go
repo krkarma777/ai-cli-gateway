@@ -28,12 +28,7 @@ func TestLoadWindowsPrivateConfigAndRejectsUnsafeObjects(t *testing.T) {
 		path := filepath.Join(root, "config.toml")
 		missing, err := NewWriter().Load(context.Background(), path)
 		if err != nil || missing.Exists() || missing.Path() != path {
-			t.Fatalf(
-				"Load(missing) = %#v, %v\nWindows store path diagnostics:%s",
-				missing,
-				err,
-				windowsStoreTestPathDiagnostics(root),
-			)
+			t.Fatalf("Load(missing) = %#v, %v", missing, err)
 		}
 		payload := validWindowsStoreConfig(t, root, "")
 		testutil.WriteTrustedFile(t, path, payload, 0o600)
@@ -100,60 +95,6 @@ func TestLoadWindowsPrivateConfigAndRejectsUnsafeObjects(t *testing.T) {
 		}
 	})
 }
-
-func windowsStoreTestPathDiagnostics(start string) string {
-	var diagnostics strings.Builder
-	volume := filepath.VolumeName(start)
-	root := filepath.Clean(volume + `\`)
-	current := start
-	private := true
-	for {
-		file, openErr := openWindowsStorePath(current, true)
-		if openErr != nil {
-			fmt.Fprintf(&diagnostics, "\npath=%q open=%v", current, openErr)
-			return diagnostics.String()
-		}
-		_, metadataOK := windowsStoreMetadata(file, true)
-		securityOK := safeWindowsStoreSecurity(file, true, private)
-		final, finalOK := windowsStoreFinalPath(file)
-		finalMatches := finalOK && windowsStoreLongPathMatches(final, current)
-		descriptor, descriptorErr := windows.GetSecurityInfo(
-			windows.Handle(file.Fd()),
-			windows.SE_FILE_OBJECT,
-			windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION,
-		)
-		descriptorText := ""
-		if descriptor != nil {
-			descriptorText = descriptor.String()
-		}
-		closeErr := file.Close()
-		fmt.Fprintf(
-			&diagnostics,
-			"\npath=%q private=%t metadata=%t security=%t final=%q final_ok=%t final_matches=%t descriptor=%q descriptor_error=%v close=%v",
-			current,
-			private,
-			metadataOK,
-			securityOK,
-			final,
-			finalOK,
-			finalMatches,
-			descriptorText,
-			descriptorErr,
-			closeErr,
-		)
-		if strings.EqualFold(current, root) {
-			return diagnostics.String()
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			fmt.Fprintf(&diagnostics, "\npath=%q has no parent before volume root %q", current, root)
-			return diagnostics.String()
-		}
-		current = parent
-		private = false
-	}
-}
-
 func TestLoadWindowsAllowsUntrustedCreateGrantOnNonPrivateAncestor(t *testing.T) {
 	root := testutil.TrustedTempDir(t)
 	installWindowsStoreDACL(t, root, "D:P(A;;FA;;;%s)(A;;0x00000002;;;WD)")
@@ -194,6 +135,29 @@ func TestWindowsStoreFinalPathAcceptsTrustedTempLongName(t *testing.T) {
 
 	if !windowsStoreFinalPathMatches(handle, root) {
 		t.Fatalf("final path did not match trusted fixture %q", root)
+	}
+}
+
+func TestWindowsStoreFinalPathAcceptsMountedVolumeRootByIdentity(t *testing.T) {
+	fixture := testutil.TrustedTempDir(t)
+	root := filepath.Clean(filepath.VolumeName(fixture) + `\`)
+	rootHandle, err := openWindowsStorePath(root, true)
+	if err != nil {
+		t.Fatalf("open mounted volume root: %v", err)
+	}
+	defer rootHandle.Close() //nolint:errcheck // Test cleanup after assertion.
+
+	if !windowsStoreFinalPathMatches(rootHandle, root) ||
+		!windowsStoreVolumeRootMatches(rootHandle, root) {
+		t.Fatalf("mounted volume root identity did not match %q", root)
+	}
+	fixtureHandle, err := openWindowsStorePath(fixture, true)
+	if err != nil {
+		t.Fatalf("open trusted fixture: %v", err)
+	}
+	defer fixtureHandle.Close() //nolint:errcheck // Test cleanup after assertion.
+	if windowsStoreVolumeRootMatches(fixtureHandle, root) {
+		t.Fatal("non-root directory identity matched the mounted volume root")
 	}
 }
 

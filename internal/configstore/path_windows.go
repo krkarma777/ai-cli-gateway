@@ -477,7 +477,54 @@ func safeWindowsStoreSecurity(file *os.File, directory bool, private bool) bool 
 
 func windowsStoreFinalPathMatches(file *os.File, selected string) bool {
 	final, ok := windowsStoreFinalPath(file)
-	return ok && windowsStoreLongPathMatches(final, selected)
+	if ok {
+		return windowsStoreLongPathMatches(final, selected)
+	}
+	return windowsStoreVolumeRootMatches(file, selected)
+}
+
+func windowsStoreVolumeRootMatches(file *os.File, selected string) bool {
+	// GetFinalPathNameByHandle can reject a mounted volume root. Resolve only a
+	// genuine volume mount point to its GUID path, then compare the two open
+	// directory identities. DOS aliases such as SUBST do not resolve this way.
+	if file == nil {
+		return false
+	}
+	clean, ok := cleanWindowsStorePath(selected)
+	if !ok {
+		return false
+	}
+	volume := filepath.VolumeName(clean)
+	root := filepath.Clean(volume + `\`)
+	if !strings.EqualFold(clean, root) {
+		return false
+	}
+	pointer, err := windows.UTF16PtrFromString(root)
+	if err != nil {
+		return false
+	}
+	buffer := make([]uint16, windows.MAX_PATH)
+	if err := windows.GetVolumeNameForVolumeMountPoint(
+		pointer,
+		&buffer[0],
+		uint32(len(buffer)),
+	); err != nil {
+		return false
+	}
+	volumeRoot := windows.UTF16ToString(buffer)
+	lower := strings.ToLower(volumeRoot)
+	if !strings.HasPrefix(lower, `\\?\volume{`) || !strings.HasSuffix(lower, `}\`) {
+		return false
+	}
+	canonical, err := openWindowsStorePath(volumeRoot, true)
+	if err != nil {
+		return false
+	}
+	selectedMetadata, selectedOK := windowsStoreMetadata(file, true)
+	canonicalMetadata, canonicalOK := windowsStoreMetadata(canonical, true)
+	closeErr := canonical.Close()
+	return selectedOK && canonicalOK &&
+		sameNativeDirectoryIdentity(selectedMetadata, canonicalMetadata) && closeErr == nil
 }
 
 func windowsStoreFinalPath(file *os.File) (string, bool) {
