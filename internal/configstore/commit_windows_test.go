@@ -69,7 +69,7 @@ func TestCommitWindowsFreshNestedConfigAndImmediateBackup(t *testing.T) {
 	})
 }
 
-func TestCommitWindowsRejectsDirectoryReplacementAfterLock(t *testing.T) {
+func TestCommitWindowsBlocksOrRejectsDirectoryReplacementAfterLock(t *testing.T) {
 	root := testutil.TrustedTempDir(t)
 	configDirectory := filepath.Join(root, "config")
 	configPath := filepath.Join(configDirectory, "config.toml")
@@ -79,19 +79,36 @@ func TestCommitWindowsRejectsDirectoryReplacementAfterLock(t *testing.T) {
 	}
 	detached := filepath.Join(root, "detached")
 	writer := NewWriter()
+	replacementBlocked := false
 	writer.ops.commitHook = func(point commitPoint) error {
 		if point != commitAfterLock {
 			return nil
 		}
 		if err := os.Rename(configDirectory, detached); err != nil {
+			if errors.Is(err, windows.ERROR_SHARING_VIOLATION) ||
+				errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+				replacementBlocked = true
+				return nil
+			}
 			t.Fatalf("Rename config directory: %v", err)
 		}
 		createWindowsTestPrivateDirectory(t, configDirectory)
 		return nil
 	}
+	candidate := validWindowsStoreConfig(t, root, "")
 	result, err := writer.Commit(context.Background(), Mutation{
-		Base: base, Candidate: validWindowsStoreConfig(t, root, ""),
+		Base: base, Candidate: candidate,
 	}, nil)
+	if replacementBlocked {
+		if err != nil || result != (CommitResult{State: CommitCommitted, ConfigChanged: true}) {
+			t.Fatalf("Commit() after blocked replacement = %#v, %v", result, err)
+		}
+		assertWindowsStoreBytes(t, configPath, candidate)
+		if _, err := os.Lstat(detached); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("blocked replacement created detached directory: %v", err)
+		}
+		return
+	}
 	if result != (CommitResult{}) || !errors.Is(err, ErrUnsafePath) {
 		t.Fatalf("Commit() = %#v, %v", result, err)
 	}

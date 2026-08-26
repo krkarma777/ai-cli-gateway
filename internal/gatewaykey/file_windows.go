@@ -220,10 +220,14 @@ func openWindowsKeyFile(path string) (*os.File, bool) {
 	if err != nil {
 		return nil, false
 	}
+	// A transaction-owned staged key retains its write handle until atomic
+	// publication. The loader still detects content, metadata, and path changes
+	// before and after parsing, so this compatible share does not authorize an
+	// unstable snapshot.
 	handle, err := windows.CreateFile(
 		pointer,
 		windows.GENERIC_READ|windows.READ_CONTROL,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_DELETE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil,
 		windows.OPEN_EXISTING,
 		windows.FILE_FLAG_OPEN_REPARSE_POINT,

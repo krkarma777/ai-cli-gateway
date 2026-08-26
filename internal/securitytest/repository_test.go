@@ -4088,8 +4088,8 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 		"go test -tags=integration -count=1 ./...", "CGO_ENABLED: 0",
 		"go build -trimpath", "RUNNER_TEMP")
 	requireContainsAll(t, "Windows job", jobs["windows"],
-		"runs-on: windows-latest", "go test -count=1 ./...",
-		"go test -tags=integration -count=1 -v ./...", "CGO_ENABLED: 0",
+		"runs-on: windows-latest", "go test -p=1 -count=1 ./...",
+		"go test -p=1 -tags=integration -count=1 -v ./...", "CGO_ENABLED: 0",
 		"go build -trimpath", "$env:RUNNER_TEMP")
 	if strings.Contains(jobs["windows"], "continue-on-error") ||
 		regexp.MustCompile(`(?m)\bgo\s+test\s+-c(?:\s|$)`).MatchString(jobs["windows"]) {
@@ -4935,12 +4935,12 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 			steps: []string{
 				checkout,
 				setupGo,
-				yamlContractLines("- name: Unit tests", "  run: go test -count=1 ./..."),
+				yamlContractLines("- name: Unit tests", "  run: go test -p=1 -count=1 ./..."),
 				yamlContractLines(
 					"- name: Native Job Object, ACL, reparse, cancellation, and cleanup tests",
-					"  run: go test -tags=integration -count=1 -v ./...",
+					"  run: go test -p=1 -tags=integration -count=1 -v ./...",
 				),
-				yamlContractLines("- name: Trimmed-path tests", "  run: go test -trimpath -count=1 ./..."),
+				yamlContractLines("- name: Trimmed-path tests", "  run: go test -p=1 -trimpath -count=1 ./..."),
 				yamlContractLines(
 					"- name: Build",
 					"  env:",
