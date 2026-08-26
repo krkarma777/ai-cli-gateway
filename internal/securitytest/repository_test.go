@@ -3305,11 +3305,56 @@ func TestLicenseAndNoticesMatchFrozenReviewedSurface(t *testing.T) {
 	}
 
 	notices := string(readRepositoryFile(t, "THIRD_PARTY_NOTICES.md"))
-	wantModules := map[string]struct{}{
-		"github.com/pelletier/go-toml/v2@v2.4.3":          {},
-		"github.com/santhosh-tekuri/jsonschema/v6@v6.0.2": {},
-		"golang.org/x/sys@v0.47.0":                        {},
-		"golang.org/x/text@v0.14.0":                       {},
+	wantEntries := []thirdPartyNoticeEntry{
+		{module: "charm.land/bubbles/v2@v2.0.0", license: "MIT", source: "https://github.com/charmbracelet/bubbles/tree/v2.0.0", licenseEvidence: "https://github.com/charmbracelet/bubbles/blob/v2.0.0/LICENSE", noticeSHA256: "373b3931e66627aadcfebd7771df93f3439203147e587a924508c63e20184d7f"},
+		{module: "charm.land/bubbletea/v2@v2.0.5", license: "MIT", source: "https://github.com/charmbracelet/bubbletea/tree/v2.0.5", licenseEvidence: "https://github.com/charmbracelet/bubbletea/blob/v2.0.5/LICENSE", noticeSHA256: "373b3931e66627aadcfebd7771df93f3439203147e587a924508c63e20184d7f"},
+		{module: "charm.land/huh/v2@v2.0.3", license: "MIT", source: "https://github.com/charmbracelet/huh/tree/v2.0.3", licenseEvidence: "https://github.com/charmbracelet/huh/blob/v2.0.3/LICENSE", noticeSHA256: "7d6383ae24645c61294bad8cb1be56114af794c34f3c47ea52d1e468a5cec00f"},
+		{module: "charm.land/lipgloss/v2@v2.0.1", license: "MIT", source: "https://github.com/charmbracelet/lipgloss/tree/v2.0.1", licenseEvidence: "https://github.com/charmbracelet/lipgloss/blob/v2.0.1/LICENSE", noticeSHA256: "3f531fb89f23b218fbe16b24fb5950418fa1f0046db5cfddb2c1e0d6d39bfcc0"},
+		{module: "github.com/atotto/clipboard@v0.1.4", license: "BSD-3-Clause", source: "https://github.com/atotto/clipboard/tree/v0.1.4", licenseEvidence: "https://github.com/atotto/clipboard/blob/v0.1.4/LICENSE", noticeSHA256: "2c4bac8e2a97180d6e7758c37de85d1cda1859aaf85b56da15d935d2d9a5564f"},
+		{module: "github.com/catppuccin/go@v0.2.0", license: "MIT", source: "https://github.com/catppuccin/go/tree/v0.2.0", licenseEvidence: "https://github.com/catppuccin/go/blob/v0.2.0/LICENSE", noticeSHA256: "814096d2c34cc216c624738a49356f32b7237733b4f7edb0685f4e50ef5074ba"},
+		{module: "github.com/charmbracelet/colorprofile@v0.4.3", license: "MIT", source: "https://github.com/charmbracelet/colorprofile/tree/v0.4.3", licenseEvidence: "https://github.com/charmbracelet/colorprofile/blob/v0.4.3/LICENSE", noticeSHA256: "57d6eeeb336030b89c0e0d12cf869f84b97a481cd00b350ef21fca995da5a39a"},
+		{module: "github.com/charmbracelet/ultraviolet@v0.0.0-20260413211237-bd52878bcec2", license: "MIT", source: "https://github.com/charmbracelet/ultraviolet/tree/bd52878bcec213b2263173de754e38f61ac5a303", licenseEvidence: "https://github.com/charmbracelet/ultraviolet/blob/bd52878bcec213b2263173de754e38f61ac5a303/LICENSE", noticeSHA256: "8a77c755a1d1fbdc932e86f0449549121820b6f4cc1234b12fcfc8d38013c1de"},
+		{module: "github.com/charmbracelet/x/ansi@v0.11.7", license: "MIT", source: "https://github.com/charmbracelet/x/tree/ansi/v0.11.7/ansi", licenseEvidence: "https://github.com/charmbracelet/x/blob/ansi/v0.11.7/LICENSE", noticeSHA256: "0baa4a5942a801d93f4050d2bc0039d8c037105fcd335230d118eec99a11782b"},
+		{module: "github.com/charmbracelet/x/exp/ordered@v0.1.0", license: "MIT", source: "https://github.com/charmbracelet/x/tree/exp/ordered/v0.1.0/exp/ordered", licenseEvidence: "https://github.com/charmbracelet/x/blob/exp/ordered/v0.1.0/LICENSE", noticeSHA256: "0baa4a5942a801d93f4050d2bc0039d8c037105fcd335230d118eec99a11782b"},
+		{module: "github.com/charmbracelet/x/exp/strings@v0.0.0-20240722160745-212f7b056ed0", license: "MIT", source: "https://github.com/charmbracelet/x/tree/212f7b056ed0a773c0c13f56492269342be8e117/exp/strings", licenseEvidence: "https://github.com/charmbracelet/x/blob/212f7b056ed0a773c0c13f56492269342be8e117/LICENSE", noticeSHA256: "0baa4a5942a801d93f4050d2bc0039d8c037105fcd335230d118eec99a11782b"},
+		{module: "github.com/charmbracelet/x/term@v0.2.2", license: "MIT", source: "https://github.com/charmbracelet/x/tree/term/v0.2.2/term", licenseEvidence: "https://github.com/charmbracelet/x/blob/term/v0.2.2/LICENSE", noticeSHA256: "0baa4a5942a801d93f4050d2bc0039d8c037105fcd335230d118eec99a11782b"},
+		{module: "github.com/charmbracelet/x/termios@v0.1.1", license: "MIT", source: "https://github.com/charmbracelet/x/tree/termios/v0.1.1/termios", licenseEvidence: "https://github.com/charmbracelet/x/blob/termios/v0.1.1/LICENSE", noticeSHA256: "0baa4a5942a801d93f4050d2bc0039d8c037105fcd335230d118eec99a11782b"},
+		{module: "github.com/charmbracelet/x/windows@v0.2.2", license: "MIT", source: "https://github.com/charmbracelet/x/tree/windows/v0.2.2/windows", licenseEvidence: "https://github.com/charmbracelet/x/blob/windows/v0.2.2/LICENSE", noticeSHA256: "0baa4a5942a801d93f4050d2bc0039d8c037105fcd335230d118eec99a11782b"},
+		{module: "github.com/clipperhouse/displaywidth@v0.11.0", license: "MIT", source: "https://github.com/clipperhouse/displaywidth/tree/v0.11.0", licenseEvidence: "https://github.com/clipperhouse/displaywidth/blob/v0.11.0/LICENSE", noticeSHA256: "fcdcc889a11c39c73d36019b838af41b418eb7811af12b746ace40c3074bb96c"},
+		{module: "github.com/clipperhouse/uax29/v2@v2.7.0", license: "MIT", source: "https://github.com/clipperhouse/uax29/tree/v2.7.0", licenseEvidence: "https://github.com/clipperhouse/uax29/blob/v2.7.0/LICENSE", noticeSHA256: "07e9e3daaccc707c9b7d535ed1405a65d37919fdd42197fe55e68820e974688c"},
+		{module: "github.com/dustin/go-humanize@v1.0.1", license: "MIT", source: "https://github.com/dustin/go-humanize/tree/v1.0.1", licenseEvidence: "https://github.com/dustin/go-humanize/blob/v1.0.1/LICENSE", noticeSHA256: "a973b4498c13eb74baa2a8e5c351426a6826f2fcdd909916dbe53ee2e755fd71"},
+		{module: "github.com/lucasb-eyer/go-colorful@v1.4.0", license: "MIT", source: "https://github.com/lucasb-eyer/go-colorful/tree/v1.4.0", licenseEvidence: "https://github.com/lucasb-eyer/go-colorful/blob/v1.4.0/LICENSE", noticeSHA256: "1e4cf2a117516ec1b54041d68ed4f5d331878b04de3386f4790e7b5b9c04e1ec"},
+		{module: "github.com/mattn/go-runewidth@v0.0.23", license: "MIT", source: "https://github.com/mattn/go-runewidth/tree/v0.0.23", licenseEvidence: "https://github.com/mattn/go-runewidth/blob/v0.0.23/LICENSE", noticeSHA256: "88a2379b3ca34bf5c57127aff9dcb802bbb60ece0805cdbda65b3bd115f971d9"},
+		{module: "github.com/mitchellh/hashstructure/v2@v2.0.2", license: "MIT", source: "https://github.com/mitchellh/hashstructure/tree/v2.0.2", licenseEvidence: "https://github.com/mitchellh/hashstructure/blob/v2.0.2/LICENSE", noticeSHA256: "f48b778b7fccb6650f915cf4527c941a9578f8876a2911d035c4e44641a916be"},
+		{module: "github.com/muesli/cancelreader@v0.2.2", license: "MIT", source: "https://github.com/muesli/cancelreader/tree/v0.2.2", licenseEvidence: "https://github.com/muesli/cancelreader/blob/v0.2.2/LICENSE", noticeSHA256: "8c139dbbc83b4fb055b4100b6b9402f7de3dd6bbca05015bdfcc4b392c8cfd5f"},
+		{module: "github.com/pelletier/go-toml/v2@v2.4.3", license: "MIT", source: "https://github.com/pelletier/go-toml/tree/v2.4.3", licenseEvidence: "https://github.com/pelletier/go-toml/blob/v2.4.3/LICENSE", noticeSHA256: "26844e4b53c5adec04e557fd7dfef281cc0205a7d355626b1c68b778b99e9e7b"},
+		{module: "github.com/rivo/uniseg@v0.4.7", license: "MIT", source: "https://github.com/rivo/uniseg/tree/v0.4.7", licenseEvidence: "https://github.com/rivo/uniseg/blob/v0.4.7/LICENSE.txt", noticeSHA256: "a59885f5f0f3b3c07cf9444db5fe399b6f0791eac82055f7b85cc65500551039"},
+		{module: "github.com/santhosh-tekuri/jsonschema/v6@v6.0.2", license: "Apache-2.0", source: "https://github.com/santhosh-tekuri/jsonschema/tree/v6.0.2", licenseEvidence: "https://github.com/santhosh-tekuri/jsonschema/blob/v6.0.2/LICENSE"},
+		{module: "github.com/xo/terminfo@v0.0.0-20220910002029-abceb7e1c41e", license: "MIT", source: "https://github.com/xo/terminfo/tree/abceb7e1c41eed2857facd9bbdaaa5ff8137d901", licenseEvidence: "https://github.com/xo/terminfo/blob/abceb7e1c41eed2857facd9bbdaaa5ff8137d901/LICENSE", noticeSHA256: "1f5f51151ba96f0492ce288bd007242f924fdad9f04002e175e951644340a891"},
+		{module: "golang.org/x/sync@v0.20.0", license: "BSD-3-Clause", source: "https://github.com/golang/sync/tree/v0.20.0", licenseEvidence: "https://github.com/golang/sync/blob/v0.20.0/LICENSE", patentsEvidence: "https://github.com/golang/sync/blob/v0.20.0/PATENTS", noticeSHA256: "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"},
+		{module: "golang.org/x/sys@v0.47.0", license: "BSD-3-Clause", source: "https://github.com/golang/sys/tree/v0.47.0", licenseEvidence: "https://github.com/golang/sys/blob/v0.47.0/LICENSE", patentsEvidence: "https://github.com/golang/sys/blob/v0.47.0/PATENTS", noticeSHA256: "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"},
+		{module: "golang.org/x/text@v0.14.0", license: "BSD-3-Clause", source: "https://github.com/golang/text/tree/v0.14.0", licenseEvidence: "https://github.com/golang/text/blob/v0.14.0/LICENSE", patentsEvidence: "https://github.com/golang/text/blob/v0.14.0/PATENTS", noticeSHA256: "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067"},
+	}
+	wantModules := make(map[string]struct{}, len(wantEntries))
+	previousSection := -1
+	for _, entry := range wantEntries {
+		wantModules[entry.module] = struct{}{}
+		section, start := thirdPartyModuleSection(t, notices, entry)
+		if start <= previousSection {
+			t.Fatalf("THIRD_PARTY_NOTICES section %q is not in frozen module order", entry.module)
+		}
+		previousSection = start
+		if entry.noticeSHA256 == "" {
+			if strings.Contains(section, "```text") || !strings.Contains(section, "complete applicable terms are provided by the repository's top-level `LICENSE` file") {
+				t.Fatalf("THIRD_PARTY_NOTICES Apache section %q does not rely only on the frozen top-level license", entry.module)
+			}
+			continue
+		}
+		notice := thirdPartyLicenseBlock(t, entry.module, section)
+		noticeSum := sha256.Sum256([]byte(notice + "\n"))
+		if got := hex.EncodeToString(noticeSum[:]); got != entry.noticeSHA256 {
+			t.Fatalf("THIRD_PARTY_NOTICES %q license SHA-256 = %s, want reviewed module-root text %s", entry.module, got, entry.noticeSHA256)
+		}
 	}
 	modulePattern := regexp.MustCompile(`[A-Za-z0-9.-]+(?:/[A-Za-z0-9._-]+)+@v[0-9][A-Za-z0-9.-]*`)
 	gotModules := make(map[string]struct{})
@@ -3319,20 +3364,17 @@ func TestLicenseAndNoticesMatchFrozenReviewedSurface(t *testing.T) {
 	if !reflect.DeepEqual(gotModules, wantModules) {
 		t.Fatalf("THIRD_PARTY_NOTICES module union = %v, want exact frozen union %v", gotModules, wantModules)
 	}
-
-	requireNearby(t, "go-toml license classification", notices, "github.com/pelletier/go-toml/v2@v2.4.3", "MIT")
-	requireNearby(t, "jsonschema license classification", notices, "github.com/santhosh-tekuri/jsonschema/v6@v6.0.2", "Apache-2.0")
-	requireNearby(t, "x/sys license classification", notices, "golang.org/x/sys@v0.47.0", "BSD-3-Clause")
-	requireNearby(t, "x/text license classification", notices, "golang.org/x/text@v0.14.0", "BSD-3-Clause")
-	requireContainsAll(t, "THIRD_PARTY_NOTICES pinned evidence", notices,
-		"https://github.com/pelletier/go-toml/blob/v2.4.3/LICENSE",
-		"https://github.com/santhosh-tekuri/jsonschema/blob/v6.0.2/LICENSE",
-		"https://github.com/golang/sys/blob/v0.47.0/LICENSE",
-		"https://github.com/golang/text/blob/v0.14.0/LICENSE",
-		"https://github.com/golang/sys/blob/v0.47.0/PATENTS",
-		"https://github.com/golang/text/blob/v0.14.0/PATENTS",
-		"no separate NOTICE",
-	)
+	if !strings.Contains(notices, "exactly 28 modules") || !strings.Contains(notices, "no separate NOTICE") {
+		t.Fatal("THIRD_PARTY_NOTICES lacks the frozen 28-module/no-NOTICE declaration")
+	}
+	if got := strings.Count(notices, "- Patents: "); got != 3 {
+		t.Fatalf("THIRD_PARTY_NOTICES patent evidence count = %d, want 3", got)
+	}
+	patents := thirdPartyTextBlockAfter(t, notices, "## Additional Go patent grant")
+	patentSum := sha256.Sum256([]byte(patents + "\n"))
+	if got, want := hex.EncodeToString(patentSum[:]), "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc"; got != want {
+		t.Fatalf("THIRD_PARTY_NOTICES PATENTS SHA-256 = %s, want reviewed shared grant %s", got, want)
+	}
 	for _, extra := range []string{
 		"github.com/dlclark/regexp2@v1.11.0",
 		"golang.org/x/mod@v0.8.0",
@@ -3342,139 +3384,62 @@ func TestLicenseAndNoticesMatchFrozenReviewedSurface(t *testing.T) {
 			t.Fatalf("THIRD_PARTY_NOTICES includes non-compiled graph extra %q", extra)
 		}
 	}
-	for name, requiredText := range map[string]string{
-		"go-toml MIT license": goTomlMITLicenseText,
-		"x/sys BSD license":   goSysBSDLicenseText,
-		"x/text BSD license":  goTextBSDLicenseText,
-		"Go PATENTS grant":    goPatentsGrantText,
-	} {
-		if !strings.Contains(notices, requiredText) {
-			t.Fatalf("THIRD_PARTY_NOTICES is missing exact applicable %s", name)
-		}
-	}
-
-	const (
-		sysHeading  = "## golang.org/x/sys@v0.47.0"
-		textHeading = "## golang.org/x/text@v0.14.0"
-	)
-	sysStart := strings.Index(notices, sysHeading)
-	textStart := strings.Index(notices, textHeading)
-	if sysStart < 0 || textStart <= sysStart {
-		t.Fatal("THIRD_PARTY_NOTICES must keep the frozen x/sys section before x/text")
-	}
-	sysSection := notices[sysStart:textStart]
-	textSection := notices[textStart:]
-	if !strings.Contains(sysSection, goSysBSDLicenseText) ||
-		strings.Contains(sysSection, goTextBSDLicenseText) {
-		t.Fatal("THIRD_PARTY_NOTICES does not associate the exact x/sys BSD notice only with x/sys")
-	}
-	if !strings.Contains(textSection, goTextBSDLicenseText) ||
-		strings.Contains(textSection, goSysBSDLicenseText) {
-		t.Fatal("THIRD_PARTY_NOTICES does not associate the exact x/text BSD notice only with x/text")
-	}
 }
 
-const goTomlMITLicenseText = `The MIT License (MIT)
+type thirdPartyNoticeEntry struct {
+	module          string
+	license         string
+	source          string
+	licenseEvidence string
+	patentsEvidence string
+	noticeSHA256    string
+}
 
-go-toml v2
-Copyright (c) 2021 - 2023 Thomas Pelletier
+func thirdPartyModuleSection(t *testing.T, notices string, entry thirdPartyNoticeEntry) (string, int) {
+	t.Helper()
+	heading := "## " + entry.module + " — " + entry.license
+	start := strings.Index(notices, heading)
+	if start < 0 || strings.Count(notices, heading) != 1 {
+		t.Fatalf("THIRD_PARTY_NOTICES heading %q count = %d, want 1", heading, strings.Count(notices, heading))
+	}
+	end := len(notices)
+	if relative := strings.Index(notices[start+len(heading):], "\n## "); relative >= 0 {
+		end = start + len(heading) + relative
+	}
+	section := notices[start:end]
+	requireContainsAll(t, entry.module+" evidence", section,
+		"- Source: "+entry.source,
+		"- License: "+entry.licenseEvidence,
+	)
+	if entry.patentsEvidence != "" {
+		requireContainsAll(t, entry.module+" patent evidence", section, "- Patents: "+entry.patentsEvidence)
+	}
+	return section, start
+}
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+func thirdPartyLicenseBlock(t *testing.T, module, section string) string {
+	t.Helper()
+	const opening = "```text\n"
+	start := strings.Index(section, opening)
+	if start < 0 || strings.Count(section, opening) != 1 {
+		t.Fatalf("THIRD_PARTY_NOTICES %q text block count = %d, want 1", module, strings.Count(section, opening))
+	}
+	start += len(opening)
+	end := strings.Index(section[start:], "\n```")
+	if end < 0 {
+		t.Fatalf("THIRD_PARTY_NOTICES %q text block is not closed", module)
+	}
+	return section[start : start+end]
+}
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.`
-
-const goSysBSDLicenseText = `Copyright 2009 The Go Authors.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-   * Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-   * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer
-in the documentation and/or other materials provided with the
-distribution.
-   * Neither the name of Google LLC nor the names of its
-contributors may be used to endorse or promote products derived from
-this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.`
-
-const goTextBSDLicenseText = `Copyright (c) 2009 The Go Authors. All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-   * Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-   * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer
-in the documentation and/or other materials provided with the
-distribution.
-   * Neither the name of Google Inc. nor the names of its
-contributors may be used to endorse or promote products derived from
-this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.`
-
-const goPatentsGrantText = `Additional IP Rights Grant (Patents)
-
-"This implementation" means the copyrightable works distributed by
-Google as part of the Go project.
-
-Google hereby grants to You a perpetual, worldwide, non-exclusive,
-no-charge, royalty-free, irrevocable (except as stated in this section)
-patent license to make, have made, use, offer to sell, sell, import,
-transfer and otherwise run, modify and propagate the contents of this
-implementation of Go, where such license applies only to those patent
-claims, both currently owned or controlled by Google and acquired in
-the future, licensable by Google that are necessarily infringed by this
-implementation of Go.  This grant does not include claims that would be
-infringed only as a consequence of further modification of this
-implementation.  If you or your agent or exclusive licensee institute or
-order or agree to the institution of patent litigation against any
-entity (including a cross-claim or counterclaim in a lawsuit) alleging
-that this implementation of Go or any code incorporated within this
-implementation of Go constitutes direct or contributory patent
-infringement, or inducement of patent infringement, then any patent
-rights granted to you under this License for this implementation of Go
-shall terminate as of the date such litigation is filed.`
+func thirdPartyTextBlockAfter(t *testing.T, notices, heading string) string {
+	t.Helper()
+	start := strings.Index(notices, heading)
+	if start < 0 || strings.Count(notices, heading) != 1 {
+		t.Fatalf("THIRD_PARTY_NOTICES heading %q count = %d, want 1", heading, strings.Count(notices, heading))
+	}
+	return thirdPartyLicenseBlock(t, heading, notices[start:])
+}
 
 func TestSystemdHardenedServiceBoundary(t *testing.T) {
 	service := string(readRepositoryFile(t, "deploy/systemd/ai-cli-gateway.service"))

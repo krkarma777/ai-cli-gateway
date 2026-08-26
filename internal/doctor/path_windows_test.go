@@ -357,6 +357,44 @@ func TestTrustedWindowsFixturesPassCompleteDoctorPathPolicy(t *testing.T) {
 	}
 }
 
+func TestDoctorTrustedCommandParityWindows(t *testing.T) {
+	directory := testutil.TrustedTempDir(t)
+	executable := filepath.Join(directory, "provider.exe")
+	entrypoint := filepath.Join(directory, "provider.js")
+	uppercaseEntrypoint := filepath.Join(directory, "provider.JS")
+	batch := filepath.Join(directory, "provider.cmd")
+	testutil.WriteTrustedFile(t, executable, []byte("fixture"), 0o700)
+	testutil.WriteTrustedFile(t, entrypoint, []byte("fixture"), 0o700)
+	testutil.WriteTrustedFile(t, uppercaseEntrypoint, []byte("fixture"), 0o700)
+	testutil.WriteTrustedFile(t, batch, []byte("fixture"), 0o700)
+
+	for _, test := range []struct {
+		name     string
+		validate func(string) (validatedPath, pathDisposition)
+		path     string
+		want     pathDisposition
+	}{
+		{name: "safe native", validate: validateExecutablePath, path: executable, want: pathSafe},
+		{name: "safe entrypoint", validate: validateEntrypointPath, path: entrypoint, want: pathSafe},
+		{name: "missing native", validate: validateExecutablePath, path: filepath.Join(directory, "missing.exe"), want: pathMissing},
+		{name: "batch executable", validate: validateExecutablePath, path: batch, want: pathUnsafe},
+		{name: "uppercase entrypoint extension", validate: validateEntrypointPath, path: uppercaseEntrypoint, want: pathSafe},
+		{name: "relative", validate: validateExecutablePath, path: `relative\provider.exe`, want: pathUnsafe},
+		{name: "device namespace", validate: validateExecutablePath, path: `\\?\C:\Trusted\provider.exe`, want: pathUnsafe},
+		{name: "alternate stream", validate: validateExecutablePath, path: executable + ":stream", want: pathUnsafe},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			validated, got := test.validate(test.path)
+			if got != test.want {
+				t.Fatalf("command disposition = %v, want %v", got, test.want)
+			}
+			if got == pathSafe && (validated.Info == nil || validated.Resolved == "") {
+				t.Fatalf("safe validated path = %+v", validated)
+			}
+		})
+	}
+}
+
 func TestRunFileGatewayAuthIncludesWindowsNodeEntrypointIdentity(t *testing.T) {
 	directory := testutil.TrustedTempDir(t)
 	node := filepath.Join(directory, "node.exe")

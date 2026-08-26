@@ -38,7 +38,7 @@ func TestCommandInitCancellationBeforeAndAfterCommit(t *testing.T) {
 		}
 		err := awaitInitCommand(t, running)
 		if code := commandInitExitCode(err); code != 130 ||
-			!strings.HasSuffix(running.stdout.String(), "setup_canceled\n") ||
+			!strings.HasSuffix(running.stdout.String(), "setup_not_saved\n") ||
 			running.stderr.Len() != 0 {
 			t.Fatalf("pre-commit cancellation = code %d stdout %q stderr %q", code, running.stdout.String(), running.stderr.String())
 		}

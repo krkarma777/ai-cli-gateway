@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCodexReadyProbeCommands(t *testing.T) {
@@ -193,6 +194,188 @@ func TestMainCodexReady(t *testing.T) {
 	}
 	if stdout.String() != "SDK_GATEWAY_OK\n" || stderr.Len() != 0 {
 		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestGuidedProviderMainAllowsOnlyClosedDoctorProbes(t *testing.T) {
+	const raw = "PLANTED_GUIDED_" + "RAW_PROVIDER_OUTPUT_6f71"
+	tests := []struct {
+		name     string
+		scenario string
+		args     []string
+		wantCode int
+		want     string
+	}{
+		{
+			name: "codex ready version", scenario: "codex-ready",
+			args: []string{"--version"}, want: "codex-cli 0.146.0 " + raw + "\n",
+		},
+		{
+			name: "codex missing auth", scenario: "codex-unauthenticated",
+			args: []string{"login", "status"}, wantCode: 1, want: raw + "\n",
+		},
+		{
+			name: "claude ready auth", scenario: "claude-ready",
+			args: []string{"auth", "status"}, want: raw + "\n",
+		},
+		{
+			name: "claude missing auth", scenario: "claude-unauthenticated",
+			args: []string{"auth", "status"}, wantCode: 1, want: raw + "\n",
+		},
+		{
+			name: "gemini ready help", scenario: "gemini-ready",
+			args: []string{"--help"},
+			want: "--output-format\n--approval-mode\n-e\n--extensions\n--model\n" + raw + "\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executable := filepath.Join(t.TempDir(), "fake-guided-"+tt.scenario)
+			var stdout, stderr bytes.Buffer
+			code := guidedProviderMain(tt.scenario, executable, tt.args, &stdout, &stderr)
+			if code != tt.wantCode || stdout.String() != tt.want || stderr.Len() != 0 {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if _, err := os.Lstat(executable + ".unexpected-call"); !os.IsNotExist(err) {
+				t.Fatalf("allowed probe marker state = %v, want absent", err)
+			}
+		})
+	}
+}
+
+func TestGuidedProviderCodexDoctorCanBlockUntilReleased(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	blockPath := filepath.Join(home, ".block-doctor")
+	releasePath := filepath.Join(home, ".release-doctor")
+	blockedPath := filepath.Join(home, ".doctor-blocked")
+	if err := os.WriteFile(blockPath, []byte("block\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile block marker: %v", err)
+	}
+	t.Cleanup(func() { _ = os.WriteFile(releasePath, []byte("release\n"), 0o600) })
+	executable := filepath.Join(t.TempDir(), "fake-guided-codex-ready")
+
+	type result struct {
+		code   int
+		stdout string
+		stderr string
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		code := guidedProviderMain(
+			"codex-ready",
+			executable,
+			codexDoctorArgs[:],
+			&stdout,
+			&stderr,
+		)
+		resultCh <- result{code: code, stdout: stdout.String(), stderr: stderr.String()}
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(blockedPath); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("Stat blocked marker: %v", err)
+		}
+		select {
+		case got := <-resultCh:
+			t.Fatalf("doctor returned before blocking: %+v", got)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("doctor did not create its blocked marker")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := os.WriteFile(releasePath, []byte("release\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile release marker: %v", err)
+	}
+	select {
+	case got := <-resultCh:
+		if got.code != 0 || got.stdout != codexDoctorJSON || got.stderr != "" {
+			t.Fatalf("released doctor result: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("doctor did not resume after release")
+	}
+}
+
+func TestGuidedProviderMainRejectsInferenceWithoutRecordingArguments(t *testing.T) {
+	directory := t.TempDir()
+	executable := filepath.Join(directory, "fake-guided-codex-ready")
+	const secretArgument = "PLANTED_INFERENCE_ARG_SECRET_8cd1"
+	var stdout, stderr bytes.Buffer
+
+	code := guidedProviderMain(
+		"codex-ready",
+		executable,
+		[]string{"exec", "--model", secretArgument},
+		&stdout,
+		&stderr,
+	)
+
+	if code != 2 || stdout.Len() != 0 || stderr.String() != "fake-ai-cli: unsupported guided probe\n" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	marker, err := os.ReadFile(executable + ".unexpected-call") //nolint:gosec // Exact test-owned marker path.
+	if err != nil {
+		t.Fatalf("ReadFile unexpected-call marker: %v", err)
+	}
+	if string(marker) != "unexpected provider command\n" ||
+		strings.Contains(string(marker), secretArgument) ||
+		strings.Contains(stdout.String()+stderr.String(), secretArgument) {
+		t.Fatalf("marker/output retained argv: marker=%q stdout=%q stderr=%q", marker, stdout.String(), stderr.String())
+	}
+}
+
+func TestMainSelectsGuidedProviderScenarioFromExecutableNameWithoutMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		executable string
+		wantPrefix string
+	}{
+		{name: "explicit scenario", executable: "fake-guided-gemini-ready", wantPrefix: "Gemini CLI 0.53.0 "},
+		{name: "discovered codex command", executable: "codex", wantPrefix: "codex-cli 0.146.0 "},
+		{name: "discovered claude command", executable: "claude", wantPrefix: "claude 2.1.208 "},
+		{name: "discovered gemini command", executable: "gemini", wantPrefix: "Gemini CLI 0.53.0 "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := os.Args[0]
+			os.Args[0] = filepath.Join(t.TempDir(), tt.executable)
+			t.Cleanup(func() { os.Args[0] = original })
+			var stdout, stderr bytes.Buffer
+
+			code := Main([]string{"--version"}, strings.NewReader(""), &stdout, &stderr)
+
+			if code != 0 || !strings.HasPrefix(stdout.String(), tt.wantPrefix) || stderr.Len() != 0 {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestMainSelectsGuidedProviderScenarioFromNodeEntrypointWithoutMode(t *testing.T) {
+	original := os.Args[0]
+	os.Args[0] = filepath.Join(t.TempDir(), "node.exe")
+	t.Cleanup(func() { os.Args[0] = original })
+	entrypoint := filepath.Join(t.TempDir(), "fake-guided-codex-ready.js")
+	var stdout, stderr bytes.Buffer
+
+	code := Main(
+		[]string{entrypoint, "--version"},
+		strings.NewReader(""),
+		&stdout,
+		&stderr,
+	)
+
+	if code != 0 ||
+		!strings.HasPrefix(stdout.String(), "codex-cli 0.146.0 ") ||
+		stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 

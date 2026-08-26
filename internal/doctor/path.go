@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/krkarma777/ai-cli-gateway/internal/trustedpath"
 )
 
 type pathDisposition uint8
@@ -65,6 +67,36 @@ func validateCredentialPath(path string) (validatedPath, pathDisposition) {
 
 func validateSafeDirectoryPath(path string) (validatedPath, pathDisposition) {
 	return validatePlatformPath(path, pathKindSafeDirectory)
+}
+
+func validateTrustedCommandPath(path string) (validatedPath, pathDisposition) {
+	inspection, err := trustedpath.OpenCommandPath(
+		path,
+		trustedpath.CommandIdentityOnly,
+		0,
+	)
+	if err != nil {
+		if errors.Is(err, trustedpath.ErrMissing) {
+			return validatedPath{}, pathMissing
+		}
+		return validatedPath{}, pathUnsafe
+	}
+	if inspection == nil {
+		return validatedPath{}, pathUnsafe
+	}
+	metadata, metadataOK := trustedpath.InspectionPath(inspection)
+	info := inspection.FileInfo()
+	revalidateErr := inspection.Revalidate()
+	closeErr := inspection.Close()
+	if !metadataOK || info == nil || revalidateErr != nil || closeErr != nil {
+		return validatedPath{}, pathUnsafe
+	}
+	return validatedPath{
+		Clean:        metadata.Clean,
+		Resolved:     metadata.Resolved,
+		CanonicalKey: metadata.CanonicalKey,
+		Info:         info,
+	}, pathSafe
 }
 
 func buildSafePath(

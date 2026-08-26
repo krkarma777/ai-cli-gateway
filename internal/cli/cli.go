@@ -21,7 +21,7 @@ const usage = "usage:\n" +
 
 type commands struct {
 	defaultConfigPath func() (string, error)
-	init              func(context.Context, initconfig.Options, io.Writer) app.InitResult
+	init              func(context.Context, initconfig.Options, app.Streams) app.InitResult
 	serve             func(context.Context, string) error
 	doctor            func(context.Context, string, bool, io.Writer) int
 }
@@ -45,12 +45,12 @@ func RunContext(
 		init: func(
 			ctx context.Context,
 			options initconfig.Options,
-			output io.Writer,
+			streams app.Streams,
 		) app.InitResult {
 			return app.Init(
 				ctx,
 				options,
-				output,
+				streams,
 				app.ProductionInitDependencies(stderr),
 			)
 		},
@@ -103,7 +103,7 @@ func runContext(
 		return 0
 	}
 	if len(args) != 0 && args[0] == "init" {
-		return runInitCommand(ctx, args[1:], stdout, stderr, commands)
+		return runInitCommand(ctx, args[1:], stdin, stdout, stderr, commands)
 	}
 	configPath, jsonOutput, explicit, ok := commandConfig(args)
 	if !ok {
@@ -171,6 +171,7 @@ func isCommand(value string) bool {
 func runInitCommand(
 	ctx context.Context,
 	args []string,
+	stdin io.Reader,
 	stdout io.Writer,
 	stderr io.Writer,
 	commands commands,
@@ -178,13 +179,6 @@ func runInitCommand(
 	options, err := parseInitArgs(args)
 	if err != nil {
 		_, _ = io.WriteString(stderr, usage)
-		return 2
-	}
-	if !options.NonInteractive {
-		_, _ = io.WriteString(
-			stderr,
-			"init_requires_non_interactive: pass --non-interactive and all required flags\n",
-		)
 		return 2
 	}
 	if options.ConfigPath == "" {
@@ -202,7 +196,11 @@ func runInitCommand(
 		_, _ = io.WriteString(stderr, "init_failed\n")
 		return 1
 	}
-	return initExitCode(commands.init(ctx, options, stdout).Outcome)
+	return initExitCode(commands.init(ctx, options, app.Streams{
+		In:  stdin,
+		Out: stdout,
+		Err: stderr,
+	}).Outcome)
 }
 
 func initExitCode(outcome app.InitOutcome) int {

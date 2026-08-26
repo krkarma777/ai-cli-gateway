@@ -17,6 +17,9 @@ func validatePlatformPath(
 	path string,
 	kind pathKind,
 ) (validatedPath, pathDisposition) {
+	if kind == pathKindExecutable || kind == pathKindEntrypoint {
+		return validateTrustedCommandPath(path)
+	}
 	if path == "" || strings.IndexByte(path, 0) >= 0 || !filepath.IsAbs(path) {
 		return validatedPath{}, pathUnsafe
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -204,6 +205,83 @@ func TestValidateUnixPrivateLeavesRejectSymlinksAndUnsafeAncestors(t *testing.T)
 	}
 	if _, disposition := validateExecutablePath(unsafeExecutable); disposition != pathUnsafe {
 		t.Fatalf("unsafe ancestor disposition=%v", disposition)
+	}
+}
+
+func TestDoctorTrustedCommandParityUnix(t *testing.T) {
+	root := newSecureUnixTestTree(t)
+	safe := filepath.Join(root, "provider")
+	writeUnixTestFile(t, safe, 0o700)
+	alias := filepath.Join(root, "provider-link")
+	if err := os.Symlink(safe, alias); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(root, "missing")
+	broken := filepath.Join(root, "broken")
+	if err := os.Symlink(missing, broken); err != nil {
+		t.Fatal(err)
+	}
+	noExecute := filepath.Join(root, "no-execute")
+	writeUnixTestFile(t, noExecute, 0o600)
+	writable := filepath.Join(root, "writable")
+	writeUnixTestFile(t, writable, 0o720)
+	directory := filepath.Join(root, "directory")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name string
+		path string
+		want pathDisposition
+	}{
+		{name: "safe native", path: safe, want: pathSafe},
+		{name: "safe symlink", path: alias, want: pathSafe},
+		{name: "missing", path: missing, want: pathMissing},
+		{name: "broken symlink", path: broken, want: pathUnsafe},
+		{name: "relative", path: "relative", want: pathUnsafe},
+		{name: "NUL", path: safe + "\x00tail", want: pathUnsafe},
+		{name: "no execute", path: noExecute, want: pathUnsafe},
+		{name: "writable leaf", path: writable, want: pathUnsafe},
+		{name: "directory", path: directory, want: pathUnsafe},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			validated, got := validateExecutablePath(test.path)
+			if got != test.want {
+				t.Fatalf("validateExecutablePath() disposition = %v, want %v", got, test.want)
+			}
+			if got == pathSafe && (validated.Info == nil || validated.Resolved == "") {
+				t.Fatalf("safe validated path = %+v", validated)
+			}
+		})
+	}
+}
+
+func TestDoctorTrustedCommandParityDarwinRootOwnerOnlyExecutable(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin retained-handle parity fixture")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("fixture must be inaccessible to the current effective user")
+	}
+
+	const path = "/usr/libexec/cups/backend/lpd"
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Skipf("trusted system fixture unavailable: %v", err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.Mode().IsRegular() || stat.Uid != 0 ||
+		info.Mode().Perm() != 0o700 {
+		t.Skipf("fixture owner/mode no longer models root-owned 0700: mode=%v stat=%T", info.Mode(), info.Sys())
+	}
+	resolved, _, oldErr := resolveUnixPath(path, pathKindExecutable)
+	if oldErr != nil || resolved != path {
+		t.Skipf("fixture ancestors no longer satisfy the pre-delegation policy: resolved=%q err=%v", resolved, oldErr)
+	}
+
+	if _, disposition := validateExecutablePath(path); disposition != pathSafe {
+		t.Fatalf("delegated disposition = %v, want pre-Task2 disposition %v", disposition, pathSafe)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -49,6 +50,13 @@ type InitResult struct {
 	Saved   bool
 }
 
+// Streams preserves the caller-owned init input and output boundaries.
+type Streams struct {
+	In  io.Reader
+	Out io.Writer
+	Err io.Writer
+}
+
 // InitStore owns the read-only and transactional configuration boundary.
 type InitStore interface {
 	Load(context.Context, string) (configstore.Snapshot, error)
@@ -64,6 +72,11 @@ type InitDependencies struct {
 	Store                  InitStore
 	Entropy                io.Reader
 	DefaultInitRuntimeRoot func() (string, error)
+	Discover               func(context.Context, string, initconfig.Options, *config.Config, initconfig.DiscoveryDependencies) (map[core.ProviderName]initconfig.ProviderDiscovery, error)
+	Discovery              initconfig.DiscoveryDependencies
+	IsTerminal             func(io.Reader, io.Writer) bool
+	NewPrompt              func(io.Reader, io.Writer, bool) initconfig.Prompt
+	LookupEnv              func(string) (string, bool)
 
 	diagnose initDiagnose
 }
@@ -75,25 +88,51 @@ func ProductionInitDependencies(logWriter io.Writer) InitDependencies {
 		Store:                  configstore.NewWriter(),
 		Entropy:                rand.Reader,
 		DefaultInitRuntimeRoot: config.DefaultInitRuntimeRoot,
-		diagnose:               diagnose,
+		Discover:               initconfig.DiscoverProviders,
+		Discovery: initconfig.DiscoveryDependencies{
+			LookupEnv:   os.LookupEnv,
+			LookPath:    exec.LookPath,
+			UserHomeDir: os.UserHomeDir,
+			AbsPath:     filepath.Abs,
+		},
+		IsTerminal: initconfig.IsInteractiveTerminal,
+		NewPrompt:  initconfig.NewTerminalPrompt,
+		LookupEnv:  os.LookupEnv,
+		diagnose:   diagnose,
 	}
 }
 
-// Init plans, preflights, commits, and diagnoses one non-interactive setup.
+// Init plans, preflights, confirms when interactive, commits, and diagnoses setup.
 func Init(
 	ctx context.Context,
 	options initconfig.Options,
-	stdout io.Writer,
+	streams Streams,
 	deps InitDependencies,
 ) InitResult {
+	stdout := streams.Out
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		writeFixed(stdout, "setup_canceled\n")
+		if !nilLike(stdout) {
+			writeFixed(stdout, "setup_not_saved\n")
+		}
 		return InitResult{Outcome: InitCanceled}
 	}
-	if nilLike(stdout) || nilLike(deps.Store) {
+	if nilLike(stdout) {
+		return InitResult{Outcome: InitFailed}
+	}
+	if !options.NonInteractive {
+		if nilLike(streams.In) || nilLike(streams.Err) || deps.IsTerminal == nil {
+			writeFixed(stdout, "setup_failed\n")
+			return InitResult{Outcome: InitFailed}
+		}
+		if !deps.IsTerminal(streams.In, streams.Err) {
+			writeFixed(streams.Err, "init_requires_non_interactive: pass --non-interactive and all required flags\n")
+			return InitResult{Outcome: InitUsage}
+		}
+	}
+	if nilLike(deps.Store) {
 		writeFixed(stdout, "setup_failed\n")
 		return InitResult{Outcome: InitFailed}
 	}
@@ -107,12 +146,73 @@ func Init(
 		return initFailure(ctx, stdout, err, false)
 	}
 	defaultKeyPath := filepath.Join(filepath.Dir(snapshot.Path()), "gateway.key")
-	planning, err := initconfig.PlanNonInteractive(
-		options,
-		initconfig.Source{Bytes: snapshot.Bytes(), Exists: snapshot.Exists()},
-		defaultRuntimeRoot,
-		defaultKeyPath,
+	source := initconfig.Source{Bytes: snapshot.Bytes(), Exists: snapshot.Exists()}
+	var (
+		planning              initconfig.PlanningResult
+		prompt                initconfig.Prompt
+		resume                *initconfig.ResumeState
+		existing              *config.Config
+		discover              initconfig.DiscoverSelected
+		planInteractive       func(*initconfig.ResumeState, initconfig.CollectFocus) (initconfig.InteractiveResult, error)
+		interactive           = !options.NonInteractive
+		previewAlreadyWritten bool
 	)
+	present := func(diff initconfig.SemanticDiff) error {
+		_, writeErr := diff.WriteTo(stdout)
+		return writeErr
+	}
+	if interactive {
+		if deps.Discover == nil || deps.NewPrompt == nil || deps.LookupEnv == nil {
+			writeFixed(stdout, "setup_failed\n")
+			return InitResult{Outcome: InitFailed}
+		}
+		var decodeErr error
+		existing, decodeErr = initExistingConfig(snapshot)
+		if decodeErr != nil {
+			return initPlanningFailure(stdout, decodeErr)
+		}
+		accessible := initAccessible(deps.LookupEnv)
+		prompt = deps.NewPrompt(streams.In, streams.Err, accessible)
+		discover = func(ctx context.Context, selected initconfig.Options) (map[core.ProviderName]initconfig.ProviderDiscovery, error) {
+			return deps.Discover(
+				ctx, snapshot.Path(), selected, existing, deps.Discovery,
+			)
+		}
+		planInteractive = func(
+			resumeState *initconfig.ResumeState,
+			focus initconfig.CollectFocus,
+		) (initconfig.InteractiveResult, error) {
+			return initconfig.PlanInteractive(
+				ctx,
+				options,
+				resumeState,
+				source,
+				existing,
+				discover,
+				prompt,
+				present,
+				focus,
+				defaultRuntimeRoot,
+				defaultKeyPath,
+			)
+		}
+		interactiveResult, planErr := planInteractive(nil, initconfig.CollectAll)
+		planning = interactiveResult.Plan
+		resume = interactiveResult.Resume
+		if planErr != nil {
+			return initInteractiveFailure(ctx, stdout, planErr)
+		}
+		if interactiveResult.Decision == initconfig.ReviewDecline {
+			return InitResult{Outcome: InitDeclined}
+		}
+	} else {
+		planning, err = initconfig.PlanNonInteractive(
+			options,
+			source,
+			defaultRuntimeRoot,
+			defaultKeyPath,
+		)
+	}
 	if err != nil {
 		if errors.Is(err, initconfig.ErrCollision) {
 			if _, writeErr := planning.Merge.Diff.WriteTo(stdout); writeErr != nil {
@@ -124,28 +224,140 @@ func Init(
 		return initPlanningFailure(stdout, err)
 	}
 
-	mutation, runtimeDeps, err := buildInitMutation(snapshot, planning, deps.Runtime)
-	if err != nil {
-		return initFailure(ctx, stdout, err, false)
-	}
-	preflight, err := deps.Store.Preflight(ctx, mutation)
-	if err != nil {
-		if errors.Is(err, configstore.ErrInvalidConfig) {
-			writeFixed(stdout, "configuration_invalid\n")
-			return InitResult{Outcome: InitUsage}
-		}
-		return initFailure(ctx, stdout, err, false)
-	}
-	if !validInitPreflight(planning.Merge.KeyAction, preflight.KeyState) {
-		writeFixed(stdout, "setup_failed\n")
-		return InitResult{Outcome: InitFailed}
-	}
+	var (
+		mutation    configstore.Mutation
+		runtimeDeps Dependencies
+		preflight   configstore.PreflightResult
+	)
 
-	if _, err := planning.Merge.Diff.WriteTo(stdout); err != nil {
-		return InitResult{Outcome: InitFailed}
+reviewPlanning:
+	for {
+		for {
+			mutation, runtimeDeps, err = buildInitMutation(snapshot, planning, deps.Runtime)
+			if err != nil {
+				return initFailure(ctx, stdout, err, false)
+			}
+			preflight, err = deps.Store.Preflight(ctx, mutation)
+			if err != nil {
+				if errors.Is(err, configstore.ErrInvalidConfig) {
+					writeFixed(stdout, "configuration_invalid\n")
+					return InitResult{Outcome: InitUsage}
+				}
+				return initFailure(ctx, stdout, err, false)
+			}
+			if !validInitPreflight(planning.Merge.KeyAction, preflight.KeyState) {
+				writeFixed(stdout, "setup_failed\n")
+				return InitResult{Outcome: InitFailed}
+			}
+			if planning.Merge.KeyAction == initconfig.KeyActionEnsure &&
+				preflight.KeyState == configstore.KeyStateNeedsConfirmation &&
+				planning.Merge.KeyAllowExisting {
+				writeFixed(stdout, "setup_failed\n")
+				return InitResult{Outcome: InitFailed}
+			}
+			if !interactive {
+				break
+			}
+
+			confirmationKind := initconfig.KeyConfirmationKind(0)
+			switch {
+			case planning.Merge.KeyAction == initconfig.KeyActionEnsure &&
+				preflight.KeyState == configstore.KeyStateNeedsConfirmation &&
+				!planning.Merge.KeyAllowExisting:
+				confirmationKind = initconfig.ConfirmOrphanReuse
+			case planning.Merge.KeyAction == initconfig.KeyActionInspect &&
+				preflight.KeyState == configstore.KeyStateMissing:
+				confirmationKind = initconfig.ConfirmMissingConfiguredKeyCreation
+			}
+			if confirmationKind == 0 {
+				break
+			}
+			decision, confirmationErr := prompt.ConfirmKeyAction(
+				ctx,
+				initconfig.KeyConfirmationRequest{
+					Kind: confirmationKind,
+					Path: planning.Merge.KeyPath,
+				},
+			)
+			if confirmationErr != nil {
+				return initInteractiveFailure(ctx, stdout, confirmationErr)
+			}
+			if contextErr := ctx.Err(); contextErr != nil {
+				return initInteractiveFailure(ctx, stdout, contextErr)
+			}
+			switch decision {
+			case initconfig.ReviewConfirm:
+				if confirmationKind == initconfig.ConfirmOrphanReuse {
+					planning.Merge.KeyAllowExisting = true
+				} else {
+					planning.Merge.KeyAction = initconfig.KeyActionEnsure
+				}
+				continue
+			case initconfig.ReviewDecline:
+				return InitResult{Outcome: InitDeclined}
+			case initconfig.ReviewBack:
+				interactiveResult, planErr := planInteractive(
+					resume, initconfig.CollectGatewayKey,
+				)
+				planning = interactiveResult.Plan
+				resume = interactiveResult.Resume
+				if planErr != nil {
+					return initInteractiveFailure(ctx, stdout, planErr)
+				}
+				if interactiveResult.Decision == initconfig.ReviewDecline {
+					return InitResult{Outcome: InitDeclined}
+				}
+				continue
+			default:
+				writeFixed(stdout, "setup_failed\n")
+				return InitResult{Outcome: InitFailed}
+			}
+		}
+
+		if interactive {
+			decision, confirmErr := initconfig.ConfirmInteractive(
+				ctx,
+				planning,
+				prompt,
+				present,
+			)
+			if confirmErr != nil {
+				return initInteractiveFailure(ctx, stdout, confirmErr)
+			}
+			switch decision {
+			case initconfig.ReviewConfirm:
+				previewAlreadyWritten = true
+				break reviewPlanning
+			case initconfig.ReviewDecline:
+				return InitResult{Outcome: InitDeclined}
+			case initconfig.ReviewBack:
+				interactiveResult, planErr := planInteractive(
+					resume, initconfig.CollectAll,
+				)
+				planning = interactiveResult.Plan
+				resume = interactiveResult.Resume
+				if planErr != nil {
+					return initInteractiveFailure(ctx, stdout, planErr)
+				}
+				if interactiveResult.Decision == initconfig.ReviewDecline {
+					return InitResult{Outcome: InitDeclined}
+				}
+				previewAlreadyWritten = false
+				continue reviewPlanning
+			default:
+				writeFixed(stdout, "setup_failed\n")
+				return InitResult{Outcome: InitFailed}
+			}
+		}
+		break reviewPlanning
+	}
+	if !previewAlreadyWritten {
+		if _, err := planning.Merge.Diff.WriteTo(stdout); err != nil {
+			return InitResult{Outcome: InitFailed}
+		}
 	}
 	if ctx.Err() != nil {
-		writeFixed(stdout, "setup_canceled\n")
+		writeFixed(stdout, "setup_not_saved\n")
 		return InitResult{Outcome: InitCanceled}
 	}
 	if options.DryRun {
@@ -162,12 +374,19 @@ func Init(
 	var (
 		commitResult configstore.CommitResult
 		saved        bool
-		noop         = !planning.Merge.Changed
+		needsCommit  = planning.Merge.Changed ||
+			planning.Merge.KeyAction == initconfig.KeyActionEnsure &&
+				preflight.KeyState == configstore.KeyStateMissing
+		noop = !needsCommit
 	)
-	if !noop {
+	if needsCommit {
 		var keyPayload []byte
 		if planning.Merge.KeyAction == initconfig.KeyActionEnsure &&
 			preflight.KeyState == configstore.KeyStateMissing {
+			if nilLike(deps.Entropy) {
+				writeFixed(stdout, "setup_failed\n")
+				return InitResult{Outcome: InitFailed}
+			}
 			keyPayload, err = gatewaykey.Generate(deps.Entropy)
 			if err != nil {
 				writeFixed(stdout, "setup_failed\n")
@@ -176,7 +395,7 @@ func Init(
 		}
 		if ctx.Err() != nil {
 			clearInitBytes(keyPayload)
-			writeFixed(stdout, "setup_canceled\n")
+			writeFixed(stdout, "setup_not_saved\n")
 			return InitResult{Outcome: InitCanceled}
 		}
 		commitResult, err = deps.Store.Commit(ctx, mutation, keyPayload)
@@ -187,7 +406,7 @@ func Init(
 		}
 		saved = true
 	} else if err := ctx.Err(); err != nil {
-		writeFixed(stdout, "setup_canceled\n")
+		writeFixed(stdout, "setup_not_saved\n")
 		return InitResult{Outcome: InitCanceled}
 	}
 
@@ -244,6 +463,26 @@ func Init(
 		return InitResult{Outcome: InitNotReady, Saved: saved}
 	}
 	return InitResult{Outcome: InitReady, Saved: saved}
+}
+
+func initExistingConfig(snapshot configstore.Snapshot) (*config.Config, error) {
+	if !snapshot.Exists() {
+		return nil, nil
+	}
+	decoded, err := config.Decode(bytes.NewReader(snapshot.Bytes()))
+	if err != nil {
+		return nil, initconfig.ErrPlan
+	}
+	return &decoded, nil
+}
+
+func initAccessible(lookup func(string) (string, bool)) bool {
+	value, present := lookup("AI_CLI_GATEWAY_ACCESSIBLE")
+	if present && value == "1" {
+		return true
+	}
+	value, present = lookup("TERM")
+	return present && value == "dumb"
 }
 
 func initRuntimeRoot(
@@ -464,7 +703,7 @@ func interpretInitCommit(
 		return InitResult{}, false
 	case configstore.CommitNotCommitted, configstore.CommitRolledBack:
 		if contextFailure(ctx, commitErr) {
-			writeFixed(stdout, "setup_canceled\n")
+			writeFixed(stdout, "setup_not_saved\n")
 			return InitResult{Outcome: InitCanceled}, true
 		}
 		writeFixed(stdout, "setup_failed\n")
@@ -494,12 +733,30 @@ func initPlanningFailure(stdout io.Writer, err error) InitResult {
 	return InitResult{Outcome: InitUsage}
 }
 
+func initInteractiveFailure(
+	ctx context.Context,
+	stdout io.Writer,
+	err error,
+) InitResult {
+	if errors.Is(err, initconfig.ErrUsage) {
+		return initPlanningFailure(stdout, err)
+	}
+	if errors.Is(err, initconfig.ErrPlan) {
+		writeFixed(stdout, "setup_failed\n")
+		return InitResult{Outcome: InitFailed}
+	}
+	if errors.Is(err, io.EOF) {
+		err = context.Canceled
+	}
+	return initFailure(ctx, stdout, err, false)
+}
+
 func initFailure(ctx context.Context, stdout io.Writer, err error, saved bool) InitResult {
 	if contextFailure(ctx, err) {
 		if saved {
 			writeFixed(stdout, "setup_saved_before_cancellation\n")
 		} else {
-			writeFixed(stdout, "setup_canceled\n")
+			writeFixed(stdout, "setup_not_saved\n")
 		}
 		return InitResult{Outcome: InitCanceled, Saved: saved}
 	}
@@ -516,7 +773,7 @@ func initCanceledAfterDiagnosis(stdout io.Writer, saved bool) InitResult {
 	if saved {
 		writeFixed(stdout, "setup_saved_before_cancellation\n")
 	} else {
-		writeFixed(stdout, "setup_canceled\n")
+		writeFixed(stdout, "setup_not_saved\n")
 	}
 	return InitResult{Outcome: InitCanceled, Saved: saved}
 }

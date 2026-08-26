@@ -258,37 +258,62 @@ func TestParseInitArgsRejectsEverythingOutsideExactGrammar(t *testing.T) {
 	}
 }
 
-func TestRunContextInitRequiresNonInteractiveWithoutReadingStdin(t *testing.T) {
+func TestRunContextDispatchesBareInteractiveWithExactStreams(t *testing.T) {
 	t.Parallel()
 
+	input := &panicCLIReader{}
 	var stdout, stderr bytes.Buffer
+	defaultPath := cliTestAbsolutePath("config.toml")
 	defaultCalls := 0
 	initCalls := 0
+	var got initconfig.Options
 	code := runContext(
 		context.Background(),
 		[]string{"init"},
-		panicCLIReader{},
+		input,
 		&stdout,
 		&stderr,
 		commands{
 			defaultConfigPath: func() (string, error) {
 				defaultCalls++
-				return cliTestAbsolutePath("config.toml"), nil
+				return defaultPath, nil
 			},
-			init: func(context.Context, initconfig.Options, io.Writer) app.InitResult {
+			init: func(_ context.Context, options initconfig.Options, streams app.Streams) app.InitResult {
 				initCalls++
+				got = options
+				if streams.In != input || streams.Out != &stdout || streams.Err != &stderr {
+					t.Fatal("interactive init streams were not forwarded exactly")
+				}
 				return app.InitResult{Outcome: app.InitReady}
 			},
 		},
 	)
 
-	want := "init_requires_non_interactive: pass --non-interactive and all required flags\n"
-	if code != 2 || stdout.Len() != 0 || stderr.String() != want ||
-		defaultCalls != 0 || initCalls != 0 {
+	if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 ||
+		defaultCalls != 1 || initCalls != 1 || got.ConfigPath != defaultPath ||
+		got.NonInteractive {
 		t.Fatalf(
-			"runContext(init) = %d stdout %q stderr %q default/init %d/%d",
-			code, stdout.String(), stderr.String(), defaultCalls, initCalls,
+			"runContext(init) = %d stdout %q stderr %q default/init %d/%d options %#v",
+			code, stdout.String(), stderr.String(), defaultCalls, initCalls, got,
 		)
+	}
+}
+
+func TestRunContextProductionInteractiveInitRejectsNonTerminalWithoutReadingInput(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	code := RunContext(
+		context.Background(),
+		[]string{"init", "--config", cliTestAbsolutePath("missing", "config.toml")},
+		panicCLIReader{},
+		&stdout,
+		&stderr,
+	)
+
+	want := "init_requires_non_interactive: pass --non-interactive and all required flags\n"
+	if code != 2 || stdout.Len() != 0 || stderr.String() != want {
+		t.Fatalf("RunContext(init) = %d stdout/stderr=%q/%q", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -320,6 +345,7 @@ func TestRunContextDispatchesNonInteractiveInitWithResolvedConfigExactly(t *test
 				t.Fatalf("parseInitArgs fixture: %v", err)
 			}
 			parsed.ConfigPath = test.wantPath
+			input := &panicCLIReader{}
 			var stdout, stderr bytes.Buffer
 			defaultCalls := 0
 			initCalls := 0
@@ -328,7 +354,7 @@ func TestRunContextDispatchesNonInteractiveInitWithResolvedConfigExactly(t *test
 			code := runContext(
 				requestContext,
 				args,
-				panicCLIReader{},
+				input,
 				&stdout,
 				&stderr,
 				commands{
@@ -336,13 +362,14 @@ func TestRunContextDispatchesNonInteractiveInitWithResolvedConfigExactly(t *test
 						defaultCalls++
 						return defaultPath, nil
 					},
-					init: func(ctx context.Context, options initconfig.Options, output io.Writer) app.InitResult {
+					init: func(ctx context.Context, options initconfig.Options, streams app.Streams) app.InitResult {
 						initCalls++
-						if ctx != requestContext || output != &stdout {
-							t.Fatal("init context/stdout was not forwarded")
+						if ctx != requestContext || streams.In != input ||
+							streams.Out != &stdout || streams.Err != &stderr {
+							t.Fatal("init context/stdin/stdout/stderr were not forwarded exactly")
 						}
 						got = options
-						_, _ = io.WriteString(output, "init output\n")
+						_, _ = io.WriteString(streams.Out, "init output\n")
 						return app.InitResult{Outcome: app.InitReady, Saved: true}
 					},
 				},
@@ -390,8 +417,8 @@ func TestRunContextMapsEveryInitOutcomeToExactExitCode(t *testing.T) {
 				panicCLIReader{},
 				&stdout,
 				&stderr,
-				commands{init: func(_ context.Context, _ initconfig.Options, output io.Writer) app.InitResult {
-					_, _ = io.WriteString(output, "closed init output\n")
+				commands{init: func(_ context.Context, _ initconfig.Options, streams app.Streams) app.InitResult {
+					_, _ = io.WriteString(streams.Out, "closed init output\n")
 					return app.InitResult{Outcome: test.outcome}
 				}},
 			)
@@ -429,7 +456,7 @@ func TestRunContextInitParseAndDefaultFailuresStayOnStderr(t *testing.T) {
 						defaultCalls++
 						return "", errors.New("PLANTED_DEFAULT_SECRET")
 					},
-					init: func(context.Context, initconfig.Options, io.Writer) app.InitResult {
+					init: func(context.Context, initconfig.Options, app.Streams) app.InitResult {
 						initCalls++
 						return app.InitResult{Outcome: app.InitReady}
 					},

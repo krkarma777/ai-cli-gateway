@@ -7,10 +7,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/krkarma777/ai-cli-gateway/internal/config"
 	"github.com/krkarma777/ai-cli-gateway/internal/configstore"
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
 	"github.com/krkarma777/ai-cli-gateway/internal/doctor"
@@ -24,7 +26,8 @@ func TestProductionInitDependenciesAreCompleteAndLazy(t *testing.T) {
 
 	deps := ProductionInitDependencies(panicWriter{})
 	if deps.Store == nil || deps.Entropy == nil || deps.DefaultInitRuntimeRoot == nil ||
-		deps.diagnose == nil || deps.Runtime.Listen == nil {
+		deps.diagnose == nil || deps.Runtime.Listen == nil || deps.Discover == nil ||
+		deps.IsTerminal == nil || deps.NewPrompt == nil || deps.LookupEnv == nil {
 		t.Fatal("ProductionInitDependencies() returned an incomplete dependency graph")
 	}
 }
@@ -41,9 +44,20 @@ func TestInitDryRunWritesCompleteDiffBeforeSummaryAndTouchesNoMutation(t *testin
 		},
 	}
 	var output bytes.Buffer
-	result := Init(context.Background(), options, &output, InitDependencies{
-		Store:   store,
-		Entropy: panicInitReader{},
+	result := Init(context.Background(), options, nonInteractiveInitStreams(&output), InitDependencies{
+		Store: store, Entropy: panicInitReader{},
+		Discover: func(context.Context, string, initconfig.Options, *config.Config, initconfig.DiscoveryDependencies) (map[core.ProviderName]initconfig.ProviderDiscovery, error) {
+			panic("non-interactive init called discovery")
+		},
+		IsTerminal: func(io.Reader, io.Writer) bool {
+			panic("non-interactive init inspected terminal state")
+		},
+		NewPrompt: func(io.Reader, io.Writer, bool) initconfig.Prompt {
+			panic("non-interactive init constructed a prompt")
+		},
+		LookupEnv: func(string) (string, bool) {
+			panic("non-interactive init looked up interactive environment")
+		},
 		DefaultInitRuntimeRoot: func() (string, error) {
 			return runtimeRoot, nil
 		},
@@ -69,6 +83,877 @@ func TestInitDryRunWritesCompleteDiffBeforeSummaryAndTouchesNoMutation(t *testin
 	}
 }
 
+func TestInitInteractiveNonTerminalReturnsFixedFlagGuidanceWithoutPlanning(t *testing.T) {
+	t.Parallel()
+
+	store := &recordingInitStore{}
+	var stdout, stderr bytes.Buffer
+	terminalCalls := 0
+	result := Init(context.Background(), initconfig.Options{
+		ConfigPath: filepath.Join(t.TempDir(), "config.toml"),
+	}, Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr}, InitDependencies{
+		Store: store,
+		IsTerminal: func(input io.Reader, output io.Writer) bool {
+			terminalCalls++
+			return false
+		},
+		Discover: func(context.Context, string, initconfig.Options, *config.Config, initconfig.DiscoveryDependencies) (map[core.ProviderName]initconfig.ProviderDiscovery, error) {
+			panic("non-terminal init called discovery")
+		},
+		NewPrompt: func(io.Reader, io.Writer, bool) initconfig.Prompt {
+			panic("non-terminal init constructed a prompt")
+		},
+		LookupEnv: func(string) (string, bool) {
+			panic("non-terminal init looked up environment")
+		},
+		DefaultInitRuntimeRoot: func() (string, error) {
+			panic("non-terminal init resolved runtime root")
+		},
+	})
+
+	want := "init_requires_non_interactive: pass --non-interactive and all required flags\n"
+	if result != (InitResult{Outcome: InitUsage}) || stdout.Len() != 0 ||
+		stderr.String() != want || terminalCalls != 1 || len(store.calls) != 0 {
+		t.Fatalf("Init() = %#v stdout/stderr %q/%q terminal/store %d/%q",
+			result, stdout.String(), stderr.String(), terminalCalls, store.calls)
+	}
+}
+
+func TestInitInteractiveDryRunDiscoversSelectedProviderBeforeFinalReview(t *testing.T) {
+	t.Parallel()
+
+	snapshot, _, runtimeRoot := freshInitFixture(t)
+	home := filepath.Join(filepath.Dir(snapshot.Path()), "codex-home")
+	executable := filepath.Join(filepath.Dir(snapshot.Path()), "bin", "codex")
+	store := &recordingInitStore{
+		snapshot:  snapshot,
+		preflight: configstore.PreflightResult{KeyState: configstore.KeyStateMissing},
+		commitFn: func(context.Context, configstore.Mutation, []byte) (configstore.CommitResult, error) {
+			panic("interactive dry run called Commit")
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	events := make([]string, 0, 8)
+	prompt := &scriptedInitPrompt{}
+	prompt.selectProviders = func(context.Context, initconfig.ProviderSelectionRequest) (initconfig.ProviderSelectionResponse, error) {
+		events = append(events, "select")
+		return initconfig.ProviderSelectionResponse{
+			Providers: []core.ProviderName{core.ProviderCodex},
+			Decision:  initconfig.ReviewConfirm,
+		}, nil
+	}
+	prompt.collect = func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+		events = append(events, "collect")
+		if len(request.Discovery) != 1 || len(request.Discovery[core.ProviderCodex].Commands) != 1 {
+			t.Fatalf("Collect discovery = %#v", request.Discovery)
+		}
+		options := request.Initial
+		options.Provider = map[core.ProviderName]initconfig.ProviderInput{
+			core.ProviderCodex: {
+				Executable: initconfig.StringValue{Set: true, Value: executable},
+				ConfigHome: initconfig.StringValue{Set: true, Value: home},
+			},
+		}
+		options.Models = []initconfig.ModelMapping{{
+			ID: "codex-local", Provider: core.ProviderCodex, ProviderModel: "gpt-test",
+		}}
+		return initconfig.CollectResponse{Options: options}, nil
+	}
+	prompt.review = func(_ context.Context, request initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+		events = append(events, "review")
+		if len(request.Collisions) != 0 || !slices.Equal(store.calls, []string{"load", "preflight"}) ||
+			!strings.Contains(stdout.String(), "+ gateway-auth gateway\n") {
+			t.Fatalf("final review occurred before preflight/diff: collisions=%#v calls=%q output=%q",
+				request.Collisions, store.calls, stdout.String())
+		}
+		return initconfig.ReviewResponse{Decision: initconfig.ReviewConfirm}, nil
+	}
+
+	result := Init(context.Background(), initconfig.Options{
+		ConfigPath: snapshot.Path(), DryRun: true,
+	}, Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr}, InitDependencies{
+		Store: store, Entropy: panicInitReader{},
+		DefaultInitRuntimeRoot: func() (string, error) { return runtimeRoot, nil },
+		IsTerminal: func(input io.Reader, output io.Writer) bool {
+			events = append(events, "terminal")
+			return true
+		},
+		LookupEnv: func(name string) (string, bool) {
+			events = append(events, "env:"+name)
+			return "1", name == "AI_CLI_GATEWAY_ACCESSIBLE"
+		},
+		NewPrompt: func(input io.Reader, output io.Writer, accessible bool) initconfig.Prompt {
+			events = append(events, "prompt")
+			if !accessible || input == nil || output != &stderr {
+				t.Fatalf("NewPrompt streams/accessibility = %#v/%#v/%t", input, output, accessible)
+			}
+			return prompt
+		},
+		Discover: func(_ context.Context, path string, options initconfig.Options, existing *config.Config, _ initconfig.DiscoveryDependencies) (map[core.ProviderName]initconfig.ProviderDiscovery, error) {
+			events = append(events, "discover")
+			if path != snapshot.Path() || existing != nil ||
+				!slices.Equal(options.Providers, []core.ProviderName{core.ProviderCodex}) {
+				t.Fatalf("Discover path/options/existing = %q/%#v/%#v", path, options, existing)
+			}
+			return map[core.ProviderName]initconfig.ProviderDiscovery{
+				core.ProviderCodex: {Commands: []initconfig.CommandCandidate{{
+					Command: initconfig.ProviderCommand{Executable: executable},
+					Source:  initconfig.CandidatePATH,
+				}}},
+			}, nil
+		},
+		diagnose: func(context.Context, string, Dependencies) (doctor.Diagnosis, error) {
+			panic("interactive dry run called Doctor")
+		},
+	})
+
+	wantEvents := []string{"terminal", "env:AI_CLI_GATEWAY_ACCESSIBLE", "prompt", "select", "discover", "collect", "review"}
+	if result != (InitResult{Outcome: InitDryRun}) || !slices.Equal(events, wantEvents) ||
+		!strings.HasSuffix(stdout.String(), "dry_run: no files changed; post-write doctor was not run\n") ||
+		stderr.Len() != 0 {
+		t.Fatalf("Init() = %#v events=%q stdout/stderr=%q/%q", result, events, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitInteractiveConfirmsOrphanKeyBeforeFinalDiffAndRepreflights(t *testing.T) {
+	t.Parallel()
+
+	snapshot, options, runtimeRoot := freshInitFixture(t)
+	options.NonInteractive = false
+	options.DryRun = true
+	keyPath := filepath.Join(filepath.Dir(snapshot.Path()), "gateway.key")
+	preflightCalls := 0
+	store := &recordingInitStore{snapshot: snapshot}
+	store.preflightFn = func(_ context.Context, mutation configstore.Mutation) (configstore.PreflightResult, error) {
+		preflightCalls++
+		if mutation.Key.Path != keyPath || mutation.Key.Intent != configstore.KeyIntentEnsure ||
+			mutation.Key.AllowExisting != (preflightCalls == 2) {
+			t.Fatalf("preflight %d key plan = %#v", preflightCalls, mutation.Key)
+		}
+		if preflightCalls == 1 {
+			return configstore.PreflightResult{KeyState: configstore.KeyStateNeedsConfirmation}, nil
+		}
+		return configstore.PreflightResult{KeyState: configstore.KeyStateReusable}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	events := make([]string, 0, 5)
+	prompt := &scriptedInitPrompt{
+		collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+			events = append(events, "collect")
+			return initconfig.CollectResponse{Options: request.Initial}, nil
+		},
+		confirmKey: func(_ context.Context, request initconfig.KeyConfirmationRequest) (initconfig.ReviewDecision, error) {
+			events = append(events, "key")
+			if request.Kind != initconfig.ConfirmOrphanReuse || request.Path != keyPath || stdout.Len() != 0 {
+				t.Fatalf("key request/output = %#v/%q", request, stdout.String())
+			}
+			return initconfig.ReviewConfirm, nil
+		},
+		review: func(_ context.Context, request initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+			events = append(events, "review")
+			if len(request.Collisions) != 0 || preflightCalls != 2 ||
+				!strings.Contains(stdout.String(), "+ gateway-auth gateway\n") {
+				t.Fatalf("final review request/preflight/output = %#v/%d/%q", request, preflightCalls, stdout.String())
+			}
+			return initconfig.ReviewResponse{Decision: initconfig.ReviewConfirm}, nil
+		},
+	}
+
+	result := Init(context.Background(), options,
+		Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr},
+		interactiveInitDependencies(store, runtimeRoot, prompt))
+
+	if result != (InitResult{Outcome: InitDryRun}) ||
+		!slices.Equal(events, []string{"collect", "key", "review"}) || preflightCalls != 2 ||
+		strings.Count(stdout.String(), "+ gateway-auth gateway\n") != 1 || stderr.Len() != 0 {
+		t.Fatalf("Init() = %#v events=%q preflight=%d stdout/stderr=%q/%q",
+			result, events, preflightCalls, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitInteractiveConfirmsMissingConfiguredKeyCreationAndRepreflights(t *testing.T) {
+	t.Parallel()
+
+	snapshot, options, runtimeRoot := existingInitFixture(t)
+	options.NonInteractive = false
+	options.DryRun = true
+	keyPath := filepath.Join(filepath.Dir(snapshot.Path()), "gateway.key")
+	preflightCalls := 0
+	store := &recordingInitStore{snapshot: snapshot}
+	store.preflightFn = func(_ context.Context, mutation configstore.Mutation) (configstore.PreflightResult, error) {
+		preflightCalls++
+		wantIntent := configstore.KeyIntentInspect
+		if preflightCalls == 2 {
+			wantIntent = configstore.KeyIntentEnsure
+		}
+		if mutation.Key.Path != keyPath || mutation.Key.Intent != wantIntent || mutation.Key.AllowExisting {
+			t.Fatalf("preflight %d key plan = %#v", preflightCalls, mutation.Key)
+		}
+		return configstore.PreflightResult{KeyState: configstore.KeyStateMissing}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	prompt := &scriptedInitPrompt{
+		collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+			return initconfig.CollectResponse{Options: request.Initial}, nil
+		},
+		confirmKey: func(_ context.Context, request initconfig.KeyConfirmationRequest) (initconfig.ReviewDecision, error) {
+			if request != (initconfig.KeyConfirmationRequest{
+				Kind: initconfig.ConfirmMissingConfiguredKeyCreation, Path: keyPath,
+			}) || stdout.Len() != 0 {
+				t.Fatalf("key request/output = %#v/%q", request, stdout.String())
+			}
+			return initconfig.ReviewConfirm, nil
+		},
+		review: func(_ context.Context, request initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+			if preflightCalls != 2 || len(request.Collisions) != 0 || stdout.Len() == 0 {
+				t.Fatalf("final review preflight/request/output = %d/%#v/%q", preflightCalls, request, stdout.String())
+			}
+			return initconfig.ReviewResponse{Decision: initconfig.ReviewConfirm}, nil
+		},
+	}
+
+	result := Init(context.Background(), options,
+		Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr},
+		interactiveInitDependencies(store, runtimeRoot, prompt))
+
+	if result != (InitResult{Outcome: InitDryRun}) || preflightCalls != 2 || stderr.Len() != 0 {
+		t.Fatalf("Init() = %#v preflight=%d stdout/stderr=%q/%q", result, preflightCalls, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitInteractiveKeyBackResumesOnlyKeyCollectionAndRebuildsPlan(t *testing.T) {
+	t.Parallel()
+
+	snapshot, options, runtimeRoot := freshInitFixture(t)
+	options.NonInteractive = false
+	options.DryRun = true
+	defaultKey := filepath.Join(filepath.Dir(snapshot.Path()), "gateway.key")
+	revisedKey := filepath.Join(filepath.Dir(snapshot.Path()), "revised.key")
+	events := make([]string, 0, 8)
+	store := &recordingInitStore{snapshot: snapshot}
+	store.preflightFn = func(_ context.Context, mutation configstore.Mutation) (configstore.PreflightResult, error) {
+		events = append(events, "preflight:"+mutation.Key.Path)
+		switch mutation.Key.Path {
+		case defaultKey:
+			return configstore.PreflightResult{KeyState: configstore.KeyStateNeedsConfirmation}, nil
+		case revisedKey:
+			return configstore.PreflightResult{KeyState: configstore.KeyStateMissing}, nil
+		default:
+			t.Fatalf("unexpected key path %q", mutation.Key.Path)
+			return configstore.PreflightResult{}, nil
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	collectCalls := 0
+	prompt := &scriptedInitPrompt{
+		collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+			collectCalls++
+			if collectCalls == 1 {
+				events = append(events, "collect-all")
+				if request.Discovery == nil {
+					t.Fatal("initial collection had nil discovery")
+				}
+				return initconfig.CollectResponse{Options: request.Initial}, nil
+			}
+			events = append(events, "collect-key")
+			if request.Discovery != nil || !slices.Equal(request.Initial.Providers, options.Providers) ||
+				!reflect.DeepEqual(request.Initial.Models, options.Models) {
+				t.Fatalf("key-only resume request = %#v", request)
+			}
+			revised := request.Initial
+			revised.Gateway = initconfig.GatewayInput{
+				Auth: initconfig.GatewayAuthFile, AuthSet: true,
+				KeyFile: initconfig.StringValue{Set: true, Value: revisedKey},
+			}
+			return initconfig.CollectResponse{Options: revised}, nil
+		},
+		confirmKey: func(context.Context, initconfig.KeyConfirmationRequest) (initconfig.ReviewDecision, error) {
+			events = append(events, "key-back")
+			return initconfig.ReviewBack, nil
+		},
+		review: func(context.Context, initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+			events = append(events, "review")
+			return initconfig.ReviewResponse{Decision: initconfig.ReviewConfirm}, nil
+		},
+	}
+	deps := interactiveInitDependencies(store, runtimeRoot, prompt)
+	discoveryCalls := 0
+	deps.Discover = func(context.Context, string, initconfig.Options, *config.Config, initconfig.DiscoveryDependencies) (map[core.ProviderName]initconfig.ProviderDiscovery, error) {
+		discoveryCalls++
+		return map[core.ProviderName]initconfig.ProviderDiscovery{}, nil
+	}
+
+	result := Init(context.Background(), options,
+		Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr}, deps)
+
+	wantEvents := []string{
+		"collect-all", "preflight:" + defaultKey, "key-back", "collect-key",
+		"preflight:" + revisedKey, "review",
+	}
+	if result != (InitResult{Outcome: InitDryRun}) || !slices.Equal(events, wantEvents) ||
+		collectCalls != 2 || discoveryCalls != 1 ||
+		!strings.Contains(stdout.String(), revisedKey) || strings.Contains(stdout.String(), defaultKey) ||
+		stderr.Len() != 0 {
+		t.Fatalf("Init() = %#v events=%q discover=%d stdout/stderr=%q/%q",
+			result, events, discoveryCalls, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitInteractiveFinalBackResumesAllAnswersAndRepreflights(t *testing.T) {
+	t.Parallel()
+
+	snapshot, options, runtimeRoot := freshInitFixture(t)
+	options.NonInteractive = false
+	options.DryRun = true
+	events := make([]string, 0, 10)
+	preflightCalls := 0
+	store := &recordingInitStore{snapshot: snapshot}
+	store.preflightFn = func(context.Context, configstore.Mutation) (configstore.PreflightResult, error) {
+		preflightCalls++
+		events = append(events, "preflight")
+		return configstore.PreflightResult{KeyState: configstore.KeyStateMissing}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	collectCalls := 0
+	reviewCalls := 0
+	prompt := &scriptedInitPrompt{
+		selectProviders: func(_ context.Context, request initconfig.ProviderSelectionRequest) (initconfig.ProviderSelectionResponse, error) {
+			events = append(events, "select-resume")
+			if !slices.Equal(request.Initial, options.Providers) {
+				t.Fatalf("resumed selection = %#v", request)
+			}
+			return initconfig.ProviderSelectionResponse{Providers: request.Initial, Decision: initconfig.ReviewConfirm}, nil
+		},
+		collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+			collectCalls++
+			events = append(events, "collect")
+			if request.Discovery == nil {
+				t.Fatal("full collection received nil discovery")
+			}
+			if collectCalls == 1 {
+				return initconfig.CollectResponse{Options: request.Initial}, nil
+			}
+			revised := request.Initial
+			revised.Models[0].ProviderModel = "gpt-revised"
+			return initconfig.CollectResponse{Options: revised}, nil
+		},
+		review: func(context.Context, initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+			reviewCalls++
+			if reviewCalls == 1 {
+				events = append(events, "review-back")
+				return initconfig.ReviewResponse{Decision: initconfig.ReviewBack}, nil
+			}
+			events = append(events, "review-confirm")
+			return initconfig.ReviewResponse{Decision: initconfig.ReviewConfirm}, nil
+		},
+	}
+	deps := interactiveInitDependencies(store, runtimeRoot, prompt)
+	discoveryCalls := 0
+	deps.Discover = func(context.Context, string, initconfig.Options, *config.Config, initconfig.DiscoveryDependencies) (map[core.ProviderName]initconfig.ProviderDiscovery, error) {
+		discoveryCalls++
+		events = append(events, "discover")
+		return map[core.ProviderName]initconfig.ProviderDiscovery{}, nil
+	}
+
+	result := Init(context.Background(), options,
+		Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr}, deps)
+
+	wantEvents := []string{
+		"discover", "collect", "preflight", "review-back", "select-resume",
+		"discover", "collect", "preflight", "review-confirm",
+	}
+	if result != (InitResult{Outcome: InitDryRun}) || !slices.Equal(events, wantEvents) ||
+		preflightCalls != 2 || discoveryCalls != 2 || collectCalls != 2 || reviewCalls != 2 ||
+		!strings.Contains(stdout.String(), "provider_model: gpt-revised") || stderr.Len() != 0 {
+		t.Fatalf("Init() = %#v events=%q stdout/stderr=%q/%q", result, events, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitInteractiveDeclineCancelAndRestoreFailureStayClosed(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name       string
+		prompt     func(context.CancelFunc) *scriptedInitPrompt
+		want       InitResult
+		wantOutput string
+		preflight  bool
+	}{
+		{
+			name: "final decline",
+			prompt: func(context.CancelFunc) *scriptedInitPrompt {
+				return &scriptedInitPrompt{
+					collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+						return initconfig.CollectResponse{Options: request.Initial}, nil
+					},
+					review: func(context.Context, initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+						return initconfig.ReviewResponse{Decision: initconfig.ReviewDecline}, nil
+					},
+				}
+			},
+			want: InitResult{Outcome: InitDeclined}, preflight: true,
+		},
+		{
+			name: "prompt cancellation",
+			prompt: func(cancel context.CancelFunc) *scriptedInitPrompt {
+				return &scriptedInitPrompt{collect: func(context.Context, initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+					cancel()
+					return initconfig.CollectResponse{}, context.Canceled
+				}}
+			},
+			want: InitResult{Outcome: InitCanceled}, wantOutput: "setup_not_saved\n",
+		},
+		{
+			name: "restore plan failure wins over cancellation",
+			prompt: func(cancel context.CancelFunc) *scriptedInitPrompt {
+				return &scriptedInitPrompt{collect: func(context.Context, initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+					cancel()
+					return initconfig.CollectResponse{}, appTerminalRestorePlanError{}
+				}}
+			},
+			want: InitResult{Outcome: InitFailed}, wantOutput: "setup_failed\n",
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot, options, runtimeRoot := freshInitFixture(t)
+			options.NonInteractive = false
+			ctx, cancel := context.WithCancel(context.Background())
+			store := &recordingInitStore{
+				snapshot:  snapshot,
+				preflight: configstore.PreflightResult{KeyState: configstore.KeyStateMissing},
+				commitFn: func(context.Context, configstore.Mutation, []byte) (configstore.CommitResult, error) {
+					panic("closed interactive outcome called Commit")
+				},
+			}
+			var stdout, stderr bytes.Buffer
+			result := Init(ctx, options,
+				Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr},
+				interactiveInitDependencies(store, runtimeRoot, test.prompt(cancel)))
+
+			if result != test.want || stderr.Len() != 0 ||
+				(test.wantOutput != "" && stdout.String() != test.wantOutput) ||
+				slices.Contains(store.calls, "preflight") != test.preflight ||
+				slices.Contains(store.calls, "commit") {
+				t.Fatalf("Init() = %#v calls=%q stdout/stderr=%q/%q", result, store.calls, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestInitInteractiveKeyConfirmationEOFIsCancellation(t *testing.T) {
+	t.Parallel()
+
+	snapshot, options, runtimeRoot := freshInitFixture(t)
+	options.NonInteractive = false
+	store := &recordingInitStore{
+		snapshot:  snapshot,
+		preflight: configstore.PreflightResult{KeyState: configstore.KeyStateNeedsConfirmation},
+		commitFn: func(context.Context, configstore.Mutation, []byte) (configstore.CommitResult, error) {
+			panic("key confirmation EOF called Commit")
+		},
+	}
+	prompt := &scriptedInitPrompt{
+		collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+			return initconfig.CollectResponse{Options: request.Initial}, nil
+		},
+		confirmKey: func(context.Context, initconfig.KeyConfirmationRequest) (initconfig.ReviewDecision, error) {
+			return 0, io.EOF
+		},
+	}
+	var stdout, stderr bytes.Buffer
+
+	result := Init(context.Background(), options,
+		Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr},
+		interactiveInitDependencies(store, runtimeRoot, prompt))
+
+	if result != (InitResult{Outcome: InitCanceled}) ||
+		stdout.String() != "setup_not_saved\n" || stderr.Len() != 0 ||
+		slices.Contains(store.calls, "commit") {
+		t.Fatalf("Init() = %#v calls=%q stdout/stderr=%q/%q",
+			result, store.calls, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitInteractiveCanceledKeyDecisionStopsBeforeDecisionEffects(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name     string
+		decision initconfig.ReviewDecision
+	}{
+		{name: "decline", decision: initconfig.ReviewDecline},
+		{name: "confirm", decision: initconfig.ReviewConfirm},
+		{name: "back", decision: initconfig.ReviewBack},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			snapshot, options, runtimeRoot := freshInitFixture(t)
+			options.NonInteractive = false
+			ctx, cancel := context.WithCancel(context.Background())
+			preflightCalls := 0
+			store := &recordingInitStore{snapshot: snapshot}
+			store.preflightFn = func(context.Context, configstore.Mutation) (configstore.PreflightResult, error) {
+				preflightCalls++
+				return configstore.PreflightResult{KeyState: configstore.KeyStateNeedsConfirmation}, nil
+			}
+			store.commitFn = func(context.Context, configstore.Mutation, []byte) (configstore.CommitResult, error) {
+				panic("canceled key decision called Commit")
+			}
+			collectCalls := 0
+			confirmCalls := 0
+			prompt := &scriptedInitPrompt{
+				collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+					collectCalls++
+					return initconfig.CollectResponse{Options: request.Initial}, nil
+				},
+				confirmKey: func(context.Context, initconfig.KeyConfirmationRequest) (initconfig.ReviewDecision, error) {
+					confirmCalls++
+					cancel()
+					return test.decision, nil
+				},
+			}
+			var stdout, stderr bytes.Buffer
+
+			result := Init(ctx, options,
+				Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr},
+				interactiveInitDependencies(store, runtimeRoot, prompt))
+
+			if result != (InitResult{Outcome: InitCanceled}) ||
+				stdout.String() != "setup_not_saved\n" || stderr.Len() != 0 ||
+				preflightCalls != 1 || collectCalls != 1 || confirmCalls != 1 ||
+				slices.Contains(store.calls, "commit") {
+				t.Fatalf("Init() = %#v calls=%q preflight/collect/confirm=%d/%d/%d stdout/stderr=%q/%q",
+					result, store.calls, preflightCalls, collectCalls, confirmCalls,
+					stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestInitInteractiveMissingConfiguredKeyCommitsAfterFinalConfirmEvenWithoutConfigDiff(t *testing.T) {
+	t.Parallel()
+
+	snapshot, options, runtimeRoot := existingInitFixture(t)
+	options.NonInteractive = false
+	events := make([]string, 0, 7)
+	preflightCalls := 0
+	store := &recordingInitStore{snapshot: snapshot}
+	store.preflightFn = func(context.Context, configstore.Mutation) (configstore.PreflightResult, error) {
+		preflightCalls++
+		events = append(events, "preflight")
+		return configstore.PreflightResult{KeyState: configstore.KeyStateMissing}, nil
+	}
+	store.commitFn = func(_ context.Context, mutation configstore.Mutation, payload []byte) (configstore.CommitResult, error) {
+		events = append(events, "commit")
+		if mutation.Key.Intent != configstore.KeyIntentEnsure || len(payload) != 65 {
+			t.Fatalf("Commit key/payload = %#v/%d", mutation.Key, len(payload))
+		}
+		return configstore.CommitResult{State: configstore.CommitCommitted, KeyCreated: true}, nil
+	}
+	prompt := &scriptedInitPrompt{
+		collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+			return initconfig.CollectResponse{Options: request.Initial}, nil
+		},
+		confirmKey: func(context.Context, initconfig.KeyConfirmationRequest) (initconfig.ReviewDecision, error) {
+			events = append(events, "key-confirm")
+			return initconfig.ReviewConfirm, nil
+		},
+		review: func(context.Context, initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+			events = append(events, "final-confirm")
+			return initconfig.ReviewResponse{Decision: initconfig.ReviewConfirm}, nil
+		},
+	}
+	deps := interactiveInitDependencies(store, runtimeRoot, prompt)
+	deps.Entropy = &eventInitReader{events: &events, payload: bytes.Repeat([]byte{0x2a}, 32)}
+	deps.diagnose = func(context.Context, string, Dependencies) (doctor.Diagnosis, error) {
+		events = append(events, "doctor")
+		return doctor.Diagnosis{}, errors.New("PLANTED_DOCTOR_FAILURE")
+	}
+	var stdout, stderr bytes.Buffer
+
+	result := Init(context.Background(), options,
+		Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr}, deps)
+
+	wantEvents := []string{
+		"preflight", "key-confirm", "preflight", "final-confirm", "entropy", "commit", "doctor",
+	}
+	if result != (InitResult{Outcome: InitFailed, Saved: true}) ||
+		!slices.Equal(events, wantEvents) || preflightCalls != 2 ||
+		!strings.HasSuffix(stdout.String(), "post_write_doctor_failed\n") || stderr.Len() != 0 {
+		t.Fatalf("Init() = %#v events=%q stdout/stderr=%q/%q", result, events, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitInteractiveKeyAndFinalRestoreFailuresWinOverSimultaneousCancellation(t *testing.T) {
+	t.Parallel()
+
+	for _, stage := range []string{"key", "final"} {
+		stage := stage
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			snapshot, options, runtimeRoot := freshInitFixture(t)
+			options.NonInteractive = false
+			ctx, cancel := context.WithCancel(context.Background())
+			keyState := configstore.KeyStateMissing
+			if stage == "key" {
+				keyState = configstore.KeyStateNeedsConfirmation
+			}
+			store := &recordingInitStore{
+				snapshot:  snapshot,
+				preflight: configstore.PreflightResult{KeyState: keyState},
+				commitFn: func(context.Context, configstore.Mutation, []byte) (configstore.CommitResult, error) {
+					panic("restore failure called Commit")
+				},
+			}
+			prompt := &scriptedInitPrompt{
+				collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+					return initconfig.CollectResponse{Options: request.Initial}, nil
+				},
+			}
+			if stage == "key" {
+				prompt.confirmKey = func(context.Context, initconfig.KeyConfirmationRequest) (initconfig.ReviewDecision, error) {
+					cancel()
+					return 0, appTerminalRestorePlanError{}
+				}
+			} else {
+				prompt.review = func(context.Context, initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+					cancel()
+					return initconfig.ReviewResponse{}, appTerminalRestorePlanError{}
+				}
+			}
+			var stdout, stderr bytes.Buffer
+
+			result := Init(ctx, options,
+				Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr},
+				interactiveInitDependencies(store, runtimeRoot, prompt))
+
+			if result != (InitResult{Outcome: InitFailed}) ||
+				!strings.HasSuffix(stdout.String(), "setup_failed\n") ||
+				strings.Contains(stdout.String(), "setup_not_saved") || stderr.Len() != 0 ||
+				slices.Contains(store.calls, "commit") {
+				t.Fatalf("Init() = %#v calls=%q stdout/stderr=%q/%q", result, store.calls, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestInitInteractiveRejectsNonconvergedOrphanPreflightAfterApproval(t *testing.T) {
+	t.Parallel()
+
+	snapshot, options, runtimeRoot := freshInitFixture(t)
+	options.NonInteractive = false
+	options.DryRun = true
+	preflightCalls := 0
+	store := &recordingInitStore{snapshot: snapshot}
+	store.preflightFn = func(context.Context, configstore.Mutation) (configstore.PreflightResult, error) {
+		preflightCalls++
+		return configstore.PreflightResult{KeyState: configstore.KeyStateNeedsConfirmation}, nil
+	}
+	confirmCalls := 0
+	reviewCalls := 0
+	prompt := &scriptedInitPrompt{
+		collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+			return initconfig.CollectResponse{Options: request.Initial}, nil
+		},
+		confirmKey: func(context.Context, initconfig.KeyConfirmationRequest) (initconfig.ReviewDecision, error) {
+			confirmCalls++
+			return initconfig.ReviewConfirm, nil
+		},
+		review: func(context.Context, initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+			reviewCalls++
+			return initconfig.ReviewResponse{Decision: initconfig.ReviewConfirm}, nil
+		},
+	}
+	var stdout, stderr bytes.Buffer
+
+	result := Init(context.Background(), options,
+		Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr},
+		interactiveInitDependencies(store, runtimeRoot, prompt))
+
+	if result != (InitResult{Outcome: InitFailed}) || preflightCalls != 2 ||
+		confirmCalls != 1 || reviewCalls != 0 || stdout.String() != "setup_failed\n" || stderr.Len() != 0 {
+		t.Fatalf("Init() = %#v preflight/confirm/review=%d/%d/%d stdout/stderr=%q/%q",
+			result, preflightCalls, confirmCalls, reviewCalls, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitInteractiveCollisionPreviewPrecedesChoiceAndExplicitValueWinsDiscovery(t *testing.T) {
+	t.Parallel()
+
+	snapshot, options, runtimeRoot := existingInitFixture(t)
+	options.NonInteractive = false
+	options.DryRun = true
+	explicitExecutable := filepath.Join(filepath.Dir(snapshot.Path()), "explicit-codex")
+	discoveredExecutable := filepath.Join(filepath.Dir(snapshot.Path()), "discovered-codex")
+	input := options.Provider[core.ProviderCodex]
+	input.Executable = initconfig.StringValue{Set: true, Value: explicitExecutable}
+	options.Provider[core.ProviderCodex] = input
+	events := make([]string, 0, 5)
+	store := &recordingInitStore{snapshot: snapshot}
+	store.preflightFn = func(context.Context, configstore.Mutation) (configstore.PreflightResult, error) {
+		events = append(events, "preflight")
+		return configstore.PreflightResult{KeyState: configstore.KeyStateReusable}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	reviewCalls := 0
+	prompt := &scriptedInitPrompt{
+		collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+			events = append(events, "collect")
+			if request.Discovery[core.ProviderCodex].Commands[0].Command.Executable != discoveredExecutable {
+				t.Fatalf("discovery = %#v", request.Discovery)
+			}
+			collected := request.Initial
+			providerInput := collected.Provider[core.ProviderCodex]
+			providerInput.Executable = initconfig.StringValue{Set: true, Value: discoveredExecutable}
+			collected.Provider[core.ProviderCodex] = providerInput
+			return initconfig.CollectResponse{Options: collected}, nil
+		},
+		review: func(_ context.Context, request initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+			reviewCalls++
+			if reviewCalls == 1 {
+				events = append(events, "collision-review")
+				if len(request.Collisions) != 1 || !slices.Equal(store.calls, []string{"load"}) ||
+					!strings.Contains(stdout.String(), explicitExecutable) ||
+					strings.Contains(stdout.String(), discoveredExecutable) {
+					t.Fatalf("collision preview/request/calls = %q/%#v/%q", stdout.String(), request, store.calls)
+				}
+				return initconfig.ReviewResponse{
+					Decision: initconfig.ReviewConfirm,
+					Collisions: []initconfig.CollisionDecision{{
+						Target: initconfig.DiffProvider, Name: string(core.ProviderCodex),
+						Choice: initconfig.CollisionReplace,
+					}},
+				}, nil
+			}
+			events = append(events, "final-review")
+			if len(request.Collisions) != 0 {
+				t.Fatalf("final collisions = %#v", request.Collisions)
+			}
+			return initconfig.ReviewResponse{Decision: initconfig.ReviewConfirm}, nil
+		},
+	}
+	deps := interactiveInitDependencies(store, runtimeRoot, prompt)
+	deps.Discover = func(context.Context, string, initconfig.Options, *config.Config, initconfig.DiscoveryDependencies) (map[core.ProviderName]initconfig.ProviderDiscovery, error) {
+		events = append(events, "discover")
+		return map[core.ProviderName]initconfig.ProviderDiscovery{
+			core.ProviderCodex: {Commands: []initconfig.CommandCandidate{{
+				Command: initconfig.ProviderCommand{Executable: discoveredExecutable},
+				Source:  initconfig.CandidatePATH,
+			}}},
+		}, nil
+	}
+
+	result := Init(context.Background(), options,
+		Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr}, deps)
+
+	wantEvents := []string{"discover", "collect", "collision-review", "preflight", "final-review"}
+	if result != (InitResult{Outcome: InitDryRun}) || !slices.Equal(events, wantEvents) ||
+		strings.Count(stdout.String(), "~ provider codex\n") != 2 ||
+		strings.Contains(stdout.String(), discoveredExecutable) || stderr.Len() != 0 {
+		t.Fatalf("Init() = %#v events=%q stdout/stderr=%q/%q", result, events, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitInteractiveSelectsAccessiblePromptOnlyFromClosedEnvironmentValues(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name       string
+		values     map[string]string
+		want       bool
+		wantLookup []string
+	}{
+		{
+			name:   "explicit accessibility",
+			values: map[string]string{"AI_CLI_GATEWAY_ACCESSIBLE": "1", "TERM": "xterm"},
+			want:   true, wantLookup: []string{"AI_CLI_GATEWAY_ACCESSIBLE"},
+		},
+		{
+			name:   "dumb terminal",
+			values: map[string]string{"AI_CLI_GATEWAY_ACCESSIBLE": "0", "TERM": "dumb"},
+			want:   true, wantLookup: []string{"AI_CLI_GATEWAY_ACCESSIBLE", "TERM"},
+		},
+		{
+			name:       "visual",
+			values:     map[string]string{"TERM": "xterm-256color"},
+			wantLookup: []string{"AI_CLI_GATEWAY_ACCESSIBLE", "TERM"},
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot, options, runtimeRoot := freshInitFixture(t)
+			options.NonInteractive = false
+			prompt := &scriptedInitPrompt{collect: func(context.Context, initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+				return initconfig.CollectResponse{}, context.Canceled
+			}}
+			deps := interactiveInitDependencies(&recordingInitStore{snapshot: snapshot}, runtimeRoot, prompt)
+			lookups := make([]string, 0, 2)
+			deps.LookupEnv = func(name string) (string, bool) {
+				lookups = append(lookups, name)
+				value, present := test.values[name]
+				return value, present
+			}
+			promptCalls := 0
+			deps.NewPrompt = func(_ io.Reader, _ io.Writer, boolValue bool) initconfig.Prompt {
+				promptCalls++
+				if boolValue != test.want {
+					t.Fatalf("accessible = %t, want %t", boolValue, test.want)
+				}
+				return prompt
+			}
+			var stdout, stderr bytes.Buffer
+
+			result := Init(context.Background(), options,
+				Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr}, deps)
+
+			if result != (InitResult{Outcome: InitCanceled}) || promptCalls != 1 ||
+				!slices.Equal(lookups, test.wantLookup) || stdout.String() != "setup_not_saved\n" || stderr.Len() != 0 {
+				t.Fatalf("Init() = %#v prompt/lookups=%d/%q stdout/stderr=%q/%q",
+					result, promptCalls, lookups, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestInitInteractiveUnsafeKeyPreflightIsNeverOffered(t *testing.T) {
+	t.Parallel()
+
+	snapshot, options, runtimeRoot := freshInitFixture(t)
+	options.NonInteractive = false
+	store := &recordingInitStore{snapshot: snapshot, preflightErr: configstore.ErrUnsafePath}
+	confirmCalls := 0
+	reviewCalls := 0
+	prompt := &scriptedInitPrompt{
+		collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+			return initconfig.CollectResponse{Options: request.Initial}, nil
+		},
+		confirmKey: func(context.Context, initconfig.KeyConfirmationRequest) (initconfig.ReviewDecision, error) {
+			confirmCalls++
+			return initconfig.ReviewConfirm, nil
+		},
+		review: func(context.Context, initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+			reviewCalls++
+			return initconfig.ReviewResponse{Decision: initconfig.ReviewConfirm}, nil
+		},
+	}
+	var stdout, stderr bytes.Buffer
+
+	result := Init(context.Background(), options,
+		Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr},
+		interactiveInitDependencies(store, runtimeRoot, prompt))
+
+	if result != (InitResult{Outcome: InitFailed}) || confirmCalls != 0 || reviewCalls != 0 ||
+		stdout.String() != "setup_failed\n" || stderr.Len() != 0 || slices.Contains(store.calls, "commit") {
+		t.Fatalf("Init() = %#v calls=%q confirm/review=%d/%d stdout/stderr=%q/%q",
+			result, store.calls, confirmCalls, reviewCalls, stdout.String(), stderr.String())
+	}
+}
+
 func TestInitRequiresCompleteDiffWriteBeforeEntropyOrCommit(t *testing.T) {
 	t.Parallel()
 
@@ -86,7 +971,7 @@ func TestInitRequiresCompleteDiffWriteBeforeEntropyOrCommit(t *testing.T) {
 				},
 			}
 
-			result := Init(context.Background(), options, &appErrorWriter{}, InitDependencies{
+			result := Init(context.Background(), options, nonInteractiveInitStreams(&appErrorWriter{}), InitDependencies{
 				Store:   store,
 				Entropy: panicInitReader{},
 				DefaultInitRuntimeRoot: func() (string, error) {
@@ -189,7 +1074,7 @@ func TestInitKeyFailureAndCommitStateMatrix(t *testing.T) {
 				commitResult: test.commit, commitErr: test.commitErr,
 			}
 			var output bytes.Buffer
-			result := Init(context.Background(), options, &output, InitDependencies{
+			result := Init(context.Background(), options, nonInteractiveInitStreams(&output), InitDependencies{
 				Store: store, Entropy: test.entropy,
 				DefaultInitRuntimeRoot: func() (string, error) { return runtimeRoot, nil },
 			})
@@ -211,6 +1096,59 @@ func TestInitKeyFailureAndCommitStateMatrix(t *testing.T) {
 	}
 }
 
+func TestInitTypedNilEntropyFailsClosedBeforeKeyGeneration(t *testing.T) {
+	t.Parallel()
+
+	snapshot, options, runtimeRoot := freshInitFixture(t)
+	options.DryRun = false
+	store := &recordingInitStore{
+		snapshot:  snapshot,
+		preflight: configstore.PreflightResult{KeyState: configstore.KeyStateMissing},
+		commitFn: func(context.Context, configstore.Mutation, []byte) (configstore.CommitResult, error) {
+			panic("typed-nil entropy called Commit")
+		},
+	}
+	var entropy *eventInitReader
+	var output bytes.Buffer
+
+	result := Init(context.Background(), options, nonInteractiveInitStreams(&output), InitDependencies{
+		Store: store, Entropy: entropy,
+		DefaultInitRuntimeRoot: func() (string, error) { return runtimeRoot, nil },
+	})
+
+	if result != (InitResult{Outcome: InitFailed}) ||
+		!strings.HasSuffix(output.String(), "setup_failed\n") ||
+		slices.Contains(store.calls, "commit") {
+		t.Fatalf("Init() = %#v calls=%q output=%q", result, store.calls, output.String())
+	}
+}
+
+func TestInitTypedNilEntropyIsAllowedWhenEntropyIsNotNeeded(t *testing.T) {
+	t.Parallel()
+
+	snapshot, options, runtimeRoot := freshInitFixture(t)
+	store := &recordingInitStore{
+		snapshot:  snapshot,
+		preflight: configstore.PreflightResult{KeyState: configstore.KeyStateMissing},
+		commitFn: func(context.Context, configstore.Mutation, []byte) (configstore.CommitResult, error) {
+			panic("dry run called Commit")
+		},
+	}
+	var entropy *eventInitReader
+	var output bytes.Buffer
+
+	result := Init(context.Background(), options, nonInteractiveInitStreams(&output), InitDependencies{
+		Store: store, Entropy: entropy,
+		DefaultInitRuntimeRoot: func() (string, error) { return runtimeRoot, nil },
+	})
+
+	if result != (InitResult{Outcome: InitDryRun}) ||
+		!strings.HasSuffix(output.String(), "dry_run: no files changed; post-write doctor was not run\n") ||
+		slices.Contains(store.calls, "commit") {
+		t.Fatalf("Init() = %#v calls=%q output=%q", result, store.calls, output.String())
+	}
+}
+
 func TestInitCancellationBeforeAndAfterCommit(t *testing.T) {
 	t.Parallel()
 
@@ -223,12 +1161,12 @@ func TestInitCancellationBeforeAndAfterCommit(t *testing.T) {
 		store := &recordingInitStore{snapshot: snapshot}
 		var output bytes.Buffer
 
-		result := Init(ctx, options, &output, InitDependencies{
+		result := Init(ctx, options, nonInteractiveInitStreams(&output), InitDependencies{
 			Store: store, Entropy: panicInitReader{},
 			DefaultInitRuntimeRoot: func() (string, error) { return runtimeRoot, nil },
 		})
 
-		if result != (InitResult{Outcome: InitCanceled}) || output.String() != "setup_canceled\n" {
+		if result != (InitResult{Outcome: InitCanceled}) || output.String() != "setup_not_saved\n" {
 			t.Fatalf("Init() = %#v output %q", result, output.String())
 		}
 	})
@@ -248,7 +1186,7 @@ func TestInitCancellationBeforeAndAfterCommit(t *testing.T) {
 		}
 		var output bytes.Buffer
 
-		result := Init(ctx, options, &output, InitDependencies{
+		result := Init(ctx, options, nonInteractiveInitStreams(&output), InitDependencies{
 			Store: store, Entropy: bytes.NewReader(make([]byte, 32)),
 			DefaultInitRuntimeRoot: func() (string, error) { return runtimeRoot, nil },
 		})
@@ -273,17 +1211,31 @@ func TestInitCancellationBeforeAndAfterCommit(t *testing.T) {
 		}
 		writer := &cancelAfterInitWrite{cancel: cancel}
 
-		result := Init(ctx, options, writer, InitDependencies{
+		result := Init(ctx, options, nonInteractiveInitStreams(writer), InitDependencies{
 			Store: store, Entropy: panicInitReader{},
 			DefaultInitRuntimeRoot: func() (string, error) { return runtimeRoot, nil },
 		})
 
 		if result != (InitResult{Outcome: InitCanceled}) ||
-			!strings.HasSuffix(writer.output.String(), "setup_canceled\n") ||
+			!strings.HasSuffix(writer.output.String(), "setup_not_saved\n") ||
 			slices.Contains(store.calls, "commit") {
 			t.Fatalf("Init() = %#v output %q calls %q", result, writer.output.String(), store.calls)
 		}
 	})
+}
+
+func TestInitAlreadyCanceledWithTypedNilOutputPreservesCanceledOutcome(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var output *initFailOnCallWriter
+
+	result := Init(ctx, initconfig.Options{}, Streams{Out: output}, InitDependencies{})
+
+	if result != (InitResult{Outcome: InitCanceled}) {
+		t.Fatalf("Init() = %#v, want canceled", result)
+	}
 }
 
 func TestInitMapsLoadPlanningAndPathFailuresWithoutLeakingErrors(t *testing.T) {
@@ -339,7 +1291,7 @@ func TestInitMapsLoadPlanningAndPathFailuresWithoutLeakingErrors(t *testing.T) {
 			store := &recordingInitStore{snapshot: snapshot, loadErr: test.loadErr}
 			var output bytes.Buffer
 
-			result := Init(context.Background(), options, &output, InitDependencies{
+			result := Init(context.Background(), options, nonInteractiveInitStreams(&output), InitDependencies{
 				Store: store, Entropy: panicInitReader{}, DefaultInitRuntimeRoot: defaultFn,
 			})
 
@@ -364,7 +1316,7 @@ func TestInitRejectsUnauthorizedReplacementAfterLoadingWithoutPreflight(t *testi
 	store := &recordingInitStore{snapshot: snapshot}
 	var output bytes.Buffer
 
-	result := Init(context.Background(), options, &output, InitDependencies{
+	result := Init(context.Background(), options, nonInteractiveInitStreams(&output), InitDependencies{
 		Store: store, Entropy: panicInitReader{},
 		DefaultInitRuntimeRoot: func() (string, error) {
 			panic("existing config requested a default runtime root")
@@ -424,7 +1376,7 @@ func TestInitExplicitKeyReuseAndMissingCreationMatrix(t *testing.T) {
 			}
 			var output bytes.Buffer
 
-			result := Init(context.Background(), options, &output, InitDependencies{
+			result := Init(context.Background(), options, nonInteractiveInitStreams(&output), InitDependencies{
 				Store: store, Entropy: entropy,
 				DefaultInitRuntimeRoot: func() (string, error) { return runtimeRoot, nil },
 			})
@@ -450,7 +1402,7 @@ func TestInitUnchangedConfiguredMissingKeyDoesNotGenerateOrCommit(t *testing.T) 
 		},
 	}
 	var output bytes.Buffer
-	result := Init(context.Background(), options, &output, InitDependencies{
+	result := Init(context.Background(), options, nonInteractiveInitStreams(&output), InitDependencies{
 		Runtime: Dependencies{}, Store: store, Entropy: panicInitReader{},
 		diagnose: func(context.Context, string, Dependencies) (doctor.Diagnosis, error) {
 			return doctor.Diagnosis{}, errors.New("PLANTED_DOCTOR_SECRET")
@@ -601,7 +1553,7 @@ func TestInitDryRunAllProvidersMultipleModelsFreezesOnlyVertexCredentialPath(t *
 		preflight: configstore.PreflightResult{KeyState: configstore.KeyStateMissing},
 	}
 	var output bytes.Buffer
-	result := Init(context.Background(), options, &output, InitDependencies{
+	result := Init(context.Background(), options, nonInteractiveInitStreams(&output), InitDependencies{
 		Runtime: runtimeDeps, Store: store, Entropy: panicInitReader{},
 		DefaultInitRuntimeRoot: func() (string, error) {
 			return filepath.Join(root, "runtime"), nil
@@ -711,6 +1663,7 @@ type recordingInitStore struct {
 	loadErr            error
 	preflight          configstore.PreflightResult
 	preflightErr       error
+	preflightFn        func(context.Context, configstore.Mutation) (configstore.PreflightResult, error)
 	commitResult       configstore.CommitResult
 	commitErr          error
 	commitFn           func(context.Context, configstore.Mutation, []byte) (configstore.CommitResult, error)
@@ -725,11 +1678,14 @@ func (store *recordingInitStore) Load(context.Context, string) (configstore.Snap
 }
 
 func (store *recordingInitStore) Preflight(
-	_ context.Context,
+	ctx context.Context,
 	mutation configstore.Mutation,
 ) (configstore.PreflightResult, error) {
 	store.calls = append(store.calls, "preflight")
 	store.mutation = mutation
+	if store.preflightFn != nil {
+		return store.preflightFn(ctx, mutation)
+	}
 	return store.preflight, store.preflightErr
 }
 
@@ -868,7 +1824,7 @@ func runNoopFixtureInit(
 		Gateway:          initconfig.GatewayInput{},
 		ReplaceProviders: nil,
 		ReplaceModels:    nil,
-	}, writer, deps)
+	}, nonInteractiveInitStreams(writer), deps)
 	return result, output.String()
 }
 
@@ -890,10 +1846,97 @@ type panicInitReader struct{}
 
 func (panicInitReader) Read([]byte) (int, error) { panic("unexpected entropy read") }
 
+type scriptedInitPrompt struct {
+	selectProviders func(context.Context, initconfig.ProviderSelectionRequest) (initconfig.ProviderSelectionResponse, error)
+	collect         func(context.Context, initconfig.CollectRequest) (initconfig.CollectResponse, error)
+	review          func(context.Context, initconfig.ReviewRequest) (initconfig.ReviewResponse, error)
+	confirmKey      func(context.Context, initconfig.KeyConfirmationRequest) (initconfig.ReviewDecision, error)
+}
+
+func (prompt *scriptedInitPrompt) SelectProviders(
+	ctx context.Context,
+	request initconfig.ProviderSelectionRequest,
+) (initconfig.ProviderSelectionResponse, error) {
+	if prompt == nil || prompt.selectProviders == nil {
+		panic("unexpected SelectProviders")
+	}
+	return prompt.selectProviders(ctx, request)
+}
+
+func (prompt *scriptedInitPrompt) Collect(
+	ctx context.Context,
+	request initconfig.CollectRequest,
+) (initconfig.CollectResponse, error) {
+	if prompt == nil || prompt.collect == nil {
+		panic("unexpected Collect")
+	}
+	return prompt.collect(ctx, request)
+}
+
+func (prompt *scriptedInitPrompt) Review(
+	ctx context.Context,
+	request initconfig.ReviewRequest,
+) (initconfig.ReviewResponse, error) {
+	if prompt == nil || prompt.review == nil {
+		panic("unexpected Review")
+	}
+	return prompt.review(ctx, request)
+}
+
+func (prompt *scriptedInitPrompt) ConfirmKeyAction(
+	ctx context.Context,
+	request initconfig.KeyConfirmationRequest,
+) (initconfig.ReviewDecision, error) {
+	if prompt == nil || prompt.confirmKey == nil {
+		panic("unexpected ConfirmKeyAction")
+	}
+	return prompt.confirmKey(ctx, request)
+}
+
 type appErrorReader struct{}
 
 func (appErrorReader) Read([]byte) (int, error) {
 	return 0, errors.New("PLANTED_ENTROPY_SECRET")
+}
+
+type eventInitReader struct {
+	events  *[]string
+	payload []byte
+	offset  int
+}
+
+func (reader *eventInitReader) Read(destination []byte) (int, error) {
+	if reader.offset == 0 {
+		*reader.events = append(*reader.events, "entropy")
+	}
+	if reader.offset == len(reader.payload) {
+		return 0, io.EOF
+	}
+	written := copy(destination, reader.payload[reader.offset:])
+	reader.offset += written
+	return written, nil
+}
+
+type appTerminalRestorePlanError struct{}
+
+func (appTerminalRestorePlanError) Error() string { return "planted terminal restore failure" }
+
+func (appTerminalRestorePlanError) Is(target error) bool {
+	return target == initconfig.ErrPlan
+}
+
+func (appTerminalRestorePlanError) As(target any) bool {
+	value := reflect.ValueOf(target)
+	if value.Kind() != reflect.Pointer || value.IsNil() || !value.Elem().CanSet() {
+		return false
+	}
+	targetType := value.Elem().Type()
+	if targetType.PkgPath() != "github.com/krkarma777/ai-cli-gateway/internal/initconfig" ||
+		targetType.Name() != "terminalRestoreError" {
+		return false
+	}
+	value.Elem().Set(reflect.Zero(targetType))
+	return true
 }
 
 type cancelAfterInitWrite struct {
@@ -918,4 +1961,28 @@ func allZero(value []byte) bool {
 		}
 	}
 	return true
+}
+
+func nonInteractiveInitStreams(output io.Writer) Streams {
+	return Streams{In: panicInitReader{}, Out: output, Err: panicWriter{}}
+}
+
+func interactiveInitDependencies(
+	store InitStore,
+	runtimeRoot string,
+	prompt initconfig.Prompt,
+) InitDependencies {
+	return InitDependencies{
+		Store: store, Entropy: panicInitReader{},
+		DefaultInitRuntimeRoot: func() (string, error) { return runtimeRoot, nil },
+		IsTerminal:             func(io.Reader, io.Writer) bool { return true },
+		LookupEnv:              func(string) (string, bool) { return "", false },
+		NewPrompt:              func(io.Reader, io.Writer, bool) initconfig.Prompt { return prompt },
+		Discover: func(context.Context, string, initconfig.Options, *config.Config, initconfig.DiscoveryDependencies) (map[core.ProviderName]initconfig.ProviderDiscovery, error) {
+			return map[core.ProviderName]initconfig.ProviderDiscovery{}, nil
+		},
+		diagnose: func(context.Context, string, Dependencies) (doctor.Diagnosis, error) {
+			panic("interactive test called Doctor")
+		},
+	}
 }

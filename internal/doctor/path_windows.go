@@ -32,6 +32,13 @@ func validatePlatformPath(
 	path string,
 	kind pathKind,
 ) (validatedPath, pathDisposition) {
+	if kind == pathKindExecutable || kind == pathKindEntrypoint {
+		clean, _, err := normalizeWindowsInputPath(path)
+		if err != nil || !windowsLeafShapeAllowed(kind, clean) {
+			return validatedPath{}, pathUnsafe
+		}
+		return validateTrustedCommandPath(path)
+	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	clean, _, err := normalizeWindowsInputPath(path)

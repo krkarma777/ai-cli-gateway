@@ -22,6 +22,7 @@ import (
 const floodBlockBytes = 64 * 1024
 const dualStreamPressureBytes = 512 * 1024
 const codexPromptMaxBytes = 8 * 1024 * 1024
+const guidedRawProviderOutput = "PLANTED_GUIDED_" + "RAW_PROVIDER_OUTPUT_6f71"
 
 var codexReadyFeatures = [...]string{
 	"shell_tool",
@@ -101,6 +102,25 @@ var (
 		"sdk-contract-model",
 		"-",
 	}
+	guidedClaudeHelpArgs = [...]string{
+		"-p",
+		"--output-format",
+		"json",
+		"--no-session-persistence",
+		"--safe-mode",
+		"--setting-sources",
+		"",
+		"--tools",
+		"",
+		"--strict-mcp-config",
+		"--permission-mode",
+		"dontAsk",
+		"--disable-slash-commands",
+		"--no-chrome",
+		"--model",
+		"sonnet",
+		"--help",
+	}
 )
 
 const codexExecHelp = "PROMPT\n-\n--disable\n-c\n--strict-config\n--sandbox\n--model\n--output-schema\n--color\n--ephemeral\n--ignore-user-config\n--ignore-rules\n--skip-git-repo-check\n"
@@ -118,6 +138,11 @@ func Main(
 	stdout io.Writer,
 	stderr io.Writer,
 ) int {
+	if !hasModeArgument(args) {
+		if scenario, providerArgs, ok := guidedScenarioFromInvocation(os.Args[0], args); ok {
+			return guidedProviderMain(scenario, os.Args[0], providerArgs, stdout, stderr)
+		}
+	}
 	mode, err := parseMode(args)
 	if err != nil || !knownMode(mode) {
 		_, _ = io.WriteString(stderr, "fake-ai-cli: invalid mode\n")
@@ -272,6 +297,192 @@ func Main(
 	default:
 		return 2
 	}
+}
+
+func hasModeArgument(args []string) bool {
+	for _, arg := range args {
+		if arg == "--mode" || strings.HasPrefix(arg, "--mode=") {
+			return true
+		}
+	}
+	return false
+}
+
+func guidedScenarioFromInvocation(
+	executable string,
+	args []string,
+) (string, []string, bool) {
+	if scenario, ok := guidedScenarioFromExecutable(executable); ok {
+		return scenario, args, true
+	}
+	name := filepath.Base(executable)
+	if !strings.EqualFold(name, "node.exe") || len(args) == 0 {
+		return "", nil, false
+	}
+	extension := filepath.Ext(args[0])
+	if extension != ".js" && extension != ".mjs" {
+		return "", nil, false
+	}
+	entrypoint := strings.TrimSuffix(filepath.Base(args[0]), extension)
+	scenario, ok := guidedScenarioFromExecutable(entrypoint)
+	if !ok {
+		return "", nil, false
+	}
+	return scenario, args[1:], true
+}
+
+func guidedScenarioFromExecutable(path string) (string, bool) {
+	name := filepath.Base(path)
+	if strings.EqualFold(filepath.Ext(name), ".exe") {
+		name = strings.TrimSuffix(name, filepath.Ext(name))
+	}
+	switch name {
+	case "codex":
+		return "codex-ready", true
+	case "claude":
+		return "claude-ready", true
+	case "gemini":
+		return "gemini-ready", true
+	}
+	const prefix = "fake-guided-"
+	if !strings.HasPrefix(name, prefix) {
+		return "", false
+	}
+	scenario := strings.TrimPrefix(name, prefix)
+	switch scenario {
+	case "codex-ready", "codex-unauthenticated",
+		"claude-ready", "claude-unauthenticated", "gemini-ready":
+		return scenario, true
+	default:
+		return "", false
+	}
+}
+
+func guidedProviderMain(
+	scenario string,
+	executable string,
+	args []string,
+	stdout io.Writer,
+	stderr io.Writer,
+) int {
+	switch scenario {
+	case "codex-ready", "codex-unauthenticated":
+		switch {
+		case slices.Equal(args, codexVersionArgs[:]):
+			return writeFixed(stdout, "codex-cli 0.146.0 "+guidedRawProviderOutput+"\n")
+		case slices.Equal(args, codexExecHelpArgs[:]):
+			return writeFixed(stdout, codexExecHelp+guidedRawProviderOutput+"\n")
+		case slices.Equal(args, codexFeaturesListArgs[:]):
+			return writeCodexFeatures(stdout)
+		case slices.Equal(args, codexLoginStatusArgs[:]):
+			if code := writeFixed(stdout, guidedRawProviderOutput+"\n"); code != 0 {
+				return code
+			}
+			if scenario == "codex-unauthenticated" {
+				return 1
+			}
+			return 0
+		case slices.Equal(args, codexDoctorArgs[:]):
+			return guidedCodexDoctor(stdout, stderr)
+		}
+	case "claude-ready", "claude-unauthenticated":
+		switch {
+		case slices.Equal(args, []string{"--version"}):
+			return writeFixed(stdout, "claude 2.1.208 "+guidedRawProviderOutput+"\n")
+		case slices.Equal(args, guidedClaudeHelpArgs[:]):
+			return writeFixed(
+				stdout,
+				"--print\n--output-format\n--no-session-persistence\n"+
+					"--safe-mode\n--setting-sources\n--tools\n--strict-mcp-config\n"+
+					"--permission-mode\n--disable-slash-commands\n--no-chrome\n"+
+					"--model\n"+guidedRawProviderOutput+"\n",
+			)
+		case slices.Equal(args, []string{"auth", "status"}):
+			if code := writeFixed(stdout, guidedRawProviderOutput+"\n"); code != 0 {
+				return code
+			}
+			if scenario == "claude-unauthenticated" {
+				return 1
+			}
+			return 0
+		}
+	case "gemini-ready":
+		switch {
+		case slices.Equal(args, []string{"--version"}):
+			return writeFixed(stdout, "Gemini CLI 0.53.0 "+guidedRawProviderOutput+"\n")
+		case slices.Equal(args, []string{"--help"}):
+			return writeFixed(
+				stdout,
+				"--output-format\n--approval-mode\n-e\n--extensions\n--model\n"+
+					guidedRawProviderOutput+"\n",
+			)
+		}
+	}
+	writeGuidedUnexpectedMarker(executable)
+	_, _ = io.WriteString(stderr, "fake-ai-cli: unsupported guided probe\n")
+	return 2
+}
+
+func guidedCodexDoctor(stdout io.Writer, stderr io.Writer) int {
+	home := os.Getenv("CODEX_HOME")
+	if home == "" {
+		return writeFixed(stdout, codexDoctorJSON)
+	}
+	blockPath := filepath.Join(home, ".block-doctor")
+	if _, err := os.Lstat(blockPath); err != nil {
+		if os.IsNotExist(err) {
+			return writeFixed(stdout, codexDoctorJSON)
+		}
+		_, _ = io.WriteString(stderr, "fake-ai-cli: doctor block failure\n")
+		return 1
+	}
+
+	blockedPath := filepath.Join(home, ".doctor-blocked")
+	marker, err := os.OpenFile(
+		blockedPath,
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+		0o600,
+	)
+	if err != nil {
+		_, _ = io.WriteString(stderr, "fake-ai-cli: doctor block failure\n")
+		return 1
+	}
+	if _, err := io.WriteString(marker, "blocked\n"); err != nil {
+		_ = marker.Close()
+		_, _ = io.WriteString(stderr, "fake-ai-cli: doctor block failure\n")
+		return 1
+	}
+	if err := marker.Close(); err != nil {
+		_, _ = io.WriteString(stderr, "fake-ai-cli: doctor block failure\n")
+		return 1
+	}
+
+	releasePath := filepath.Join(home, ".release-doctor")
+	for {
+		if _, err := os.Lstat(releasePath); err == nil {
+			return writeFixed(stdout, codexDoctorJSON)
+		} else if !os.IsNotExist(err) {
+			_, _ = io.WriteString(stderr, "fake-ai-cli: doctor block failure\n")
+			return 1
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func writeGuidedUnexpectedMarker(executable string) {
+	if executable == "" || strings.IndexByte(executable, 0) >= 0 {
+		return
+	}
+	marker, err := os.OpenFile(
+		executable+".unexpected-call",
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+		0o600,
+	)
+	if err != nil {
+		return
+	}
+	_, _ = io.WriteString(marker, "unexpected provider command\n")
+	_ = marker.Close()
 }
 
 // CodexReadyMain emulates only the Codex probes and final SDK invocation that

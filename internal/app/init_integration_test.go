@@ -5,6 +5,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,7 @@ func TestInitFreshCommitRunsDoctorAndSecondRunIsNoop(t *testing.T) {
 		return filepath.Join(filepath.Dir(configPath), "init-runtime"), nil
 	}
 	var first bytes.Buffer
-	result := Init(context.Background(), options, &first, deps)
+	result := Init(context.Background(), options, nonInteractiveInitStreams(&first), deps)
 	if result != (InitResult{Outcome: InitReady, Saved: true}) ||
 		!strings.Contains(first.String(), "saved_config:") ||
 		!strings.Contains(first.String(), "gateway_key_file:") ||
@@ -63,11 +64,54 @@ func TestInitFreshCommitRunsDoctorAndSecondRunIsNoop(t *testing.T) {
 		panic("existing config resolved the default runtime root")
 	}
 	var second bytes.Buffer
-	result = Init(context.Background(), options, &second, deps)
+	result = Init(context.Background(), options, nonInteractiveInitStreams(&second), deps)
 	if result != (InitResult{Outcome: InitReady}) ||
 		!strings.Contains(second.String(), "already_current:") ||
 		!strings.HasSuffix(second.String(), "setup_ready\n") {
 		t.Fatalf("second Init() = %#v output %q", result, second.String())
+	}
+}
+
+func TestInitInteractiveConfirmedWriteRunsDoctorAndUsesSelectedProviderReadiness(t *testing.T) {
+	fixture := newReadyAppFixture(t)
+	addNotReadyClaudeProvider(t, fixture)
+	prompt := &scriptedInitPrompt{
+		collect: func(_ context.Context, request initconfig.CollectRequest) (initconfig.CollectResponse, error) {
+			options := request.Initial
+			options.Models = []initconfig.ModelMapping{{
+				ID: "codex-interactive", Provider: core.ProviderCodex, ProviderModel: "gpt-interactive",
+			}}
+			return initconfig.CollectResponse{Options: options}, nil
+		},
+		review: func(context.Context, initconfig.ReviewRequest) (initconfig.ReviewResponse, error) {
+			return initconfig.ReviewResponse{Decision: initconfig.ReviewConfirm}, nil
+		},
+	}
+	deps := ProductionInitDependencies(ioDiscardForInit{})
+	deps.Runtime = fixture.deps
+	deps.Entropy = panicInitReader{}
+	deps.IsTerminal = func(input io.Reader, output io.Writer) bool { return true }
+	deps.LookupEnv = func(string) (string, bool) { return "", false }
+	deps.NewPrompt = func(io.Reader, io.Writer, bool) initconfig.Prompt { return prompt }
+	deps.Discover = func(context.Context, string, initconfig.Options, *config.Config, initconfig.DiscoveryDependencies) (map[core.ProviderName]initconfig.ProviderDiscovery, error) {
+		return map[core.ProviderName]initconfig.ProviderDiscovery{}, nil
+	}
+	var stdout, stderr bytes.Buffer
+
+	result := Init(context.Background(), initconfig.Options{
+		ConfigPath: fixture.configPath,
+		Providers:  []core.ProviderName{core.ProviderCodex},
+	}, Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr}, deps)
+
+	if result != (InitResult{Outcome: InitReady, Saved: true}) ||
+		!strings.Contains(stdout.String(), "+ model codex-interactive\n") ||
+		!strings.Contains(stdout.String(), "saved_config:") ||
+		!strings.Contains(stdout.String(), "codex\tready") ||
+		!strings.Contains(stdout.String(), "claude\tnot_ready") ||
+		!strings.HasSuffix(stdout.String(), "setup_ready\n") || stderr.Len() != 0 ||
+		fixture.closeCalls != 1 || fixture.listenCalls != 0 {
+		t.Fatalf("Init() = %#v output=%q stderr=%q close/listen=%d/%d",
+			result, stdout.String(), stderr.String(), fixture.closeCalls, fixture.listenCalls)
 	}
 }
 
