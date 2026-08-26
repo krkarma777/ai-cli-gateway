@@ -12,6 +12,7 @@ import (
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
 )
 
+// PlanInteractive collects, validates, and plans an interactive init session.
 func PlanInteractive(
 	ctx context.Context,
 	initial Options,
@@ -129,14 +130,28 @@ interactionLoop:
 					if err := ctx.Err(); err != nil {
 						return result(PlanningResult{}, 0), err
 					}
-					if selection.Decision != ReviewConfirm || len(selection.Providers) == 0 {
+					switch selection.Decision {
+					case ReviewConfirm:
+						if len(selection.Providers) == 0 {
+							return result(PlanningResult{}, 0), ErrPlan
+						}
+						if _, ok := uniqueProviders(selection.Providers); !ok {
+							return result(PlanningResult{}, 0), ErrPlan
+						}
+						working = optionsForSelection(working, selection.Providers)
+					case ReviewBack:
+						if len(selection.Providers) != 0 {
+							return result(PlanningResult{}, 0), ErrPlan
+						}
+						if len(working.Providers) == 0 {
+							// Back from the first screen is a closed, no-change exit.
+							return result(PlanningResult{}, ReviewDecline), nil
+						}
+					case ReviewDecline:
+						return result(PlanningResult{}, 0), ErrPlan
+					default:
 						return result(PlanningResult{}, 0), ErrPlan
 					}
-					if _, ok := uniqueProviders(selection.Providers); !ok {
-						return result(PlanningResult{}, 0), ErrPlan
-					}
-					working = optionsForSelection(working, selection.Providers)
-					selectionNeeded = false
 				}
 
 				if err := ctx.Err(); err != nil {
@@ -249,6 +264,7 @@ interactionLoop:
 	}
 }
 
+// ConfirmInteractive presents and confirms a completed interactive plan.
 func ConfirmInteractive(
 	ctx context.Context,
 	plan PlanningResult,
@@ -929,6 +945,8 @@ func applyCollisionDecisions(
 
 func authorizeCollision(options *Options, decision CollisionDecision) {
 	switch decision.Target {
+	case DiffGatewayAuth:
+		// Gateway authentication collisions are rejected before this helper.
 	case DiffProvider:
 		name := core.ProviderName(decision.Name)
 		if !containsProvider(options.ReplaceProviders, name) {
@@ -943,6 +961,8 @@ func authorizeCollision(options *Options, decision CollisionDecision) {
 
 func keepExistingCollision(options *Options, decision CollisionDecision) {
 	switch decision.Target {
+	case DiffGatewayAuth:
+		// Gateway authentication collisions are rejected before this helper.
 	case DiffProvider:
 		name := core.ProviderName(decision.Name)
 		if options.Provider == nil {

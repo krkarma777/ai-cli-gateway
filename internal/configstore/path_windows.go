@@ -19,10 +19,14 @@ const (
 		"1831038044-1853292631-2271478464"
 )
 
-const windowsStoreUnsafeGrant uint32 = windows.DELETE | windows.WRITE_DAC |
+const windowsStoreUnsafePrivateGrant uint32 = windows.DELETE | windows.WRITE_DAC |
 	windows.WRITE_OWNER | windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA |
 	windows.FILE_WRITE_EA | windows.FILE_WRITE_ATTRIBUTES | 0x00000040 | // FILE_DELETE_CHILD is not exported by x/sys/windows.
 	windows.GENERIC_WRITE | windows.GENERIC_ALL
+
+const windowsStoreUnsafeAncestorGrant uint32 = windows.DELETE | windows.WRITE_DAC |
+	windows.WRITE_OWNER | 0x00000040 | // FILE_DELETE_CHILD is not exported by x/sys/windows.
+	windows.GENERIC_ALL
 
 type nativeFileMetadata struct {
 	volume        uint32
@@ -44,7 +48,7 @@ func sameNativeDirectoryIdentity(left nativeFileMetadata, right nativeFileMetada
 }
 
 func openNativeLoadTarget(input string) (nativeLoadTarget, error) {
-	path, ok := cleanWindowsStorePath(input)
+	path, ok := canonicalWindowsStorePath(input)
 	if !ok {
 		return nativeLoadTarget{}, ErrUnsafePath
 	}
@@ -59,23 +63,28 @@ func openNativeLoadTarget(input string) (nativeLoadTarget, error) {
 	if err != nil {
 		return nativeLoadTarget{}, ErrStore
 	}
-	parent, err := openWindowsStoreDirectory(filepath.Dir(path), true)
-	if err != nil {
-		return nativeLoadTarget{}, err
-	}
 	file, err := openWindowsStorePath(path, false)
 	if err != nil {
 		return nativeLoadTarget{}, err
 	}
+	finalPath, finalOK := windowsStoreFinalPath(file)
+	if !finalOK || !windowsStoreLongPathMatches(finalPath, path) {
+		_ = file.Close()
+		return nativeLoadTarget{}, ErrUnsafePath
+	}
+	parent, err := openWindowsStoreDirectory(filepath.Dir(finalPath), true)
+	if err != nil {
+		_ = file.Close()
+		return nativeLoadTarget{}, err
+	}
 	metadata, ok := windowsStoreMetadata(file, false)
 	if !ok || !safeWindowsStoreSecurity(file, false, true) ||
-		!windowsStoreFinalPathMatches(file, path) ||
-		!revalidateWindowsDirectory(parent, true) || !safeWindowsStoreAncestors(path) {
+		!revalidateWindowsDirectory(parent, true) || !safeWindowsStoreAncestors(finalPath) {
 		_ = file.Close()
 		return nativeLoadTarget{}, ErrUnsafePath
 	}
 	return nativeLoadTarget{
-		path: path, exists: true, file: file, metadata: metadata, parent: parent,
+		path: finalPath, exists: true, file: file, metadata: metadata, parent: parent,
 	}, nil
 }
 
@@ -134,11 +143,47 @@ func cleanWindowsStorePath(path string) (string, bool) {
 }
 
 func nativeStorePathKey(path string) (string, bool) {
-	clean, ok := cleanWindowsStorePath(path)
+	clean, ok := canonicalWindowsStorePath(path)
 	if !ok {
 		return "", false
 	}
 	return strings.ToLower(clean), true
+}
+
+func canonicalWindowsStorePath(path string) (string, bool) {
+	current, ok := cleanWindowsStorePath(path)
+	if !ok {
+		return "", false
+	}
+	var missing []string
+	for {
+		_, err := os.Lstat(current)
+		if err == nil {
+			long, longOK := longWindowsStorePath(current)
+			if !longOK {
+				return "", false
+			}
+			canonical, cleanOK := cleanWindowsStorePath(
+				strings.ReplaceAll(long, "/", `\`),
+			)
+			if !cleanOK {
+				return "", false
+			}
+			for index := len(missing) - 1; index >= 0; index-- {
+				canonical = filepath.Join(canonical, missing[index])
+			}
+			return canonical, true
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", false
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", false
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
 }
 
 func inspectNativePrivateDirectory(path string) (bool, error) {
@@ -211,7 +256,7 @@ func inspectWindowsMissingPath(path string) (nativeDirectoryEvidence, []string, 
 			if openErr != nil {
 				return nativeDirectoryEvidence{}, nil, openErr
 			}
-			if !safeWindowsStoreAncestorsFrom(current, private) {
+			if !safeWindowsStoreAncestorsFrom(evidence.path, private) {
 				return nativeDirectoryEvidence{}, nil, ErrUnsafePath
 			}
 			return evidence, missing, nil
@@ -235,12 +280,13 @@ func openWindowsStoreDirectory(path string, private bool) (nativeDirectoryEviden
 		return nativeDirectoryEvidence{}, err
 	}
 	defer func() { _ = file.Close() }()
+	finalPath, finalOK := windowsStoreFinalPath(file)
 	metadata, ok := windowsStoreMetadata(file, true)
 	if !ok || !safeWindowsStoreSecurity(file, true, private) ||
-		!windowsStoreFinalPathMatches(file, path) {
+		!finalOK || !windowsStoreLongPathMatches(finalPath, path) {
 		return nativeDirectoryEvidence{}, ErrUnsafePath
 	}
-	return nativeDirectoryEvidence{path: path, metadata: metadata}, nil
+	return nativeDirectoryEvidence{path: finalPath, metadata: metadata}, nil
 }
 
 func revalidateWindowsDirectory(evidence nativeDirectoryEvidence, private bool) bool {
@@ -391,6 +437,10 @@ func safeWindowsStoreSecurity(file *os.File, directory bool, private bool) bool 
 	if err != nil || dacl == nil {
 		return false
 	}
+	unsafeGrant := windowsStoreUnsafeAncestorGrant
+	if private {
+		unsafeGrant = windowsStoreUnsafePrivateGrant
+	}
 	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
 		var native *windows.ACCESS_ALLOWED_ACE
 		if windows.GetAce(dacl, index, &native) != nil || native == nil {
@@ -413,7 +463,7 @@ func safeWindowsStoreSecurity(file *os.File, directory bool, private bool) bool 
 			sid.String() == windowsStoreAdministratorsSID || (!private && sid.String() == windowsStoreTrustedInstallerSID)
 		if native.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE && !trusted &&
 			!safeWindowsStoreUntrustedAllow(
-				private, uint32(native.Mask), windowsStoreUnsafeGrant,
+				private, uint32(native.Mask), unsafeGrant,
 			) {
 			return false
 		}
@@ -423,15 +473,20 @@ func safeWindowsStoreSecurity(file *os.File, directory bool, private bool) bool 
 }
 
 func windowsStoreFinalPathMatches(file *os.File, selected string) bool {
+	final, ok := windowsStoreFinalPath(file)
+	return ok && windowsStoreLongPathMatches(final, selected)
+}
+
+func windowsStoreFinalPath(file *os.File) (string, bool) {
 	if file == nil {
-		return false
+		return "", false
 	}
 	size := uint32(windows.MAX_PATH)
 	for {
 		buffer := make([]uint16, size)
 		length, err := windows.GetFinalPathNameByHandle(windows.Handle(file.Fd()), &buffer[0], size, 0)
 		if err != nil || length == 0 || length >= 1<<15 {
-			return false
+			return "", false
 		}
 		if length >= size {
 			size = length + 1
@@ -440,12 +495,43 @@ func windowsStoreFinalPathMatches(file *os.File, selected string) bool {
 		final := strings.ReplaceAll(windows.UTF16ToString(buffer[:length]), "/", `\`)
 		lower := strings.ToLower(final)
 		if strings.HasPrefix(lower, `\\?\unc\`) {
-			return false
+			return "", false
 		}
 		if strings.HasPrefix(lower, `\\?\`) {
 			final = final[4:]
 		}
-		return strings.EqualFold(filepath.Clean(final), filepath.Clean(selected))
+		return cleanWindowsStorePath(filepath.Clean(final))
+	}
+}
+
+func windowsStoreLongPathMatches(final string, selected string) bool {
+	selectedLong, ok := longWindowsStorePath(selected)
+	if !ok {
+		return false
+	}
+	selectedClean, ok := cleanWindowsStorePath(filepath.Clean(
+		strings.ReplaceAll(selectedLong, "/", `\`),
+	))
+	return ok && strings.EqualFold(final, selectedClean)
+}
+
+func longWindowsStorePath(path string) (string, bool) {
+	pointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return "", false
+	}
+	size := uint32(windows.MAX_PATH)
+	for {
+		buffer := make([]uint16, size)
+		length, err := windows.GetLongPathName(pointer, &buffer[0], size)
+		if err != nil || length == 0 || length >= 1<<15 {
+			return "", false
+		}
+		if length >= size {
+			size = length + 1
+			continue
+		}
+		return windows.UTF16ToString(buffer[:length]), true
 	}
 }
 

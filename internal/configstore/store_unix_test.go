@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/krkarma777/ai-cli-gateway/internal/testutil"
 )
 
 func TestLoadMissingAndExistingPrivateConfig(t *testing.T) {
@@ -166,11 +168,7 @@ func TestLoadRejectsUncleanLinksUnsafeAncestorsAndReadReplacement(t *testing.T) 
 
 func privateStoreDir(t *testing.T) string {
 	t.Helper()
-	directory := t.TempDir()
-	if err := os.Chmod(directory, 0o700); err != nil { // #nosec G302 -- required private directory mode.
-		t.Fatalf("Chmod temp dir: %v", err)
-	}
-	return directory
+	return testutil.TrustedTempDir(t)
 }
 
 func testConfigPath(t *testing.T) string {

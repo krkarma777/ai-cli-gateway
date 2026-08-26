@@ -545,6 +545,45 @@ func TestOfficialSDKExamplesContract(t *testing.T) {
 	}
 }
 
+func TestOfficialSDKExamplesGuidedInitKeyContract(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []struct {
+		name        string
+		path        string
+		environment string
+		fileReaders []string
+	}{
+		{
+			name:        "Python",
+			path:        "examples/openai-sdk/python/main.py",
+			environment: `require_env("AI_CLI_GATEWAY_API_KEY")`,
+			fileReaders: []string{"open(", "Path(", "read_text(", "read_bytes("},
+		},
+		{
+			name:        "JavaScript",
+			path:        "examples/openai-sdk/javascript/main.mjs",
+			environment: `requireEnv("AI_CLI_GATEWAY_API_KEY")`,
+			fileReaders: []string{"readFile", "readFileSync", "Bun.file", "Deno.readTextFile"},
+		},
+	} {
+		source := source
+		t.Run(source.name, func(t *testing.T) {
+			t.Parallel()
+			contents := string(readRepositoryFile(t, source.path))
+			requireContainsAll(t, source.path, contents,
+				"generated gateway.key", "calling environment", "before launching",
+				"never opens the key file", source.environment,
+			)
+			for _, reader := range source.fileReaders {
+				if strings.Contains(contents, reader) {
+					t.Fatalf("%s reads a key from a file through %q instead of the caller environment", source.path, reader)
+				}
+			}
+		})
+	}
+}
+
 func validateOfficialSDKSource(language, contents string) error {
 	rawRequired := map[string][]string{
 		"Python": {
@@ -1253,6 +1292,283 @@ OpenAI.APIError = APIError;
 export default OpenAI;
 `
 
+func TestGuidedInitREADMEQuickStartContract(t *testing.T) {
+	readme := string(readRepositoryFile(t, "README.md"))
+	quickStart, err := extractTopLevelMarkdownSection(readme, "Quick Start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := requireOrderedMarkers(quickStart,
+		"Install and authenticate", "ai-cli-gateway init", "ai-cli-gateway serve",
+		"Load the generated client key", "AI_CLI_GATEWAY_API_KEY", "curl --fail-with-body",
+	); err != nil {
+		t.Fatalf("README guided Quick Start order: %v", err)
+	}
+	for _, command := range []string{"ai-cli-gateway init", "ai-cli-gateway serve"} {
+		if !containsExactTrimmedLine(quickStart, command) {
+			t.Fatalf("README Quick Start is missing exact shortest-path command %q", command)
+		}
+	}
+	for _, forbidden := range []string{
+		"ai-cli-gateway init --config", "ai-cli-gateway serve --config",
+		"Copy `config.example.toml`", "openssl rand -hex",
+	} {
+		if strings.Contains(quickStart, forbidden) {
+			t.Fatalf("README guided Quick Start retains manual onboarding marker %q", forbidden)
+		}
+	}
+	if err := validateGuidedInitPOSIXKeyLoadExample(quickStart); err != nil {
+		t.Fatalf("README generated-key client setup: %v", err)
+	}
+	if err := validateGuidedInitAliasPlaceholder(quickStart); err != nil {
+		t.Fatalf("README guided request alias: %v", err)
+	}
+}
+
+func TestGettingStartedGuidedInitContract(t *testing.T) {
+	document := readGettingStarted(t)
+	quickStart, err := extractTopLevelMarkdownSection(document, "Quick Start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"ai-cli-gateway init", "ai-cli-gateway serve"} {
+		if !containsExactTrimmedLine(quickStart, command) {
+			t.Fatalf("Getting Started Quick Start is missing exact command %q", command)
+		}
+	}
+
+	for _, marker := range []string{
+		"Select providers", "discovered executable", "config home", "authentication shape",
+		"alias/provider-model", "Gateway authentication", "redacted semantic diff",
+		"replacement", "final confirmation", "Doctor", "setup_ready",
+		"Up/Down", "Space", "Enter", "Shift+Tab", "Ctrl+C",
+		"AI_CLI_GATEWAY_ACCESSIBLE=1", "TERM=dumb", "comma-separated numbers",
+		"type `back`", "type `cancel`", "If either stdin or stderr is not an interactive terminal",
+		"regardless of whether values were supplied", "Automation must explicitly use `--non-interactive`", "exits 2",
+		"init_requires_non_interactive: pass --non-interactive and all required flags",
+		"multiple providers", "multiple models", "--dry-run", "post-write Doctor was not run",
+		"--replace-provider", "--replace-model", "config.toml.bak",
+		"Advanced recovery and service deployment",
+	} {
+		if !strings.Contains(document, marker) {
+			t.Fatalf("Getting Started guided-init contract is missing %q", marker)
+		}
+	}
+
+	automation, err := extractTopLevelMarkdownSection(document, "Automation with strict flags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotFlags := make(map[string]struct{})
+	for _, flag := range regexp.MustCompile(`--[a-z][a-z-]+`).FindAllString(automation, -1) {
+		gotFlags[flag] = struct{}{}
+	}
+	wantFlags := make(map[string]struct{}, len(guidedInitStrictFlags()))
+	for _, flag := range guidedInitStrictFlags() {
+		wantFlags[flag] = struct{}{}
+	}
+	if !reflect.DeepEqual(gotFlags, wantFlags) {
+		t.Fatalf("Getting Started strict init flags = %v, want exact public set %v", gotFlags, wantFlags)
+	}
+	if err := validateGuidedInitKeyLoadExamples(quickStart); err != nil {
+		t.Fatalf("Getting Started generated-key client setup: %v", err)
+	}
+	if err := validateGuidedInitAliasPlaceholder(quickStart); err != nil {
+		t.Fatalf("Getting Started guided request alias: %v", err)
+	}
+}
+
+func TestGuidedInitPOSIXKeyLoadContractRejectsDirectSecretAssignment(t *testing.T) {
+	safe := `GATEWAY_KEY_FILE="/private/gateway.key"
+GATEWAY_KEY="$(LC_ALL=C tr -d '\r\n' < "${GATEWAY_KEY_FILE}")"
+test "${#GATEWAY_KEY}" -eq 64
+case "${GATEWAY_KEY}" in *[!0-9a-f]*) exit 1 ;; esac
+export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"
+unset GATEWAY_KEY`
+	if err := validateGuidedInitPOSIXKeyLoadExample(safe); err != nil {
+		t.Fatalf("safe generated-key loader rejected: %v", err)
+	}
+
+	unsafe := safe + "\n" + "AI_CLI_GATEWAY_" +
+		`API_KEY="$(LC_ALL=C tr -d '\r\n' < "${GATEWAY_KEY_FILE}")"`
+	if err := validateGuidedInitPOSIXKeyLoadExample(unsafe); err == nil {
+		t.Fatal("guided generated-key loader accepted direct command-substitution assignment to the secret environment name")
+	}
+}
+
+func TestGuidedInitRequestCommandsKeepAuthorizationOutOfArgv(t *testing.T) {
+	readmeQuickStart, err := extractTopLevelMarkdownSection(
+		string(readRepositoryFile(t, "README.md")),
+		"Quick Start",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCurlAuthorizationStdin(readmeQuickStart, false, 1); err != nil {
+		t.Fatalf("README guided request: %v", err)
+	}
+
+	gettingStarted := readGettingStarted(t)
+	gettingStartedQuickStart, err := extractTopLevelMarkdownSection(gettingStarted, "Quick Start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCurlAuthorizationStdin(gettingStartedQuickStart, false, 1); err != nil {
+		t.Fatalf("Getting Started guided request: %v", err)
+	}
+
+	advanced, err := parseREADMEQuickStart(gettingStarted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	posix := quickStartFences(advanced, quickStartPOSIXSection, "bash")
+	windows := quickStartFences(advanced, quickStartWindowsSection, "powershell")
+	if len(posix) != 6 || len(windows) != 6 {
+		t.Fatalf("advanced request fence prerequisites = POSIX %d, PowerShell %d; want six each", len(posix), len(windows))
+	}
+	if err := validateCurlAuthorizationStdin(posix[5], false, 2); err != nil {
+		t.Fatalf("Getting Started advanced POSIX requests: %v", err)
+	}
+	if err := validateCurlAuthorizationStdin(windows[5], true, 2); err != nil {
+		t.Fatalf("Getting Started advanced PowerShell requests: %v", err)
+	}
+}
+
+func TestGuidedInitReferenceContract(t *testing.T) {
+	document := string(readRepositoryFile(t, "docs/reference.md"))
+	for _, flag := range guidedInitStrictFlags() {
+		if !strings.Contains(document, flag) {
+			t.Fatalf("reference strict init grammar is missing %q", flag)
+		}
+	}
+	requireContainsAll(t, "docs/reference.md", document,
+		"${XDG_CONFIG_HOME:-$HOME/.config}/ai-cli-gateway/config.toml",
+		"%LOCALAPPDATA%\\AI CLI Gateway\\config\\config.toml",
+		"${XDG_STATE_HOME:-$HOME/.local/state}/ai-cli-gateway/runtime",
+		"%LOCALAPPDATA%\\AI CLI Gateway\\runtime",
+		"api_key_file", "mutually exclusive", "config.toml.bak",
+		"preserved byte-for-byte", "--dry-run", "creates no directories, key, backup, lock, or temporary file",
+		"providers selected by this invocation", "unselected, pre-existing provider",
+	)
+
+	for _, row := range []string{
+		"| Candidate stored and every selected provider ready | updated | 0 |",
+		"| Candidate stored but core or a selected provider not ready | updated | 1 |",
+		"| Storage, locking, or safe-path failure | old config retained | 1 |",
+		"| Prior-backup restoration cannot be proved, including during cancellation | old config retained; backup uncertain | 1 |",
+		"| Invalid syntax, incomplete non-interactive input, invalid existing config, or unapproved collision | unchanged | 2 |",
+		"| Final interactive confirmation declined | unchanged | 0 |",
+		"| Dry-run validation succeeds | unchanged | 0 |",
+		"| Cancellation before commit after proved auxiliary restoration | unchanged | 130 |",
+		"| Cancellation after commit during Doctor | updated | 130 |",
+	} {
+		if !strings.Contains(document, row) {
+			t.Fatalf("reference exact init exit-state table is missing row %q", row)
+		}
+	}
+}
+
+func TestGuidedInitCurrentOnboardingUsesV020(t *testing.T) {
+	readme := string(readRepositoryFile(t, "README.md"))
+	for _, line := range strings.Split(readme, "\n") {
+		if strings.Contains(line, "v0.1.0") && !strings.Contains(line, "historical v0.1.0 release notes") {
+			t.Fatalf("README has a non-historical v0.1.0 pointer: %q", line)
+		}
+	}
+	for _, path := range []string{"docs/getting-started.md", "docs/reference.md"} {
+		contents := string(readRepositoryFile(t, path))
+		if strings.Contains(contents, "v0.1.0") || strings.Contains(contents, "_0.1.0_") {
+			t.Fatalf("%s retains a current-onboarding v0.1.0 marker", path)
+		}
+	}
+
+	gettingStarted := readGettingStarted(t)
+	requireContainsAll(t, "current onboarding", readme+gettingStarted,
+		"releases/tag/v0.2.0", "releases/download/v${VERSION}", "refs/tags/v0.2.0",
+		"ai-cli-gateway_0.2.0_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.2.0_linux_arm64.tar.gz",
+		"ai-cli-gateway_0.2.0_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.2.0_darwin_arm64.tar.gz",
+		"ai-cli-gateway_0.2.0_windows_amd64.zip", "SHA256SUMS",
+	)
+	if !strings.Contains(readme, "docs/releases/v0.2.0.md") {
+		t.Fatal("README does not link the reviewed v0.2.0 release notes")
+	}
+}
+
+func TestReleaseNotesV020Contract(t *testing.T) {
+	notes := string(readRepositoryFile(t, "docs/releases/v0.2.0.md"))
+	if strings.Contains(strings.ToLower(notes), "unknown fields") {
+		t.Fatal("docs/releases/v0.2.0.md claims unsupported unknown-field preservation")
+	}
+	requireContainsAll(t, "docs/releases/v0.2.0.md", notes,
+		"guided init", "Codex CLI", "Claude Code", "Gemini CLI",
+		"multiple providers", "multiple model aliases", "safe merge", "explicit replacement", "--dry-run",
+		"gateway.key", "api_key_file",
+		"${XDG_CONFIG_HOME:-$HOME/.config}/ai-cli-gateway/config.toml",
+		"%LOCALAPPDATA%\\AI CLI Gateway\\config\\config.toml",
+		"post-write Doctor", "exit 0", "exit 1", "exit 2", "exit 130",
+		"v0.1 configuration files remain compatible", "api_key_env",
+		"Unrecognized fields still fail strict configuration validation",
+		"Huh is a local terminal UI only", "init sends no provider request", "never installs a CLI",
+		"never runs provider login", "never launches inference",
+		"Provider credentials remain owned by provider tooling",
+	)
+
+	expectedLinks := []string{
+		"[Getting Started](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.0/docs/getting-started.md)",
+		"[API and Operations Reference](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.0/docs/reference.md)",
+		"[Security Policy](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.0/SECURITY.md)",
+	}
+	requireContainsAll(t, "docs/releases/v0.2.0.md absolute documentation links", notes, expectedLinks...)
+
+	allowedLinks := make(map[string]struct{}, len(expectedLinks))
+	for _, link := range expectedLinks {
+		allowedLinks[link] = struct{}{}
+	}
+	markdownLinkPattern := regexp.MustCompile(`\[[^]]+\]\([^)]+\)`)
+	links := markdownLinkPattern.FindAllString(notes, -1)
+	if len(links) != len(expectedLinks) {
+		t.Fatalf("docs/releases/v0.2.0.md has %d Markdown links, want exactly %d tag-pinned documentation links", len(links), len(expectedLinks))
+	}
+	for _, link := range links {
+		if _, ok := allowedLinks[link]; !ok {
+			t.Fatalf("docs/releases/v0.2.0.md uses a non-tag-pinned or relative link %q", link)
+		}
+	}
+}
+
+func TestConfigExampleGuidedInitKeySourceGuidance(t *testing.T) {
+	deployment := string(readRepositoryFile(t, "config.example.toml"))
+	requireContainsAll(t, "config.example.toml", deployment,
+		`api_key_env = "AI_CLI_GATEWAY_API_KEY"`,
+		`# api_key_file = "/absolute/private/path/to/gateway.key"`,
+		"mutually exclusive", "never configure both",
+	)
+	if strings.Count(deployment, "\napi_key_file = ") != 0 {
+		t.Fatal("config.example.toml activates the file-backed alternative alongside api_key_env")
+	}
+
+	codex := string(readRepositoryFile(t, "examples/config/codex.example.toml"))
+	requireContainsAll(t, "examples/config/codex.example.toml", codex,
+		"generated local configs", "mutually exclusive `api_key_file` form",
+		`api_key_env = "AI_CLI_GATEWAY_API_KEY"`,
+	)
+	if strings.Contains(codex, "\napi_key_file = ") {
+		t.Fatal("codex.example.toml must remain environment-backed")
+	}
+
+	for _, path := range []string{
+		"config.example.toml", "examples/config/codex.example.toml",
+		"examples/openai-sdk/python/main.py", "examples/openai-sdk/javascript/main.mjs",
+	} {
+		contents := readRepositoryFile(t, path)
+		if hasPrivateKeyHeader(contents) || hasClosedCatalogToken(contents) || hasDeveloperHomePath(contents) {
+			t.Fatalf("%s contains key material or a machine-specific personal path", path)
+		}
+	}
+}
+
 func TestGettingStartedReleaseQuickStart(t *testing.T) {
 	readme := readGettingStarted(t)
 	if err := validateREADMEReleaseQuickStart(readme); err != nil {
@@ -1296,16 +1612,25 @@ func TestGettingStartedReleaseQuickStartRejectsMutations(t *testing.T) {
 		{name: "PowerShell terminal key piped to host", mutate: replaceREADMENth(`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, `$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`+"\n"+`$LoadedGatewayKey | Out-Host`, 2)},
 		{name: "indirect POSIX key file output", sealOnly: true, mutate: replaceREADMEOnce(`ai-cli-gateway doctor --config "${GATEWAY_CONFIG_FILE}"`, `cat "${GATEWAY_CONFIG_DIR}"/*`+"\n"+`ai-cli-gateway doctor --config "${GATEWAY_CONFIG_FILE}"`)},
 		{name: "indirect PowerShell key file output", sealOnly: true, mutate: replaceREADMEOnce(`ai-cli-gateway.exe doctor --config $GatewayConfigFile`, `Get-ChildItem $GatewayConfigDir | Get-Content | Out-Host`+"\n"+`ai-cli-gateway.exe doctor --config $GatewayConfigFile`)},
-		{name: "comment-only fence source change", sealOnly: true, mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.1.0", "```bash\nset -eu\n# sealed source changed\nVERSION=0.1.0")},
-		{name: "early POSIX fence prints key", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.1.0", "```bash\nset -eu\nprintf '%s\\n' \"${GATEWAY_KEY}\"\nVERSION=0.1.0")},
+		{name: "comment-only fence source change", sealOnly: true, mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.0", "```bash\nset -eu\n# sealed source changed\nVERSION=0.2.0")},
+		{name: "early POSIX fence prints key", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.0", "```bash\nset -eu\nprintf '%s\\n' \"${GATEWAY_KEY}\"\nVERSION=0.2.0")},
 		{name: "unexpected shell fence prints key", mutate: replaceREADMEOnce("### Official SDK checks\n", "```sh\nprintf '%s\\n' \"${GATEWAY_KEY}\"\n```\n\n### Official SDK checks\n")},
 		{name: "tilde PowerShell fence prints key", mutate: replaceREADMEOnce("### Official SDK checks\n", "~~~powershell\n$LoadedGatewayKey | Out-Host\n~~~\n\n### Official SDK checks\n")},
-		{name: "first Bash fence changed to text", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.1.0", "```text\nset -eu\nVERSION=0.1.0")},
+		{name: "first Bash fence changed to text", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.0", "```text\nset -eu\nVERSION=0.2.0")},
 		{name: "Darwin ARM64 branch removed", mutate: replaceREADMEOnce(`  Darwin:arm64) ASSET="ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz" ;;`+"\n", "")},
 		{name: "Darwin ARM64 branch moved to unused function", mutate: moveREADMEHostBranchToUnusedFunction},
 		{name: "POSIX substitution commented", mutate: replaceREADMEOnce(`    [q{configured-provider-model}, $ENV{CODEX_MODEL}],`, `    # [q{configured-provider-model}, $ENV{CODEX_MODEL}],`)},
 		{name: "POSIX chmod commented", mutate: replaceREADMEOnce(`chmod 700 "${GATEWAY_CONFIG_DIR}" "${GATEWAY_RUNTIME_DIR}" "${CODEX_CONFIG_HOME}"`, `# chmod 700 "${GATEWAY_CONFIG_DIR}" "${GATEWAY_RUNTIME_DIR}" "${CODEX_CONFIG_HOME}"`)},
-		{name: "models curl commented", mutate: replaceREADMENth("curl --fail-with-body \\\n  -H \"Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}\" \\\n  http://127.0.0.1:8080/v1/models", "# curl --fail-with-body \\\n#   -H \"Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}\" \\\n#   http://127.0.0.1:8080/v1/models", 1)},
+		{name: "models curl commented", mutate: replaceREADMENth(`curl --fail-with-body \`, `# curl --fail-with-body \`, 2)},
+		{name: "POSIX Authorization returned to curl argv", mutate: replaceREADMEOnce(
+			`curl --fail-with-body \`+"\n"+`  -H @- \`+"\n"+`  http://127.0.0.1:8080/v1/models <<EOF`+"\n"+`Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY}`+"\n"+`EOF`,
+			`curl --fail-with-body \`+"\n"+`  -H "Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}" \`+"\n"+`  http://127.0.0.1:8080/v1/models`,
+		)},
+		{name: "PowerShell Authorization returned to curl argv", mutate: replaceREADMENth(
+			`('Authorization: Bearer {0}' -f $env:AI_CLI_GATEWAY_API_KEY) |`+"\n"+`  curl.exe --fail-with-body `+"`"+"\n"+`    -H '@-' `+"`",
+			`curl.exe --fail-with-body `+"`"+"\n"+`  -H "Authorization: Bearer $env:AI_CLI_GATEWAY_API_KEY" `+"`",
+			1,
+		)},
 		{name: "Node SDK command commented", mutate: replaceREADMEOnce(`node "${SDK_WORK_ROOT}/javascript/main.mjs"`, `# node "${SDK_WORK_ROOT}/javascript/main.mjs"`)},
 		{name: "Node SDK command in dead branch", mutate: replaceREADMEOnce(`node "${SDK_WORK_ROOT}/javascript/main.mjs"`, "if false; then\n  "+`node "${SDK_WORK_ROOT}/javascript/main.mjs"`+"\nfi")},
 		{name: "SDK fence prints gateway key", mutate: replaceREADMEOnce(`node "${SDK_WORK_ROOT}/javascript/main.mjs"`, `node "${SDK_WORK_ROOT}/javascript/main.mjs"`+"\n"+`printf '%s\n' "${AI_CLI_GATEWAY_API_KEY}"`)},
@@ -1456,9 +1781,9 @@ func TestGettingStartedQuickStartWholeDocumentBoundaries(t *testing.T) {
 		mutate func(string) (string, error)
 	}{
 		{
-			name: "Quick Start inside HTML comment",
+			name: "advanced recovery inside HTML comment",
 			mutate: func(document string) (string, error) {
-				mutated, err := replaceREADMEOnce("\n## Quick Start\n", "\n<!--\n## Quick Start\n")(document)
+				mutated, err := replaceREADMEOnce("\n## Advanced recovery and service deployment\n", "\n<!--\n## Advanced recovery and service deployment\n")(document)
 				if err != nil {
 					return "", err
 				}
@@ -1466,9 +1791,9 @@ func TestGettingStartedQuickStartWholeDocumentBoundaries(t *testing.T) {
 			},
 		},
 		{
-			name: "Quick Start inside HTML details",
+			name: "advanced recovery inside HTML details",
 			mutate: func(document string) (string, error) {
-				mutated, err := replaceREADMEOnce("\n## Quick Start\n", "\n<details><summary>Hidden</summary>\n## Quick Start\n")(document)
+				mutated, err := replaceREADMEOnce("\n## Advanced recovery and service deployment\n", "\n<details><summary>Hidden</summary>\n## Advanced recovery and service deployment\n")(document)
 				if err != nil {
 					return "", err
 				}
@@ -1476,9 +1801,9 @@ func TestGettingStartedQuickStartWholeDocumentBoundaries(t *testing.T) {
 			},
 		},
 		{
-			name: "Quick Start inside outer tilde fence",
+			name: "advanced recovery inside outer tilde fence",
 			mutate: func(document string) (string, error) {
-				mutated, err := replaceREADMEOnce("\n## Quick Start\n", "\n~~~~text\n## Quick Start\n")(document)
+				mutated, err := replaceREADMEOnce("\n## Advanced recovery and service deployment\n", "\n~~~~text\n## Advanced recovery and service deployment\n")(document)
 				if err != nil {
 					return "", err
 				}
@@ -1486,9 +1811,9 @@ func TestGettingStartedQuickStartWholeDocumentBoundaries(t *testing.T) {
 			},
 		},
 		{
-			name: "Quick Start inside longer tilde fence",
+			name: "advanced recovery inside longer tilde fence",
 			mutate: func(document string) (string, error) {
-				mutated, err := replaceREADMEOnce("\n## Quick Start\n", "\n~~~~~text\n## Quick Start\n")(document)
+				mutated, err := replaceREADMEOnce("\n## Advanced recovery and service deployment\n", "\n~~~~~text\n## Advanced recovery and service deployment\n")(document)
 				if err != nil {
 					return "", err
 				}
@@ -1496,9 +1821,9 @@ func TestGettingStartedQuickStartWholeDocumentBoundaries(t *testing.T) {
 			},
 		},
 		{
-			name: "Quick Start inside outer backtick fence",
+			name: "advanced recovery inside outer backtick fence",
 			mutate: func(document string) (string, error) {
-				mutated, err := replaceREADMEOnce("\n## Quick Start\n", "\n````text\n## Quick Start\n")(document)
+				mutated, err := replaceREADMEOnce("\n## Advanced recovery and service deployment\n", "\n````text\n## Advanced recovery and service deployment\n")(document)
 				if err != nil {
 					return "", err
 				}
@@ -1519,7 +1844,7 @@ func TestGettingStartedQuickStartWholeDocumentBoundaries(t *testing.T) {
 	}
 
 	t.Run("later fenced literals do not affect boundaries", func(t *testing.T) {
-		mutated := readme + "\n~~~~text\n<!-- literal fenced HTML -->\n## Quick Start\n## SDK contract recovery\n<?literal?>\n~~~~\n"
+		mutated := readme + "\n~~~~text\n<!-- literal fenced HTML -->\n## Advanced recovery and service deployment\n## SDK contract recovery\n<?literal?>\n~~~~\n"
 		if err := validateREADMEReleaseQuickStartSemantics(mutated); err != nil {
 			t.Fatalf("semantic validator rejected inert later fenced literals: %v", err)
 		}
@@ -1634,9 +1959,9 @@ func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) er
 	windowsProse := document.prose[quickStartWindowsSection]
 	sdkProse := document.prose[quickStartSDKSection]
 	for _, marker := range []string{
-		"v0.1.0", "ai-cli-gateway_0.1.0_linux_amd64.tar.gz",
-		"ai-cli-gateway_0.1.0_linux_arm64.tar.gz", "ai-cli-gateway_0.1.0_darwin_amd64.tar.gz",
-		"ai-cli-gateway_0.1.0_darwin_arm64.tar.gz", "ai-cli-gateway_0.1.0_windows_amd64.zip",
+		"v0.2.0", "ai-cli-gateway_0.2.0_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.2.0_linux_arm64.tar.gz", "ai-cli-gateway_0.2.0_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.2.0_darwin_arm64.tar.gz", "ai-cli-gateway_0.2.0_windows_amd64.zip",
 	} {
 		if !strings.Contains(rootProse, marker) {
 			return fmt.Errorf("active Quick Start prose is missing %q", marker)
@@ -1945,7 +2270,7 @@ func parseREADMEQuickStart(readme string) (readmeQuickStartDocument, error) {
 
 func extractREADMEQuickStartSource(readme string) (string, error) {
 	lines := strings.Split(readme, "\n")
-	quickStartLine := -1
+	advancedRecoveryLine := -1
 	recoveryLine := -1
 	var fenceMarker byte
 	fenceLength := 0
@@ -1970,11 +2295,11 @@ func extractREADMEQuickStartSource(readme string) (string, error) {
 			return "", errors.New("README contains raw HTML outside a GFM code fence")
 		}
 		switch line {
-		case "## Quick Start":
-			if quickStartLine >= 0 {
-				return "", errors.New("README contains more than one top-level Quick Start heading")
+		case "## Advanced recovery and service deployment":
+			if advancedRecoveryLine >= 0 {
+				return "", errors.New("getting-started guide contains more than one top-level advanced recovery heading")
 			}
-			quickStartLine = index
+			advancedRecoveryLine = index
 		case "## SDK contract recovery":
 			if recoveryLine >= 0 {
 				return "", errors.New("getting-started guide contains more than one top-level SDK contract recovery heading")
@@ -1985,13 +2310,13 @@ func extractREADMEQuickStartSource(readme string) (string, error) {
 	if fenceLength > 0 {
 		return "", errors.New("README contains an unterminated GFM code fence")
 	}
-	if quickStartLine < 0 || recoveryLine < 0 {
-		return "", errors.New("Quick Start and SDK contract recovery headings must each occur exactly once at top level")
+	if advancedRecoveryLine < 0 || recoveryLine < 0 {
+		return "", errors.New("advanced recovery and SDK contract recovery headings must each occur exactly once at top level")
 	}
-	if quickStartLine >= recoveryLine {
-		return "", errors.New("Quick Start must precede SDK contract recovery")
+	if advancedRecoveryLine >= recoveryLine {
+		return "", errors.New("advanced recovery must precede SDK contract recovery")
 	}
-	return strings.Join(lines[quickStartLine+1:recoveryLine], "\n"), nil
+	return strings.Join(lines[advancedRecoveryLine+1:recoveryLine], "\n"), nil
 }
 
 func containsREADMERawHTMLConstruct(line string) bool {
@@ -2159,8 +2484,8 @@ func validateREADMEKeyUseContract(posixFences, windowsFences, sdkFences []string
 		`test "${#GATEWAY_KEY}" -eq 64`,
 		`case "${GATEWAY_KEY}" in *[!0-9a-f]*) exit 1 ;; esac`,
 		`export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`,
-		`-H "Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}" \`,
-		`-H "Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}" \`,
+		`Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY}`,
+		`Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY}`,
 	}
 	windowsExpected := make([][]string, len(windowsFences))
 	windowsExpected[3] = []string{
@@ -2184,8 +2509,8 @@ func validateREADMEKeyUseContract(posixFences, windowsFences, sdkFences []string
 		`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`,
 		`if ($LoadedGatewayKey -cnotmatch '^[0-9a-f]{64}$') { throw 'invalid gateway key file' }`,
 		`$env:AI_CLI_GATEWAY_API_KEY = $LoadedGatewayKey`,
-		`-H "Authorization: Bearer $env:AI_CLI_GATEWAY_API_KEY" ` + "`",
-		`-H "Authorization: Bearer $env:AI_CLI_GATEWAY_API_KEY" ` + "`",
+		`('Authorization: Bearer {0}' -f $env:AI_CLI_GATEWAY_API_KEY) |`,
+		`('Authorization: Bearer {0}' -f $env:AI_CLI_GATEWAY_API_KEY) |`,
 	}
 	for index, expected := range posixExpected {
 		if actual := readmeKeyBearingLines(posixFences[index]); !slices.Equal(actual, expected) {
@@ -2221,6 +2546,12 @@ func validateREADMEKeyUseContract(posixFences, windowsFences, sdkFences []string
 	}
 	if actual := readmeKeyBearingLines(sdkFences[0]); len(actual) != 0 {
 		return errors.New("SDK key-use contract forbids key-bearing statements")
+	}
+	if err := validateCurlAuthorizationStdin(posixFences[5], false, 2); err != nil {
+		return fmt.Errorf("POSIX request Authorization transport: %w", err)
+	}
+	if err := validateCurlAuthorizationStdin(windowsFences[5], true, 2); err != nil {
+		return fmt.Errorf("PowerShell request Authorization transport: %w", err)
 	}
 	return nil
 }
@@ -2277,18 +2608,18 @@ func validateREADMEQuickStartFenceSequence(document readmeQuickStartDocument) er
 
 func validateREADMEQuickStartFenceSources(document readmeQuickStartDocument) error {
 	expected := []string{
-		"8b27de336607dffb1ab2e2f64d871d871e4f3beef4d5fc74d22476c911cc8414", // POSIX download and checksum.
-		"3f492cee04c9825a4b8542d983b4ebe7f84e251af786bab5f2e0dfb236262c5d", // POSIX attestation.
+		"212831af893fe4e039f04b7d7e209c9e9c5b5bf9d7a7d58c386cca8c40c05eb8", // POSIX download and checksum.
+		"e392ad30ceb3d312fe110aa8ac38ab67e7ed867227f3a100a8618c19f1b46cbe", // POSIX attestation.
 		"d54bf15936a9f8afd0dfbe3688e928719b92adf10411d31947d93a4c05652389", // POSIX install.
 		"70a3ca8fb27e89baa998ee97fc4ea5dd79f404bfe13e9d9657c754efdee9f0ac", // POSIX configuration.
 		"4db8c2817d0f3ea8ac4994d9bcff5b715954ff389a2b21288f4fb8bc21b50476", // POSIX serve.
-		"635ec9abb0c8d2a3a05f630403104391341f8669a0ca97b854b7aaf3c561c1fd", // POSIX requests.
-		"055e3b1a0d12505f1f854879ebf0c0c1ffe52b10d94621aba03f63f81299aed7", // Windows download and checksum.
-		"67f363e541443c9275a1aacc834d1ce93c7ac7d638db764cd323b81d1fce7c3b", // Windows attestation.
-		"57b0a84d1b0fbd75264c24c4cbbc8f3807f28a3f3d0e0e5088ea001c69c9bc46", // Windows install.
+		"810f6e580c10eb1b5a6be46a7a7b669668ab630d73fb6a780fcf2d4f0e23fc69", // POSIX requests.
+		"122c2f822b6ddeab044c46b25bb8de0e541aa369d87fa3004855d4df733bc983", // Windows download and checksum.
+		"af3fd6aae4794fee5e520ec01da9b1a79b699e8333b73de10bf15620f5e19004", // Windows attestation.
+		"a2f2a3187205010ab3c34315f23c35edb144e2dd720c61b583038bfac8e26a02", // Windows install.
 		"e945b7509ade4560e6912eb15f6d8d9990708524824c360e06cd7880f8998537", // Windows configuration.
 		"5b26c7ae1423bf83919abc35593accd9137111778cb21f641c473441e72cadc0", // Windows serve.
-		"ab30f260752be7690d82a380260d41ece4a6680c13d59755ea3d980447b679a0", // Windows requests.
+		"a652421c0e76aa69d83c7b061c44c08357fcbd472ca64dc80d338c1c2b4c18b7", // Windows requests.
 		"182d7dd2aba1e42acce798618dac0dc23f13051ad1c96a7190162ca18558ca6f", // SDK checks.
 	}
 	if len(document.fences) != len(expected) {
@@ -2697,10 +3028,10 @@ func TestGettingStartedPOSIXChecksumCommands(t *testing.T) {
 	if start < 0 || end < start {
 		t.Fatal("cannot extract the documented POSIX checksum program")
 	}
-	program := "set -eu\nASSET=ai-cli-gateway_0.1.0_darwin_arm64.tar.gz\n" + fences[0][start:end+len(endMarker)] + "\n"
+	program := "set -eu\nASSET=ai-cli-gateway_0.2.0_darwin_arm64.tar.gz\n" + fences[0][start:end+len(endMarker)] + "\n"
 	asset := []byte("verified release fixture\n")
 	digest := sha256.Sum256(asset)
-	validRecord := fmt.Sprintf("%x *ai-cli-gateway_0.1.0_darwin_arm64.tar.gz\n", digest)
+	validRecord := fmt.Sprintf("%x *ai-cli-gateway_0.2.0_darwin_arm64.tar.gz\n", digest)
 	decoys := ""
 	for index := 0; index < 5; index++ {
 		decoys += fmt.Sprintf("%064x *decoy-%d\n", index+1, index)
@@ -2712,12 +3043,12 @@ func TestGettingStartedPOSIXChecksumCommands(t *testing.T) {
 	}{
 		{name: "valid selected record", manifest: decoys + validRecord, wantOK: true},
 		{name: "duplicate selected record", manifest: decoys + validRecord + validRecord},
-		{name: "mismatched selected digest", manifest: decoys + strings.Repeat("0", 64) + " *ai-cli-gateway_0.1.0_darwin_arm64.tar.gz\n"},
+		{name: "mismatched selected digest", manifest: decoys + strings.Repeat("0", 64) + " *ai-cli-gateway_0.2.0_darwin_arm64.tar.gz\n"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
-			if err := os.WriteFile(filepath.Join(root, "ai-cli-gateway_0.1.0_darwin_arm64.tar.gz"), asset, 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(root, "ai-cli-gateway_0.2.0_darwin_arm64.tar.gz"), asset, 0o600); err != nil {
 				t.Fatalf("write asset fixture: %v", err)
 			}
 			if err := os.WriteFile(filepath.Join(root, "SHA256SUMS"), []byte(test.manifest), 0o600); err != nil {
@@ -2772,7 +3103,7 @@ esac
 	if err := os.Chmod(uname, 0o700); err != nil { //nolint:gosec // Test-owned fake uname must be executable and private.
 		t.Fatalf("make fake uname executable: %v", err)
 	}
-	program := "set -eu\nVERSION=0.1.0\n" + selector + "\nprintf '%s' \"${ASSET}\"\n"
+	program := "set -eu\nVERSION=0.2.0\n" + selector + "\nprintf '%s' \"${ASSET}\"\n"
 	tests := []struct {
 		name    string
 		system  string
@@ -2780,11 +3111,11 @@ esac
 		want    string
 		wantOK  bool
 	}{
-		{name: "Linux x86-64", system: "Linux", machine: "x86_64", want: "ai-cli-gateway_0.1.0_linux_amd64.tar.gz", wantOK: true},
-		{name: "Linux aarch64", system: "Linux", machine: "aarch64", want: "ai-cli-gateway_0.1.0_linux_arm64.tar.gz", wantOK: true},
-		{name: "Linux arm64", system: "Linux", machine: "arm64", want: "ai-cli-gateway_0.1.0_linux_arm64.tar.gz", wantOK: true},
-		{name: "Darwin Intel", system: "Darwin", machine: "x86_64", want: "ai-cli-gateway_0.1.0_darwin_amd64.tar.gz", wantOK: true},
-		{name: "Darwin Apple silicon", system: "Darwin", machine: "arm64", want: "ai-cli-gateway_0.1.0_darwin_arm64.tar.gz", wantOK: true},
+		{name: "Linux x86-64", system: "Linux", machine: "x86_64", want: "ai-cli-gateway_0.2.0_linux_amd64.tar.gz", wantOK: true},
+		{name: "Linux aarch64", system: "Linux", machine: "aarch64", want: "ai-cli-gateway_0.2.0_linux_arm64.tar.gz", wantOK: true},
+		{name: "Linux arm64", system: "Linux", machine: "arm64", want: "ai-cli-gateway_0.2.0_linux_arm64.tar.gz", wantOK: true},
+		{name: "Darwin Intel", system: "Darwin", machine: "x86_64", want: "ai-cli-gateway_0.2.0_darwin_amd64.tar.gz", wantOK: true},
+		{name: "Darwin Apple silicon", system: "Darwin", machine: "arm64", want: "ai-cli-gateway_0.2.0_darwin_arm64.tar.gz", wantOK: true},
 		{name: "unsupported", system: "FreeBSD", machine: "amd64"},
 	}
 	for _, test := range tests {
@@ -2945,7 +3276,7 @@ func TestGettingStartedWindowsChecksumCommandsNative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const archiveName = "ai-cli-gateway_0.1.0_windows_amd64.zip"
+	const archiveName = "ai-cli-gateway_0.2.0_windows_amd64.zip"
 	archive := []byte("verified Windows release fixture\n")
 	digest := sha256.Sum256(archive)
 	validRecord := fmt.Sprintf("%x *%s\n", digest, archiveName)
@@ -3258,28 +3589,194 @@ func requireContainsAll(t *testing.T, name, document string, required ...string)
 	}
 }
 
-func requireNearby(t *testing.T, name, document, first, second string) {
-	t.Helper()
-	for search := 0; search < len(document); {
-		relative := strings.Index(document[search:], first)
-		if relative < 0 {
+func guidedInitStrictFlags() []string {
+	return []string{
+		"--non-interactive", "--dry-run", "--config", "--provider",
+		"--codex-executable", "--codex-entrypoint", "--codex-config-home", "--codex-model",
+		"--claude-executable", "--claude-entrypoint", "--claude-config-home", "--claude-model", "--claude-auth",
+		"--gemini-executable", "--gemini-entrypoint", "--gemini-config-home", "--gemini-model", "--gemini-auth",
+		"--gateway-auth", "--gateway-key-file", "--gateway-key-env",
+		"--replace-provider", "--replace-model",
+	}
+}
+
+func extractTopLevelMarkdownSection(document, heading string) (string, error) {
+	normalized := strings.ReplaceAll(document, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	want := "## " + heading
+	start := -1
+	for index, line := range lines {
+		if line != want {
+			continue
+		}
+		if start >= 0 {
+			return "", fmt.Errorf("document contains duplicate %q section", heading)
+		}
+		start = index + 1
+	}
+	if start < 0 {
+		return "", fmt.Errorf("document is missing top-level %q section", heading)
+	}
+	end := len(lines)
+	for index := start; index < len(lines); index++ {
+		if strings.HasPrefix(lines[index], "## ") {
+			end = index
 			break
 		}
-		start := search + relative
-		left := start - 300
-		if left < 0 {
-			left = 0
-		}
-		right := start + len(first) + 300
-		if right > len(document) {
-			right = len(document)
-		}
-		if strings.Contains(document[left:right], second) {
-			return
-		}
-		search = start + len(first)
 	}
-	t.Fatalf("%s does not place %q near %q", name, second, first)
+	return strings.Join(lines[start:end], "\n"), nil
+}
+
+func validateGuidedInitPOSIXKeyLoadExample(document string) error {
+	if err := requireOrderedMarkers(document,
+		`GATEWAY_KEY_FILE=`,
+		`GATEWAY_KEY="$(LC_ALL=C tr -d '\r\n' < "${GATEWAY_KEY_FILE}")"`,
+		`test "${#GATEWAY_KEY}" -eq 64`,
+		`case "${GATEWAY_KEY}" in *[!0-9a-f]*) exit 1 ;; esac`,
+		`export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"`,
+		`unset GATEWAY_KEY`,
+	); err != nil {
+		return err
+	}
+	if hasSecretAssignment("guided.md", []byte(document)) {
+		return errors.New("generated-key loader assigns a value directly to a secret environment name")
+	}
+	for _, forbidden := range []string{
+		`printf '%s\n' "${GATEWAY_KEY}"`, `echo "${GATEWAY_KEY}"`,
+		`printf '%s\n' "${AI_CLI_GATEWAY_API_KEY}"`, `echo "${AI_CLI_GATEWAY_API_KEY}"`,
+	} {
+		if strings.Contains(document, forbidden) {
+			return fmt.Errorf("generated-key loader contains forbidden output/argument form %q", forbidden)
+		}
+	}
+	return nil
+}
+
+func validateGuidedInitKeyLoadExamples(document string) error {
+	if err := validateGuidedInitPOSIXKeyLoadExample(document); err != nil {
+		return err
+	}
+	if err := requireOrderedMarkers(document,
+		`$GatewayKeyPath =`,
+		"$GatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).TrimEnd(\"`r\", \"`n\")",
+		`if ($GatewayKey -cnotmatch '^[0-9a-f]{64}$')`,
+		`$env:AI_CLI_GATEWAY_API_KEY = $GatewayKey`,
+		`Remove-Variable GatewayKey`,
+	); err != nil {
+		return err
+	}
+	for _, forbidden := range []string{
+		`$GatewayKey | Out-Host`, `Write-Output $GatewayKey`, `Write-Host $GatewayKey`,
+	} {
+		if strings.Contains(document, forbidden) {
+			return fmt.Errorf("generated-key loader contains forbidden output/argument form %q", forbidden)
+		}
+	}
+	return nil
+}
+
+func validateGuidedInitAliasPlaceholder(document string) error {
+	const placeholder = `"model": "YOUR_ALIAS"`
+	if strings.Count(document, placeholder) != 1 {
+		return fmt.Errorf("request JSON must contain exactly one %q placeholder", placeholder)
+	}
+	if !strings.Contains(document, "Replace `YOUR_ALIAS` with the exact alias you chose during init") {
+		return errors.New("request instructions must bind YOUR_ALIAS to the exact alias chosen during init")
+	}
+	if strings.Contains(document, `"model": "codex-local"`) {
+		return errors.New("guided request hard-codes the Codex-only alias codex-local")
+	}
+	if !strings.Contains(document, "--data-binary @request.json") {
+		return errors.New("guided request body is not loaded from request.json")
+	}
+	return nil
+}
+
+func validateCurlAuthorizationStdin(document string, powerShell bool, expected int) error {
+	if powerShell {
+		return validatePowerShellCurlAuthorizationStdin(document, expected)
+	}
+	return validatePOSIXCurlAuthorizationStdin(document, expected)
+}
+
+func validatePOSIXCurlAuthorizationStdin(document string, expected int) error {
+	const (
+		consumer  = `curl --fail-with-body \`
+		stdinFlag = `-H @- \`
+		producer  = `Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY}`
+	)
+	lines := strings.Split(strings.ReplaceAll(document, "\r\n", "\n"), "\n")
+	consumerCount := 0
+	stdinFlagCount := 0
+	producerCount := 0
+	redirectCount := 0
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "Authorization: Bearer") && trimmed != producer {
+			return fmt.Errorf("Authorization header is not the exact here-document producer: %q", trimmed)
+		}
+		switch trimmed {
+		case consumer:
+			consumerCount++
+		case stdinFlag:
+			stdinFlagCount++
+		case producer:
+			producerCount++
+			if index == 0 || index+1 >= len(lines) ||
+				!strings.HasSuffix(strings.TrimSpace(lines[index-1]), "<<EOF") ||
+				strings.TrimSpace(lines[index+1]) != "EOF" {
+				return errors.New("POSIX Authorization producer is not the body of a curl here-document")
+			}
+		}
+		if strings.HasSuffix(trimmed, "<<EOF") {
+			redirectCount++
+		}
+	}
+	if consumerCount != expected || stdinFlagCount != expected || producerCount != expected || redirectCount != expected {
+		return fmt.Errorf(
+			"POSIX stdin Authorization commands = curl %d, -H @- %d, producers %d, redirects %d; want %d each",
+			consumerCount, stdinFlagCount, producerCount, redirectCount, expected,
+		)
+	}
+	return nil
+}
+
+func validatePowerShellCurlAuthorizationStdin(document string, expected int) error {
+	const producer = `('Authorization: Bearer {0}' -f $env:AI_CLI_GATEWAY_API_KEY) |`
+	consumer := `curl.exe --fail-with-body ` + "`"
+	stdinFlag := `-H '@-' ` + "`"
+	producerCount := 0
+	consumerCount := 0
+	stdinFlagCount := 0
+	previous := ""
+	for _, line := range strings.Split(strings.ReplaceAll(document, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "Authorization: Bearer") && trimmed != producer {
+			return fmt.Errorf("Authorization header is not the exact PowerShell pipeline producer: %q", trimmed)
+		}
+		if trimmed == producer {
+			producerCount++
+		}
+		if trimmed == consumer {
+			consumerCount++
+			if previous != producer {
+				return fmt.Errorf("curl stdin consumer is not immediately preceded by its Authorization producer: %q", previous)
+			}
+		}
+		if trimmed == stdinFlag {
+			stdinFlagCount++
+		}
+		if trimmed != "" {
+			previous = trimmed
+		}
+	}
+	if producerCount != expected || consumerCount != expected || stdinFlagCount != expected {
+		return fmt.Errorf(
+			"PowerShell stdin Authorization pipelines = producers %d, curl consumers %d, -H @- %d; want %d each",
+			producerCount, consumerCount, stdinFlagCount, expected,
+		)
+	}
+	return nil
 }
 
 func collapseWhitespace(value string) string {
@@ -5051,6 +5548,90 @@ func TestReleaseWorkflowContract(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowNotesSourceV020(t *testing.T) {
+	document := readRepositoryFile(t, ".github/workflows/release.yml")
+	workflow, err := parseClosedReleaseWorkflow(document)
+	if err != nil {
+		t.Fatalf("parse closed release workflow: %v", err)
+	}
+	publishSteps := workflow.Jobs["publish"].Steps
+	if len(publishSteps) != 4 {
+		t.Fatalf("publish steps = %d, want download, checksum, source checkout, publication", len(publishSteps))
+	}
+	checkout := publishSteps[2]
+	if checkout.Uses != checkoutAction || !reflect.DeepEqual(checkout.With, map[string]string{
+		"persist-credentials": "false",
+		"fetch-depth":         "1",
+		"ref":                 "${{ needs.package.outputs.tag_commit }}",
+	}) {
+		t.Fatalf("release-notes checkout is not pinned to the validated tag commit: %+v", checkout)
+	}
+	publication, err := namedReleaseStep(publishSteps, "Publish verified release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateReleaseNotesSourceV020(publication.Run); err != nil {
+		t.Fatalf("v0.2.0 release-notes source contract: %v", err)
+	}
+
+	mutations := []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "path-like tag validation", old: `[[ "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]`, new: `[[ "${TAG}" =~ ^v.*$ ]]`},
+		{name: "unrelated fixed notes", old: `readonly release_notes="docs/releases/${TAG}.md"`, new: `readonly release_notes="docs/releases/v0.2.0.md"`},
+		{name: "untracked notes", old: `test "$(git ls-files --error-unmatch -- "${release_notes}")" = "${release_notes}"`, new: `test -e "${release_notes}"`},
+		{name: "symlink notes", old: `test ! -L "${release_notes}"`, new: `: "${release_notes}"`},
+		{name: "extra git command", old: `git --version >/dev/null`, new: "git --version >/dev/null\n          git status --short"},
+		{name: "generated notes", old: `--notes-file "${release_notes}"`, new: `--generate-notes`},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutated := strings.Replace(publication.Run, mutation.old, mutation.new, 1)
+			if mutated == publication.Run {
+				t.Fatalf("mutation prerequisite %q is absent", mutation.old)
+			}
+			if err := validateReleaseNotesSourceV020(mutated); err == nil {
+				t.Fatal("release-notes source contract accepted mutation")
+			}
+		})
+	}
+}
+
+func validateReleaseNotesSourceV020(run string) error {
+	script := shellWithoutCommentOnlyLines(run)
+	lines := trimmedShellLines(script)
+	tagValidation := `[[ "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]`
+	gitLookup := `command -v git >/dev/null`
+	gitVersion := `git --version >/dev/null`
+	pathDerivation := `readonly release_notes="docs/releases/${TAG}.md"`
+	trackedCheck := `test "$(git ls-files --error-unmatch -- "${release_notes}")" = "${release_notes}"`
+	regularCheck := `test -f "${release_notes}"`
+	symlinkCheck := `test ! -L "${release_notes}"`
+	notesFile := `--notes-file "${release_notes}" \`
+	for _, line := range []string{tagValidation, gitLookup, gitVersion, pathDerivation, trackedCheck, regularCheck, symlinkCheck, notesFile} {
+		if shellLineCount(lines, line) != 1 {
+			return fmt.Errorf("release-notes source line %q is not exact and unique", line)
+		}
+	}
+	if err := requireOrderedMarkers(script, tagValidation, gitLookup, gitVersion, pathDerivation, trackedCheck, regularCheck, symlinkCheck, `gh release create "${TAG}"`, notesFile); err != nil {
+		return fmt.Errorf("release-notes validation/publication order: %w", err)
+	}
+	if strings.Count(script, "docs/releases/") != 1 || strings.Count(script, "--notes-file") != 1 {
+		return errors.New("publication does not have one tag-derived release-notes source")
+	}
+	if strings.Count(script, "git ") != 3 {
+		return errors.New("publication contains Git behavior beyond the exact tracked-notes checks")
+	}
+	for _, forbidden := range []string{"--generate-notes", "--notes ", "--body ", "--body-file"} {
+		if strings.Contains(script, forbidden) {
+			return fmt.Errorf("publication contains competing release body path %q", forbidden)
+		}
+	}
+	return nil
+}
+
 func TestReleaseWorkflowContractRejectsMutations(t *testing.T) {
 	document := string(readRepositoryFile(t, ".github/workflows/release.yml"))
 	tests := []struct {
@@ -5533,6 +6114,23 @@ func TestReleasePublicationScript(t *testing.T) {
 			if err := os.Chmod(filepath.Join(binRoot, "gh"), 0o700); err != nil { //nolint:gosec // Test-only fixture must be executable.
 				t.Fatalf("chmod fake gh: %v", err)
 			}
+			gitWrapper := `#!/bin/sh
+set -eu
+{ printf '%s\0' "$#"; for argument in "$@"; do printf '%s\0' "${argument}"; done; } >> "${GIT_LOG}"
+if test "$#" -eq 1 && test "$1" = --version; then
+  printf '%s\n' 'git version fixture'
+  exit 0
+fi
+if test "$#" -eq 4 && test "$1" = ls-files && test "$2" = --error-unmatch && test "$3" = -- && test "$4" = docs/releases/v0.1.0.md; then
+  printf '%s\n' "$4"
+  exit 0
+fi
+exit 2
+`
+			writeFixtureFile(t, binRoot, "git", []byte(gitWrapper))
+			if err := os.Chmod(filepath.Join(binRoot, "git"), 0o700); err != nil { //nolint:gosec // Test-only fixture must be executable.
+				t.Fatalf("chmod git fixture: %v", err)
+			}
 			linkFixtureTool(t, binRoot, "jq", jqPath)
 			shaWrapper := "#!/bin/sh\n{ printf '%s\\0' \"$(($# + 1))\"; printf 'sha256sum\\0'; for argument in \"$@\"; do printf '%s\\0' \"${argument}\"; done; } >> \"${GH_EVENT_LOG}\"\nexec \"${REAL_SHA256SUM}\" \"$@\"\n"
 			writeFixtureFile(t, binRoot, "sha256sum", []byte(shaWrapper))
@@ -5540,6 +6138,7 @@ func TestReleasePublicationScript(t *testing.T) {
 				t.Fatalf("chmod sha256sum wrapper: %v", err)
 			}
 			writeReleasePublicationAssets(t, assetsRoot, test.badDigest)
+			writeFixtureFile(t, root, "docs/releases/v0.1.0.md", []byte("fixture release notes\n"))
 
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -5554,6 +6153,7 @@ func TestReleasePublicationScript(t *testing.T) {
 				"RUNNER_TEMP=" + root,
 				"GH_FIXTURE=" + test.fixture,
 				"GH_LOG=" + filepath.Join(root, "gh.log"),
+				"GIT_LOG=" + filepath.Join(root, "git.log"),
 				"GH_EVENT_LOG=" + filepath.Join(root, "events.log"),
 				"GH_REF_COUNT=" + filepath.Join(root, "ref.count"),
 				"GH_TAG_COUNT=" + filepath.Join(root, "tag.count"),
@@ -5569,6 +6169,12 @@ func TestReleasePublicationScript(t *testing.T) {
 			}
 			if test.wantMarker != "" && strings.TrimSpace(string(output)) != test.wantMarker {
 				t.Fatalf("output = %q, want only %q", output, test.wantMarker)
+			}
+			if gitCalls := readFakeGHCalls(t, filepath.Join(root, "git.log")); !reflect.DeepEqual(gitCalls, [][]string{
+				{"--version"},
+				{"ls-files", "--error-unmatch", "--", "docs/releases/v0.1.0.md"},
+			}) {
+				t.Fatalf("release-notes git calls = %q", gitCalls)
 			}
 			calls := readFakeGHCalls(t, filepath.Join(root, "gh.log"))
 			createCount, editCount := 0, 0
@@ -6788,7 +7394,18 @@ func runReleasePublicationFakeGH(args []string) int {
 			return 0
 		}
 	}
-	if len(args) >= 2 && args[0] == "release" && (args[1] == "create" || args[1] == "edit") {
+	if len(args) >= 2 && args[0] == "release" && args[1] == "create" {
+		notesIndex := slices.Index(args, "--notes-file")
+		if notesIndex < 0 || notesIndex+1 >= len(args) {
+			return 94
+		}
+		notes, err := os.ReadFile(args[notesIndex+1]) //nolint:gosec // The closed fake-gh argv requires the repository-owned relative release-notes fixture.
+		if err != nil || string(notes) != "fixture release notes\n" {
+			return 94
+		}
+		return 0
+	}
+	if len(args) >= 2 && args[0] == "release" && args[1] == "edit" {
 		return 0
 	}
 	return 2
@@ -6899,7 +7516,7 @@ func assertSuccessfulPublicationTrace(t *testing.T, root, fixture string, calls 
 	}
 	assetRoot := filepath.Join(root, "release-assets")
 	create := []string{
-		"release", "create", "v0.1.0", "--repo", "krkarma777/ai-cli-gateway", "--title", "v0.1.0", "--verify-tag", "--draft", "--generate-notes",
+		"release", "create", "v0.1.0", "--repo", "krkarma777/ai-cli-gateway", "--title", "v0.1.0", "--verify-tag", "--draft", "--notes-file", "docs/releases/v0.1.0.md",
 		filepath.Join(assetRoot, "ai-cli-gateway_0.1.0_linux_amd64.tar.gz"),
 		filepath.Join(assetRoot, "ai-cli-gateway_0.1.0_linux_arm64.tar.gz"),
 		filepath.Join(assetRoot, "ai-cli-gateway_0.1.0_darwin_amd64.tar.gz"),
@@ -7372,7 +7989,7 @@ func validateReleaseWorkflowContract(workflow releaseWorkflowDocument) error {
 
 func validateReleaseActions(jobs map[string]releaseWorkflowJob) error {
 	allowed := map[string]int{
-		checkoutAction: 1, setupGoAction: 1, attestAction: 1, uploadArtifactAction: 1, downloadArtifactAction: 2,
+		checkoutAction: 2, setupGoAction: 1, attestAction: 1, uploadArtifactAction: 1, downloadArtifactAction: 2,
 	}
 	got := make(map[string]int)
 	for name, job := range jobs {
@@ -7396,6 +8013,14 @@ func validateReleaseActions(jobs map[string]releaseWorkflowJob) error {
 	if !reflect.DeepEqual(packageSteps[1].With, map[string]string{"go-version": "1.26.5", "cache": "true"}) {
 		return fmt.Errorf("setup-go inputs = %v", packageSteps[1].With)
 	}
+	publishSteps := jobs["publish"].Steps
+	if len(publishSteps) != 4 || !reflect.DeepEqual(publishSteps[2].With, map[string]string{
+		"persist-credentials": "false",
+		"fetch-depth":         "1",
+		"ref":                 "${{ needs.package.outputs.tag_commit }}",
+	}) {
+		return fmt.Errorf("release-notes checkout inputs = %v", publishSteps[2].With)
+	}
 	if !exactStringMapKeys(packageSteps[6].With, "subject-path") {
 		return fmt.Errorf("attest inputs = %v", packageSteps[6].With)
 	}
@@ -7406,7 +8031,7 @@ func validateReleaseActions(jobs map[string]releaseWorkflowJob) error {
 }
 
 func validateReleaseSteps(packageJob, assetJob, publishJob releaseWorkflowJob) error {
-	if len(packageJob.Steps) != 9 || len(assetJob.Steps) != 2 || len(publishJob.Steps) != 3 {
+	if len(packageJob.Steps) != 9 || len(assetJob.Steps) != 2 || len(publishJob.Steps) != 4 {
 		return fmt.Errorf("step counts package=%d asset=%d publish=%d", len(packageJob.Steps), len(assetJob.Steps), len(publishJob.Steps))
 	}
 	if err := validateExactReleaseStepShapes(packageJob, assetJob, publishJob); err != nil {
@@ -7487,7 +8112,7 @@ func validateReleaseSteps(packageJob, assetJob, publishJob releaseWorkflowJob) e
 		`repos/krkarma777/ai-cli-gateway/git/tags/${object_sha}`,
 		`Accept: application/vnd.github+json`,
 		`X-GitHub-Api-Version: 2026-03-10`,
-		`gh release create`, `--verify-tag`, `--draft`, `--generate-notes`,
+		`gh release create`, `--verify-tag`, `--draft`, `--notes-file "${release_notes}"`,
 		`gh release edit`, `--draft=false`, `release_already_exists`, `release_preflight_invalid`,
 	} {
 		if !strings.Contains(shellWithoutCommentOnlyLines(publication.Run), token) {
@@ -7496,6 +8121,9 @@ func validateReleaseSteps(packageJob, assetJob, publishJob releaseWorkflowJob) e
 	}
 	if strings.Count(publication.Run, "resolve_live_tag") != 3 {
 		return errors.New("publication must define one resolver and call it exactly twice")
+	}
+	if err := validateReleaseNotesSourceV020(publication.Run); err != nil {
+		return err
 	}
 	return nil
 }
@@ -7754,6 +8382,7 @@ func validateExactReleaseStepShapes(packageJob, assetJob, publishJob releaseWork
 	wantPublish := []shape{
 		{name: "Download immutable release assets", uses: downloadArtifactAction},
 		{name: "Reverify package checksums"},
+		{uses: checkoutAction},
 		{name: "Publish verified release", env: map[string]string{"GH_TOKEN": "${{ github.token }}", "TAG": "${{ needs.package.outputs.tag }}", "VERSION": "${{ needs.package.outputs.version }}", "TAG_COMMIT": "${{ needs.package.outputs.tag_commit }}"}}, //nolint:gosec // This is GitHub's documented expression, not a credential.
 	}
 	for jobName, pair := range map[string]struct {
@@ -7780,10 +8409,13 @@ func validateExactReleaseStepShapes(packageJob, assetJob, publishJob releaseWork
 	for _, job := range []releaseWorkflowJob{assetJob, publishJob} {
 		for _, step := range job.Steps {
 			lower := strings.ToLower(shellWithoutCommentOnlyLines(step.Run))
-			for _, forbidden := range []string{"git ", "go ", "source ", "actions/checkout", "github_workspace"} {
+			for _, forbidden := range []string{"go ", "source ", "actions/checkout", "github_workspace"} {
 				if strings.Contains(lower, forbidden) {
 					return fmt.Errorf("downstream step %q contains repository-source behavior %q", step.Name, forbidden)
 				}
+			}
+			if strings.Contains(lower, "git ") && step.Name != "Publish verified release" {
+				return fmt.Errorf("downstream step %q contains repository-source behavior %q", step.Name, "git ")
 			}
 		}
 	}

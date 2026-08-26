@@ -37,7 +37,7 @@ func newContextLineReader(input io.Reader, _ io.Writer) contextLineReader {
 func (reader *unixContextLineReader) ReadLine(
 	ctx context.Context,
 ) (string, error) {
-	if ctx == nil || reader == nil || reader.fd < 0 {
+	if ctx == nil || reader == nil || reader.fd < 0 || reader.fd > math.MaxInt32 {
 		return "", ErrPlan
 	}
 	var line []byte

@@ -431,6 +431,11 @@ jobs:
           command -v sha256sum >/dev/null
           cd "${RUNNER_TEMP}/release-assets"
           sha256sum --check --strict SHA256SUMS
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ needs.package.outputs.tag_commit }}
       - name: Publish verified release
         shell: bash
         env:
@@ -450,18 +455,27 @@ jobs:
           test "${VERSION}" = "${TAG#v}"
           [[ "${TAG_COMMIT}" =~ ${commit_pattern} ]]
           command -v gh >/dev/null
+          command -v git >/dev/null
           command -v jq >/dev/null
           command -v sha256sum >/dev/null
           gh --version >/dev/null
+          git --version >/dev/null
           jq --version >/dev/null
           sha256sum --version >/dev/null
           gh api --help >/dev/null
           gh release create --help >/dev/null
           gh release edit --help >/dev/null
 
+          readonly release_notes="docs/releases/${TAG}.md"
+          test "$(git ls-files --error-unmatch -- "${release_notes}")" = "${release_notes}"
+          test -f "${release_notes}"
+          test ! -L "${release_notes}"
+
           readonly asset_root="${RUNNER_TEMP}/release-assets"
-          cd "${asset_root}"
-          sha256sum --check --strict SHA256SUMS >/dev/null
+          (
+            cd "${asset_root}"
+            sha256sum --check --strict SHA256SUMS >/dev/null
+          )
 
           readonly query='query($owner:String!,$name:String!,$tag:String!){
             repository(owner:$owner,name:$name){
@@ -545,7 +559,7 @@ jobs:
             --title "${TAG}" \
             --verify-tag \
             --draft \
-            --generate-notes \
+            --notes-file "${release_notes}" \
             "${asset_root}/ai-cli-gateway_${VERSION}_linux_amd64.tar.gz" \
             "${asset_root}/ai-cli-gateway_${VERSION}_linux_arm64.tar.gz" \
             "${asset_root}/ai-cli-gateway_${VERSION}_darwin_amd64.tar.gz" \

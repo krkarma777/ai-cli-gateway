@@ -361,7 +361,7 @@ func TestDoctorTrustedCommandParityWindows(t *testing.T) {
 	directory := testutil.TrustedTempDir(t)
 	executable := filepath.Join(directory, "provider.exe")
 	entrypoint := filepath.Join(directory, "provider.js")
-	uppercaseEntrypoint := filepath.Join(directory, "provider.JS")
+	uppercaseEntrypoint := filepath.Join(directory, "uppercase-provider.JS")
 	batch := filepath.Join(directory, "provider.cmd")
 	testutil.WriteTrustedFile(t, executable, []byte("fixture"), 0o700)
 	testutil.WriteTrustedFile(t, entrypoint, []byte("fixture"), 0o700)

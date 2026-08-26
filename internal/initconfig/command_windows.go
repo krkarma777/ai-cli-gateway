@@ -9,6 +9,8 @@ import (
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
 )
 
+const maxWindowsCommandShimBytes int64 = 16 << 10
+
 func resolvePlatformCommandCandidate(
 	name core.ProviderName,
 	path string,

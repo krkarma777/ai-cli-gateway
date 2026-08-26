@@ -429,6 +429,7 @@ func guidedCodexDoctor(stdout io.Writer, stderr io.Writer) int {
 		return writeFixed(stdout, codexDoctorJSON)
 	}
 	blockPath := filepath.Join(home, ".block-doctor")
+	//nolint:gosec // CODEX_HOME is the caller-selected fake-CLI fixture root.
 	if _, err := os.Lstat(blockPath); err != nil {
 		if os.IsNotExist(err) {
 			return writeFixed(stdout, codexDoctorJSON)
@@ -438,6 +439,7 @@ func guidedCodexDoctor(stdout io.Writer, stderr io.Writer) int {
 	}
 
 	blockedPath := filepath.Join(home, ".doctor-blocked")
+	//nolint:gosec // The marker is confined to the caller-selected fake-CLI fixture root.
 	marker, err := os.OpenFile(
 		blockedPath,
 		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
@@ -459,6 +461,7 @@ func guidedCodexDoctor(stdout io.Writer, stderr io.Writer) int {
 
 	releasePath := filepath.Join(home, ".release-doctor")
 	for {
+		//nolint:gosec // The release marker is confined to the fake-CLI fixture root.
 		if _, err := os.Lstat(releasePath); err == nil {
 			return writeFixed(stdout, codexDoctorJSON)
 		} else if !os.IsNotExist(err) {
@@ -473,6 +476,7 @@ func writeGuidedUnexpectedMarker(executable string) {
 	if executable == "" || strings.IndexByte(executable, 0) >= 0 {
 		return
 	}
+	//nolint:gosec // The executable path is the harness-owned fake binary path.
 	marker, err := os.OpenFile(
 		executable+".unexpected-call",
 		os.O_WRONLY|os.O_CREATE|os.O_EXCL,

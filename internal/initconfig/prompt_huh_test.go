@@ -15,7 +15,10 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 	xterm "github.com/charmbracelet/x/term"
+	"github.com/krkarma777/ai-cli-gateway/internal/config"
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
 )
 
@@ -35,7 +38,9 @@ func TestHuhPromptDependencyStartupHasNoDebugLogSideEffect(t *testing.T) {
 	}
 
 	workingDirectory := t.TempDir()
-	command := exec.Command(
+	//nolint:gosec // The test re-executes its own binary with a fixed test selector.
+	command := exec.CommandContext(
+		t.Context(),
 		os.Args[0],
 		"-test.run=^TestHuhPromptDependencyStartupHasNoDebugLogSideEffect$",
 	)
@@ -176,7 +181,7 @@ func TestHuhPromptMapsAbortAndContextCancellation(t *testing.T) {
 		_, err := prompt.SelectProviders(
 			context.Background(), ProviderSelectionRequest{},
 		)
-		if err != context.Canceled {
+		if !reflect.DeepEqual(err, context.Canceled) {
 			t.Fatalf("SelectProviders() error = %v, want exact context.Canceled", err)
 		}
 	})
@@ -186,10 +191,41 @@ func TestHuhPromptMapsAbortAndContextCancellation(t *testing.T) {
 		cancel()
 		prompt := newHuhPrompt(bytes.NewBufferString(" \r\r"), io.Discard)
 		_, err := prompt.SelectProviders(ctx, ProviderSelectionRequest{})
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("SelectProviders() error = %v, want context.Canceled", err)
+		if !reflect.DeepEqual(err, context.Canceled) {
+			t.Fatalf("SelectProviders() error = %v, want exact context.Canceled", err)
 		}
 	})
+}
+
+func TestHuhProgramModelContextCancellationAbortsGracefully(t *testing.T) {
+	value := ""
+	form := huh.NewForm(huh.NewGroup(huh.NewInput().Value(&value)))
+	form.SubmitCmd = tea.Quit
+	form.CancelCmd = tea.Quit
+	model := huhProgramModel{model: form}
+
+	next, command := model.Update(huhContextCanceledMsg{})
+	final, ok := next.(huhProgramModel)
+	if !ok {
+		t.Fatalf("Update() model = %T, want huhProgramModel", next)
+	}
+	finalForm, ok := final.model.(*huh.Form)
+	if !ok {
+		t.Fatalf("inner model = %T, want *huh.Form", final.model)
+	}
+	if finalForm.State != huh.StateAborted {
+		t.Fatalf("Form.State = %v, want StateAborted", finalForm.State)
+	}
+	if command == nil {
+		t.Fatal("Update() command = nil, want graceful tea.Quit")
+	}
+	commandMessage := command()
+	if _, ok := commandMessage.(tea.QuitMsg); !ok {
+		t.Fatalf("Update() command message = %T, want tea.QuitMsg", commandMessage)
+	}
+	if view := final.View(); !view.ReportFocus {
+		t.Fatal("View().ReportFocus = false, want true")
+	}
 }
 
 func TestHuhPromptRunFinalizationRestoreFailureOutranksCancellation(t *testing.T) {
@@ -205,6 +241,8 @@ func TestHuhPromptRunFinalizationRestoreFailureOutranksCancellation(t *testing.T
 }
 
 func TestHuhPromptCollectUsesSelectInputConfirmAndMultipleModels(t *testing.T) {
+	executable := testAbsolutePath("bin", "codex")
+	configHome := testAbsolutePath("homes", "codex")
 	input := stagedHuhInput(t,
 		"\r", "\r", "\r", // Discovered command, home, continue.
 		"\r", "gpt-user\r", "y", "\r", // First model.
@@ -218,11 +256,11 @@ func TestHuhPromptCollectUsesSelectInputConfirmAndMultipleModels(t *testing.T) {
 		Discovery: map[core.ProviderName]ProviderDiscovery{
 			core.ProviderCodex: {
 				Commands: []CommandCandidate{{
-					Command: ProviderCommand{Executable: "/opt/bin/codex"},
+					Command: ProviderCommand{Executable: executable},
 					Source:  CandidatePATH,
 				}},
 				ConfigHomes: []PathCandidate{{
-					Path: "/srv/codex", Source: CandidateExisting,
+					Path: configHome, Source: CandidateExisting,
 				}},
 				AuthChoices: []AuthID{AuthConfigHome},
 			},
@@ -240,6 +278,72 @@ func TestHuhPromptCollectUsesSelectInputConfirmAndMultipleModels(t *testing.T) {
 	}
 	if response.Options.Gateway != (GatewayInput{Auth: GatewayAuthNone, AuthSet: true}) {
 		t.Fatalf("Gateway = %#v", response.Options.Gateway)
+	}
+}
+
+func TestHuhPromptCollectModelAllowsExistingAliasForProviderChange(t *testing.T) {
+	executable := testAbsolutePath("bin", "codex")
+	configHome := testAbsolutePath("homes", "codex")
+	existing := &config.Config{Models: []config.Model{{
+		ID: "shared-existing", Provider: "claude", ProviderModel: "claude-existing",
+	}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	var output bytes.Buffer
+	prompt := newHuhPrompt(stagedHuhInput(t,
+		"\r", "\r", "\r", // Discovered command, home, continue.
+		"\x15shared-existing\r",
+		"gpt-replacement\r",
+		"n",
+		"\r",
+		"\r", "\r", // Existing config defaults Gateway auth to none; continue.
+	), &output)
+
+	response, err := prompt.Collect(ctx, CollectRequest{
+		Initial:  Options{Providers: []core.ProviderName{core.ProviderCodex}},
+		Existing: existing,
+		Discovery: map[core.ProviderName]ProviderDiscovery{
+			core.ProviderCodex: {
+				Commands: []CommandCandidate{{
+					Command: ProviderCommand{Executable: executable}, Source: CandidatePATH,
+				}},
+				ConfigHomes: []PathCandidate{{Path: configHome, Source: CandidateExisting}},
+				AuthChoices: []AuthID{AuthConfigHome},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Collect() error = %v\nrendered output:\n%s", err, output.String())
+	}
+	want := []ModelMapping{{
+		ID: "shared-existing", Provider: core.ProviderCodex, ProviderModel: "gpt-replacement",
+	}}
+	if !reflect.DeepEqual(response.Options.Models, want) {
+		t.Fatalf("Collect().Models = %#v, want %#v", response.Options.Models, want)
+	}
+}
+
+func TestHuhPromptCollectModelRejectsAliasAlreadyCollectedThisSession(t *testing.T) {
+	options := Options{Models: []ModelMapping{{
+		ID: "codex-local", Provider: core.ProviderCodex, ProviderModel: "gpt-first",
+	}}}
+	prompt := newHuhPrompt(newSteppedHuhInput(
+		"codex-local\r",
+		"\x15codex-second\r",
+		"gpt-second\r",
+		"n",
+		"\r",
+	), io.Discard)
+
+	model, another, decision, err := prompt.collectModelForm(
+		context.Background(), core.ProviderCodex, options,
+	)
+	if err != nil {
+		t.Fatalf("collectModelForm() error = %v", err)
+	}
+	if model.ID != "codex-second" || another || decision != ReviewConfirm {
+		t.Fatalf("collectModelForm() = %#v, %t, %d; want corrected alias",
+			model, another, decision)
 	}
 }
 
@@ -311,6 +415,9 @@ func TestHuhPromptReviewAndKeyConfirmation(t *testing.T) {
 }
 
 func TestHuhPromptPreviousGroupNavigationRevisesProviderChoice(t *testing.T) {
+	firstExecutable := testAbsolutePath("bin", "codex-a")
+	secondExecutable := testAbsolutePath("bin", "codex-b")
+	configHome := testAbsolutePath("homes", "codex")
 	// Enter first reaches config home; Shift+Tab emits Huh's PrevGroup
 	// navigation and revises the command before completing the form.
 	prompt := newHuhPrompt(
@@ -322,17 +429,17 @@ func TestHuhPromptPreviousGroupNavigationRevisesProviderChoice(t *testing.T) {
 		core.ProviderCodex,
 		ProviderDiscovery{
 			Commands: []CommandCandidate{
-				{Command: ProviderCommand{Executable: "/opt/bin/codex-a"}, Source: CandidatePATH},
-				{Command: ProviderCommand{Executable: "/opt/bin/codex-b"}, Source: CandidateExisting},
+				{Command: ProviderCommand{Executable: firstExecutable}, Source: CandidatePATH},
+				{Command: ProviderCommand{Executable: secondExecutable}, Source: CandidateExisting},
 			},
-			ConfigHomes: []PathCandidate{{Path: "/srv/codex", Source: CandidateExisting}},
+			ConfigHomes: []PathCandidate{{Path: configHome, Source: CandidateExisting}},
 			AuthChoices: []AuthID{AuthConfigHome},
 		},
 	)
 	if err != nil {
 		t.Fatalf("collectProviderForm() error = %v", err)
 	}
-	if decision != ReviewConfirm || input.Executable.Value != "/opt/bin/codex-b" {
+	if decision != ReviewConfirm || input.Executable.Value != secondExecutable {
 		t.Fatalf("collectProviderForm() = %#v, %d", input, decision)
 	}
 }
@@ -389,11 +496,37 @@ func TestHuhPromptContextCancellationDuringBlockedRead(t *testing.T) {
 
 	select {
 	case err := <-result:
-		if err != context.Canceled {
+		if !reflect.DeepEqual(err, context.Canceled) {
 			t.Fatalf("SelectProviders() error = %v, want exact context.Canceled", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("SelectProviders did not return after context cancellation")
+	}
+}
+
+func TestHuhPromptContextDeadlineDuringBlockedRead(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, promptErr := newHuhPrompt(reader, io.Discard).SelectProviders(
+			ctx, ProviderSelectionRequest{},
+		)
+		result <- promptErr
+	}()
+
+	select {
+	case err := <-result:
+		if !reflect.DeepEqual(err, context.DeadlineExceeded) {
+			t.Fatalf("SelectProviders() error = %v, want exact context.DeadlineExceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SelectProviders did not return after context deadline")
 	}
 }
 
@@ -441,6 +574,10 @@ func TestHuhPromptPTY(t *testing.T) {
 			mode:   "abort",
 			chunks: []string{"\x03"},
 		},
+		{
+			name: "context cancellation",
+			mode: "context-cancel",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -482,9 +619,17 @@ func runHuhPromptPTYChild(t *testing.T, mode string) {
 		}
 		return
 	}
-	response, promptErr := prompt.SelectProviders(
-		context.Background(), ProviderSelectionRequest{},
-	)
+	ctx := context.Background()
+	if mode == "context-cancel" {
+		cancelCtx, cancel := context.WithCancel(ctx)
+		ctx = cancelCtx
+		defer cancel()
+		go func() {
+			time.Sleep(75 * time.Millisecond)
+			cancel()
+		}()
+	}
+	response, promptErr := prompt.SelectProviders(ctx, ProviderSelectionRequest{})
 	assertHuhPTYTerminalRestored(t, before)
 	switch mode {
 	case "complete":
@@ -498,8 +643,12 @@ func runHuhPromptPTYChild(t *testing.T, mode string) {
 			t.Fatalf("SelectProviders() = %#v, %v, want back", response, promptErr)
 		}
 	case "abort":
-		if promptErr != context.Canceled {
-			t.Fatalf("SelectProviders() error = %v, want context.Canceled", promptErr)
+		if !reflect.DeepEqual(promptErr, context.Canceled) {
+			t.Fatalf("SelectProviders() error = %v, want exact context.Canceled", promptErr)
+		}
+	case "context-cancel":
+		if !reflect.DeepEqual(promptErr, context.Canceled) {
+			t.Fatalf("SelectProviders() error = %v, want exact context.Canceled", promptErr)
 		}
 	default:
 		t.Fatalf("unknown PTY child mode %q", mode)
@@ -577,6 +726,12 @@ func equivalentDarwinTerminalValue(before, after reflect.Value) bool {
 		return before.Uint() == after.Uint()
 	case reflect.String:
 		return before.String() == after.String()
+	case reflect.Invalid,
+		reflect.Float32, reflect.Float64,
+		reflect.Complex64, reflect.Complex128,
+		reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+		reflect.UnsafePointer:
+		return false
 	default:
 		return false
 	}
@@ -601,6 +756,7 @@ func runPromptPTYParent(
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	//nolint:gosec // The helper invokes a fixed system PTY wrapper and its own test binary.
 	command := exec.CommandContext(
 		ctx,
 		"/usr/bin/script",

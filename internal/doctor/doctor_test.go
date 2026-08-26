@@ -2352,7 +2352,11 @@ func doctorTestConfig(t *testing.T, names ...core.ProviderName) config.Config {
 func doctorTestExecutable(t *testing.T) string {
 	t.Helper()
 	directory := doctorTestPrivateDirectory(t)
-	path := filepath.Join(directory, "trusted-executable")
+	name := "trusted-executable"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(directory, name)
 	//nolint:gosec // Executable fixture needs an execute bit.
 	testutil.WriteTrustedFile(t, path, []byte("test"), 0o700)
 	if _, err := resolveGatewayExecutable(path); err != nil {

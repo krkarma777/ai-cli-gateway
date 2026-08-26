@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+# Load the generated gateway.key before launching this program by setting
+# AI_CLI_GATEWAY_API_KEY. This client reads the calling environment only and
+# never opens the key file.
+
 import os
 import sys
 import math

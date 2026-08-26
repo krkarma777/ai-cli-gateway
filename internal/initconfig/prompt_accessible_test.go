@@ -167,7 +167,7 @@ func TestAccessiblePromptRejectsOversizedLineBeforeParsing(t *testing.T) {
 	prompt := newAccessiblePrompt(io.Discard, reader)
 
 	_, err := prompt.SelectProviders(context.Background(), ProviderSelectionRequest{})
-	if err != ErrPlan {
+	if !errors.Is(err, ErrPlan) {
 		t.Fatalf("SelectProviders() error = %v, want exact ErrPlan", err)
 	}
 }
@@ -252,7 +252,7 @@ func runAccessibleBlockedReadPTYChild(
 
 	select {
 	case err := <-result:
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("ReadLine() error = %v, want exact context.Canceled", err)
 		}
 	case <-time.After(time.Second):
@@ -337,6 +337,8 @@ func TestAccessiblePromptGatewayKeyFileRejectsRelativeThenAcceptsAbsolute(t *tes
 }
 
 func TestAccessiblePromptCollectUsesDiscoveryLabelsAndMultipleUserModels(t *testing.T) {
+	executable := testAbsolutePath("bin", "codex")
+	configHome := testAbsolutePath("homes", "codex")
 	reader := &scriptedContextLineReader{steps: []func(context.Context) (string, error){
 		line("1"), // PATH command.
 		line("1"), // Existing config home.
@@ -356,11 +358,11 @@ func TestAccessiblePromptCollectUsesDiscoveryLabelsAndMultipleUserModels(t *test
 		Discovery: map[core.ProviderName]ProviderDiscovery{
 			core.ProviderCodex: {
 				Commands: []CommandCandidate{{
-					Command: ProviderCommand{Executable: "/opt/bin/codex"},
+					Command: ProviderCommand{Executable: executable},
 					Source:  CandidatePATH,
 				}},
 				ConfigHomes: []PathCandidate{{
-					Path: "/srv/codex", Source: CandidateExisting,
+					Path: configHome, Source: CandidateExisting,
 				}},
 				AuthChoices: []AuthID{AuthConfigHome},
 			},
@@ -370,8 +372,8 @@ func TestAccessiblePromptCollectUsesDiscoveryLabelsAndMultipleUserModels(t *test
 		t.Fatalf("Collect() error = %v", err)
 	}
 	input := response.Options.Provider[core.ProviderCodex]
-	if input.Executable != (StringValue{Set: true, Value: "/opt/bin/codex"}) ||
-		input.ConfigHome != (StringValue{Set: true, Value: "/srv/codex"}) {
+	if input.Executable != (StringValue{Set: true, Value: executable}) ||
+		input.ConfigHome != (StringValue{Set: true, Value: configHome}) {
 		t.Fatalf("provider input = %#v", input)
 	}
 	wantModels := []ModelMapping{
@@ -385,13 +387,79 @@ func TestAccessiblePromptCollectUsesDiscoveryLabelsAndMultipleUserModels(t *test
 		t.Fatalf("Gateway = %#v", response.Options.Gateway)
 	}
 	text := output.String()
-	for _, label := range []string{"/opt/bin/codex (from PATH)", "/srv/codex (existing config)"} {
+	for _, label := range []string{executable + " (from PATH)", configHome + " (existing config)"} {
 		if !strings.Contains(text, label) {
 			t.Fatalf("output missing source label %q:\n%s", label, text)
 		}
 	}
 	if strings.Contains(text, "provider model [") {
 		t.Fatalf("provider model was presented with a guessed default:\n%s", text)
+	}
+}
+
+func TestAccessiblePromptCollectModelAllowsExistingAliasForProviderChange(t *testing.T) {
+	executable := testAbsolutePath("bin", "codex")
+	configHome := testAbsolutePath("homes", "codex")
+	existing := &config.Config{Models: []config.Model{{
+		ID: "shared-existing", Provider: "claude", ProviderModel: "claude-existing",
+	}}}
+	reader := &scriptedContextLineReader{steps: []func(context.Context) (string, error){
+		line("1"),
+		line("1"),
+		line("shared-existing"),
+		line("gpt-replacement"),
+		line("no"),
+		line("3"),
+	}}
+	prompt := newAccessiblePrompt(io.Discard, reader)
+
+	response, err := prompt.Collect(context.Background(), CollectRequest{
+		Initial:  Options{Providers: []core.ProviderName{core.ProviderCodex}},
+		Existing: existing,
+		Discovery: map[core.ProviderName]ProviderDiscovery{
+			core.ProviderCodex: {
+				Commands: []CommandCandidate{{
+					Command: ProviderCommand{Executable: executable}, Source: CandidatePATH,
+				}},
+				ConfigHomes: []PathCandidate{{Path: configHome, Source: CandidateExisting}},
+				AuthChoices: []AuthID{AuthConfigHome},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	want := []ModelMapping{{
+		ID: "shared-existing", Provider: core.ProviderCodex, ProviderModel: "gpt-replacement",
+	}}
+	if !reflect.DeepEqual(response.Options.Models, want) {
+		t.Fatalf("Collect().Models = %#v, want %#v", response.Options.Models, want)
+	}
+}
+
+func TestAccessiblePromptCollectModelRejectsAliasAlreadyCollectedThisSession(t *testing.T) {
+	options := Options{Models: []ModelMapping{{
+		ID: "codex-local", Provider: core.ProviderCodex, ProviderModel: "gpt-first",
+	}}}
+	reader := &scriptedContextLineReader{steps: []func(context.Context) (string, error){
+		line("codex-local"),
+		line("codex-second"),
+		line("gpt-second"),
+	}}
+	var output bytes.Buffer
+	prompt := newAccessiblePrompt(&output, reader)
+
+	model, err := prompt.collectModel(
+		context.Background(), core.ProviderCodex, options,
+	)
+	if err != nil {
+		t.Fatalf("collectModel() error = %v", err)
+	}
+	if model.ID != "codex-second" {
+		t.Fatalf("collectModel().ID = %q, want corrected alias", model.ID)
+	}
+	if !strings.Contains(output.String(), "Invalid or duplicate model alias.\n") {
+		t.Fatalf("duplicate alias was not rejected:\n%s", output.String())
 	}
 }
 
@@ -423,6 +491,8 @@ func TestAccessiblePromptCollectUsesClosedClaudeAndGeminiAuthChoices(t *testing.
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			executable := testAbsolutePath("bin", string(test.provider))
+			configHome := testAbsolutePath("homes", string(test.provider))
 			reader := &scriptedContextLineReader{steps: []func(context.Context) (string, error){
 				line("1"),
 				line("1"),
@@ -438,11 +508,11 @@ func TestAccessiblePromptCollectUsesClosedClaudeAndGeminiAuthChoices(t *testing.
 				Discovery: map[core.ProviderName]ProviderDiscovery{
 					test.provider: {
 						Commands: []CommandCandidate{{
-							Command: ProviderCommand{Executable: "/opt/bin/" + string(test.provider)},
+							Command: ProviderCommand{Executable: executable},
 							Source:  CandidatePATH,
 						}},
 						ConfigHomes: []PathCandidate{{
-							Path: "/srv/" + string(test.provider), Source: CandidateConventional,
+							Path: configHome, Source: CandidateConventional,
 						}},
 						AuthChoices: test.authChoices,
 					},

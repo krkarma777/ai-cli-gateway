@@ -138,7 +138,7 @@ func (prompt *accessiblePrompt) Collect(
 			}
 			options.Provider[name] = input
 			if !promptOptionsHaveProviderModel(options, request.Existing, name) {
-				model, err := prompt.collectModel(ctx, name, options, request.Existing)
+				model, err := prompt.collectModel(ctx, name, options)
 				if errors.Is(err, errPromptBack) {
 					return CollectResponse{
 						Options:         cloneOptions(request.Initial),
@@ -164,7 +164,7 @@ func (prompt *accessiblePrompt) Collect(
 				if !another {
 					break
 				}
-				model, err := prompt.collectModel(ctx, name, options, request.Existing)
+				model, err := prompt.collectModel(ctx, name, options)
 				if errors.Is(err, errPromptBack) {
 					return CollectResponse{
 						Options:         cloneOptions(request.Initial),
@@ -437,10 +437,9 @@ func (prompt *accessiblePrompt) collectModel(
 	ctx context.Context,
 	name core.ProviderName,
 	options Options,
-	existing *config.Config,
 ) (ModelMapping, error) {
 	defaultAlias := string(name) + "-local"
-	if promptAliasExists(defaultAlias, options, existing) {
+	if promptAliasAlreadyCollected(defaultAlias, options) {
 		defaultAlias = ""
 	}
 	title := "Public model alias"
@@ -453,7 +452,7 @@ func (prompt *accessiblePrompt) collectModel(
 		"Invalid or duplicate model alias.\n",
 		func(value string) bool {
 			return validPromptAlias(value, name) &&
-				!promptAliasExists(value, options, existing)
+				!promptAliasAlreadyCollected(value, options)
 		},
 		defaultAlias,
 	)
@@ -733,12 +732,17 @@ func promptSourceLabel(source CandidateSource) (string, bool) {
 
 func promptAuthLabel(name core.ProviderName, auth AuthID) (string, bool) {
 	switch name {
+	case core.ProviderCodex:
+		if auth == AuthConfigHome {
+			return "prepared config home", true
+		}
 	case core.ProviderClaude:
 		switch auth {
 		case AuthConfigHome:
 			return "prepared config home", true
 		case AuthAnthropicAPIKey:
 			return "ANTHROPIC_API_KEY environment", true
+		case AuthGeminiAPIKey, AuthGoogleAPIKey, AuthVertexServiceAccount:
 		}
 	case core.ProviderGemini:
 		switch auth {
@@ -748,6 +752,7 @@ func promptAuthLabel(name core.ProviderName, auth AuthID) (string, bool) {
 			return "GOOGLE_API_KEY environment", true
 		case AuthVertexServiceAccount:
 			return "Vertex service-account environment profile", true
+		case AuthConfigHome, AuthAnthropicAPIKey:
 		}
 	}
 	return "", false
@@ -777,17 +782,10 @@ func validPromptAlias(value string, name core.ProviderName) bool {
 	return err == nil
 }
 
-func promptAliasExists(alias string, options Options, existing *config.Config) bool {
+func promptAliasAlreadyCollected(alias string, options Options) bool {
 	for _, model := range options.Models {
 		if model.ID == alias {
 			return true
-		}
-	}
-	if existing != nil {
-		for _, model := range existing.Models {
-			if model.ID == alias {
-				return true
-			}
 		}
 	}
 	return false

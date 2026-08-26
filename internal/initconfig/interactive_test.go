@@ -81,6 +81,10 @@ func TestConfirmInteractiveAPIIsAvailable(t *testing.T) {
 
 func TestPlanInteractiveBareStartSelectsDiscoversAndCollects(t *testing.T) {
 	var calls []string
+	executable := testAbsolutePath("bin", "codex")
+	configHome := testAbsolutePath("homes", "codex")
+	runtimeRoot := testAbsolutePath("runtime")
+	keyPath := testAbsolutePath("gateway.key")
 	prompt := &scriptedPrompt{
 		selectProviders: func(
 			_ context.Context,
@@ -106,8 +110,8 @@ func TestPlanInteractiveBareStartSelectsDiscoversAndCollects(t *testing.T) {
 			options := cloneOptions(request.Initial)
 			options.Provider = map[core.ProviderName]ProviderInput{
 				core.ProviderCodex: {
-					Executable: StringValue{Set: true, Value: "/opt/bin/codex"},
-					ConfigHome: StringValue{Set: true, Value: "/srv/codex"},
+					Executable: StringValue{Set: true, Value: executable},
+					ConfigHome: StringValue{Set: true, Value: configHome},
 				},
 			}
 			options.Models = []ModelMapping{{
@@ -132,7 +136,7 @@ func TestPlanInteractiveBareStartSelectsDiscoversAndCollects(t *testing.T) {
 	result, err := PlanInteractive(
 		context.Background(), Options{}, nil, Source{}, nil, discover, prompt,
 		func(SemanticDiff) error { panic("unexpected presenter call") },
-		CollectAll, "/srv/runtime", "/srv/gateway.key",
+		CollectAll, runtimeRoot, keyPath,
 	)
 	if err != nil {
 		t.Fatalf("PlanInteractive() error = %v", err)
@@ -140,7 +144,7 @@ func TestPlanInteractiveBareStartSelectsDiscoversAndCollects(t *testing.T) {
 	if result.Decision != ReviewConfirm || result.Resume == nil {
 		t.Fatalf("result = %#v", result)
 	}
-	if got, want := result.Plan.Merge.KeyPath, "/srv/gateway.key"; got != want {
+	if got, want := result.Plan.Merge.KeyPath, keyPath; got != want {
 		t.Fatalf("KeyPath = %q, want %q", got, want)
 	}
 	if got, want := calls, []string{"select", "discover", "collect"}; !reflect.DeepEqual(got, want) {
@@ -151,7 +155,108 @@ func TestPlanInteractiveBareStartSelectsDiscoversAndCollects(t *testing.T) {
 	}
 }
 
+func TestPlanInteractiveFreshProviderSelectionBackDeclinesUnchanged(t *testing.T) {
+	initial := Options{ConfigPath: testAbsolutePath("config.toml"), DryRun: true}
+	prompt := &scriptedPrompt{
+		selectProviders: func(
+			context.Context,
+			ProviderSelectionRequest,
+		) (ProviderSelectionResponse, error) {
+			return ProviderSelectionResponse{Decision: ReviewBack}, nil
+		},
+	}
+
+	result, err := PlanInteractive(
+		context.Background(), initial, nil, Source{}, nil,
+		func(context.Context, Options) (map[core.ProviderName]ProviderDiscovery, error) {
+			t.Fatal("discovery called after backing out of a fresh selection")
+			return nil, nil
+		},
+		prompt,
+		func(SemanticDiff) error {
+			t.Fatal("presenter called after backing out of a fresh selection")
+			return nil
+		},
+		CollectAll, testAbsolutePath("runtime"), testAbsolutePath("key"),
+	)
+	if err != nil {
+		t.Fatalf("PlanInteractive() error = %v", err)
+	}
+	if result.Decision != ReviewDecline || result.Resume == nil {
+		t.Fatalf("result = %#v, want unchanged ReviewDecline", result)
+	}
+	if !reflect.DeepEqual(result.Resume.options, initial) {
+		t.Fatalf("resume options = %#v, want %#v", result.Resume.options, initial)
+	}
+	if len(result.Plan.Merge.Candidate) != 0 || result.Plan.Merge.Changed ||
+		len(result.Plan.Desired.SelectedProviders) != 0 || len(result.Plan.Desired.Models) != 0 {
+		t.Fatalf("plan = %#v, want no planned mutation", result.Plan)
+	}
+}
+
+func TestPlanInteractiveResumedProviderSelectionBackReopensPriorCollection(t *testing.T) {
+	working := validOptions()
+	working.NonInteractive = false
+	resume := &ResumeState{options: cloneOptions(working)}
+	var events []string
+	prompt := &scriptedPrompt{
+		selectProviders: func(
+			_ context.Context,
+			request ProviderSelectionRequest,
+		) (ProviderSelectionResponse, error) {
+			events = append(events, "select-back")
+			if !reflect.DeepEqual(request.Initial, working.Providers) {
+				t.Fatalf("selection initial = %#v, want %#v", request.Initial, working.Providers)
+			}
+			return ProviderSelectionResponse{Decision: ReviewBack}, nil
+		},
+		collect: func(
+			_ context.Context,
+			request CollectRequest,
+		) (CollectResponse, error) {
+			events = append(events, "collect-prior")
+			if !reflect.DeepEqual(request.Initial, working) {
+				t.Fatalf("collection initial = %#v, want prior %#v", request.Initial, working)
+			}
+			return CollectResponse{Options: request.Initial}, nil
+		},
+	}
+	discover := func(
+		_ context.Context,
+		options Options,
+	) (map[core.ProviderName]ProviderDiscovery, error) {
+		events = append(events, "discover-prior")
+		if !reflect.DeepEqual(options.Providers, working.Providers) {
+			t.Fatalf("discovery providers = %#v, want %#v", options.Providers, working.Providers)
+		}
+		return map[core.ProviderName]ProviderDiscovery{core.ProviderCodex: {}}, nil
+	}
+
+	result, err := PlanInteractive(
+		context.Background(), Options{NonInteractive: true}, resume, Source{}, nil,
+		discover, prompt, func(SemanticDiff) error { return nil }, CollectAll,
+		testAbsolutePath("runtime"), testAbsolutePath("key"),
+	)
+	if err != nil {
+		t.Fatalf("PlanInteractive() error = %v", err)
+	}
+	if result.Decision != ReviewConfirm || result.Resume == nil {
+		t.Fatalf("result = %#v, want completed prior collection", result)
+	}
+	wantEvents := []string{"select-back", "discover-prior", "collect-prior"}
+	if !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+	if !reflect.DeepEqual(result.Resume.options, working) {
+		t.Fatalf("resume options = %#v, want preserved %#v", result.Resume.options, working)
+	}
+}
+
 func TestPlanInteractiveExplicitMultiProviderBypassesSelectionAndUsesCollectedAnswers(t *testing.T) {
+	claudeExecutable := testAbsolutePath("bin", "claude")
+	geminiExecutable := testAbsolutePath("bin", "gemini")
+	claudeHome := testAbsolutePath("homes", "claude")
+	geminiHome := testAbsolutePath("homes", "gemini")
 	initial := Options{
 		Providers: []core.ProviderName{core.ProviderClaude, core.ProviderGemini},
 	}
@@ -169,7 +274,7 @@ func TestPlanInteractiveExplicitMultiProviderBypassesSelectionAndUsesCollectedAn
 			options.Provider = map[core.ProviderName]ProviderInput{
 				core.ProviderClaude: {
 					Executable: StringValue{Set: true, Value: claude.Commands[0].Command.Executable},
-					ConfigHome: StringValue{Set: true, Value: "/edited/claude-home"},
+					ConfigHome: StringValue{Set: true, Value: claudeHome},
 					Auth:       AuthAnthropicAPIKey,
 					AuthSet:    true,
 				},
@@ -198,23 +303,24 @@ func TestPlanInteractiveExplicitMultiProviderBypassesSelectionAndUsesCollectedAn
 		}
 		return map[core.ProviderName]ProviderDiscovery{
 			core.ProviderClaude: {
-				Commands: []CommandCandidate{{Command: ProviderCommand{Executable: "/opt/bin/claude"}}},
+				Commands: []CommandCandidate{{Command: ProviderCommand{Executable: claudeExecutable}}},
 			},
 			core.ProviderGemini: {
-				Commands:    []CommandCandidate{{Command: ProviderCommand{Executable: "/opt/bin/gemini"}}},
-				ConfigHomes: []PathCandidate{{Path: "/suggested/gemini-home"}},
+				Commands:    []CommandCandidate{{Command: ProviderCommand{Executable: geminiExecutable}}},
+				ConfigHomes: []PathCandidate{{Path: geminiHome}},
 			},
 		}, nil
 	}
 
 	result, err := PlanInteractive(
 		context.Background(), initial, nil, Source{}, nil, discover, prompt,
-		func(SemanticDiff) error { return nil }, CollectAll, "/runtime", "/key",
+		func(SemanticDiff) error { return nil }, CollectAll,
+		testAbsolutePath("runtime"), testAbsolutePath("key"),
 	)
 	if err != nil {
 		t.Fatalf("PlanInteractive() error = %v", err)
 	}
-	if got := result.Plan.Desired.Providers[0].ConfigHome.Value; got != "/edited/claude-home" {
+	if got := result.Plan.Desired.Providers[0].ConfigHome.Value; got != claudeHome {
 		t.Fatalf("edited config home = %q", got)
 	}
 	if got := result.Plan.Desired.Providers[0].CredentialEnv.Value; !reflect.DeepEqual(got, []string{"ANTHROPIC_API_KEY"}) {
@@ -235,6 +341,8 @@ func geminiPathInput(path string) StringValue {
 }
 
 func TestPlanInteractiveReselectsAndRediscoversOnlyTheNewSelection(t *testing.T) {
+	claudeExecutable := testAbsolutePath("bin", "claude")
+	claudeHome := testAbsolutePath("homes", "claude")
 	selections := [][]core.ProviderName{
 		{core.ProviderCodex},
 		{core.ProviderClaude},
@@ -271,8 +379,8 @@ func TestPlanInteractiveReselectsAndRediscoversOnlyTheNewSelection(t *testing.T)
 			options := cloneOptions(request.Initial)
 			options.Provider = map[core.ProviderName]ProviderInput{
 				core.ProviderClaude: {
-					Executable: StringValue{Set: true, Value: "/opt/bin/claude"},
-					ConfigHome: StringValue{Set: true, Value: "/srv/claude"},
+					Executable: StringValue{Set: true, Value: claudeExecutable},
+					ConfigHome: StringValue{Set: true, Value: claudeHome},
 					Auth:       AuthConfigHome,
 					AuthSet:    true,
 				},
@@ -297,7 +405,8 @@ func TestPlanInteractiveReselectsAndRediscoversOnlyTheNewSelection(t *testing.T)
 
 	result, err := PlanInteractive(
 		context.Background(), Options{}, nil, Source{}, nil, discover, prompt,
-		func(SemanticDiff) error { return nil }, CollectAll, "/runtime", "/key",
+		func(SemanticDiff) error { return nil }, CollectAll,
+		testAbsolutePath("runtime"), testAbsolutePath("key"),
 	)
 	if err != nil {
 		t.Fatalf("PlanInteractive() error = %v", err)
@@ -408,6 +517,83 @@ func TestPlanInteractiveCollisionReviewKeepsProviderAndReplacesOnlyChosenModel(t
 		len(resumed.Plan.Desired.ReplaceProviders) != 0 {
 		t.Fatalf("resumed decisions = %#v/%#v",
 			resumed.Plan.Desired.ReplaceProviders, resumed.Plan.Desired.ReplaceModels)
+	}
+}
+
+func TestPlanInteractiveExistingAliasProviderChangeNeedsExactReplacementReview(t *testing.T) {
+	sourceBytes := mergeTwoProviderDocument()
+	existing := mustDecodeMergeConfig(t, sourceBytes)
+	var events []string
+	prompt := &scriptedPrompt{
+		collect: func(
+			context.Context,
+			CollectRequest,
+		) (CollectResponse, error) {
+			events = append(events, "collect")
+			return CollectResponse{Options: Options{
+				Providers: []core.ProviderName{core.ProviderClaude},
+				Models: []ModelMapping{{
+					ID:            "shared-existing",
+					Provider:      core.ProviderClaude,
+					ProviderModel: "sonnet",
+				}},
+			}}, nil
+		},
+		review: func(
+			_ context.Context,
+			request ReviewRequest,
+		) (ReviewResponse, error) {
+			events = append(events, "review")
+			if len(request.Collisions) != 1 {
+				t.Fatalf("collisions = %#v, want one model collision", request.Collisions)
+			}
+			collision := request.Collisions[0]
+			wantFields := []DiffField{
+				{Name: "provider", Before: "codex", After: "claude"},
+				{Name: "provider_model", Before: "gpt-existing", After: "sonnet"},
+			}
+			if collision.Target != DiffModel || collision.Name != "shared-existing" ||
+				!reflect.DeepEqual(collision.Fields, wantFields) {
+				t.Fatalf("collision = %#v, want exact fields %#v", collision, wantFields)
+			}
+			return ReviewResponse{
+				Decision: ReviewConfirm,
+				Collisions: []CollisionDecision{{
+					Target: DiffModel, Name: "shared-existing", Choice: CollisionReplace,
+				}},
+			}, nil
+		},
+	}
+
+	result, err := PlanInteractive(
+		context.Background(), Options{Providers: []core.ProviderName{core.ProviderClaude}}, nil,
+		Source{Bytes: sourceBytes, Exists: true}, &existing,
+		func(context.Context, Options) (map[core.ProviderName]ProviderDiscovery, error) {
+			return map[core.ProviderName]ProviderDiscovery{core.ProviderClaude: {}}, nil
+		},
+		prompt,
+		func(SemanticDiff) error {
+			events = append(events, "present")
+			return nil
+		},
+		CollectAll, testAbsolutePath("runtime"), testAbsolutePath("key"),
+	)
+	if err != nil {
+		t.Fatalf("PlanInteractive() error = %v", err)
+	}
+	wantEvents := []string{"collect", "present", "review"}
+	if !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+	if result.Decision != ReviewConfirm {
+		t.Fatalf("decision = %d, want ReviewConfirm", result.Decision)
+	}
+	if _, ok := result.Plan.Desired.ReplaceModels["shared-existing"]; !ok {
+		t.Fatalf("ReplaceModels = %#v, want reviewed alias", result.Plan.Desired.ReplaceModels)
+	}
+	model := result.Plan.Merge.Config.Models[0]
+	if model.Provider != "claude" || model.ProviderModel != "sonnet" || model.Created != 321 {
+		t.Fatalf("replaced model = %#v", model)
 	}
 }
 
@@ -669,8 +855,8 @@ func TestConfirmInteractivePresenterFailureAndPromptCancellationAreClosed(t *tes
 			context.Background(), plan, prompt,
 			func(SemanticDiff) error { return errors.New("PLANTED presenter secret") },
 		)
-		if err != ErrPlan {
-			t.Fatalf("error = %v, want exact ErrPlan", err)
+		if !errors.Is(err, ErrPlan) {
+			t.Fatalf("error = %v, want ErrPlan", err)
 		}
 	})
 	t.Run("EOF is cancellation", func(t *testing.T) {
@@ -682,7 +868,7 @@ func TestConfirmInteractivePresenterFailureAndPromptCancellationAreClosed(t *tes
 		_, err := ConfirmInteractive(
 			context.Background(), plan, prompt, func(SemanticDiff) error { return nil },
 		)
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("error = %v, want exact context.Canceled", err)
 		}
 	})
@@ -697,7 +883,7 @@ func TestConfirmInteractivePresenterFailureAndPromptCancellationAreClosed(t *tes
 		_, err := ConfirmInteractive(
 			ctx, plan, prompt, func(SemanticDiff) error { return nil },
 		)
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("error = %v, want exact context.Canceled", err)
 		}
 	})
@@ -718,7 +904,7 @@ func TestPlanInteractivePromptEOFAbortAndContextCancellationAreCanceled(t *testi
 			}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 			testAbsolutePath("runtime"), testAbsolutePath("key"),
 		)
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("error = %v, want exact context.Canceled", err)
 		}
 	})
@@ -738,7 +924,7 @@ func TestPlanInteractivePromptEOFAbortAndContextCancellationAreCanceled(t *testi
 			}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 			testAbsolutePath("runtime"), testAbsolutePath("key"),
 		)
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("error = %v, want exact context.Canceled", err)
 		}
 	})
@@ -760,7 +946,7 @@ func TestPlanInteractivePromptEOFAbortAndContextCancellationAreCanceled(t *testi
 			}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 			testAbsolutePath("runtime"), testAbsolutePath("key"),
 		)
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("error = %v, want exact context.Canceled", err)
 		}
 	})
@@ -782,7 +968,7 @@ func TestPlanInteractivePromptEOFAbortAndContextCancellationAreCanceled(t *testi
 			}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 			testAbsolutePath("runtime"), testAbsolutePath("key"),
 		)
-		if err != ErrPlan {
+		if !errors.Is(err, ErrPlan) {
 			t.Fatalf("error = %v, want exact ErrPlan", err)
 		}
 	})
@@ -807,7 +993,7 @@ func TestPlanInteractivePromptEOFAbortAndContextCancellationAreCanceled(t *testi
 			}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 			testAbsolutePath("runtime"), testAbsolutePath("key"),
 		)
-		if err != ErrPlan {
+		if !errors.Is(err, ErrPlan) {
 			t.Fatalf("error = %v, want exact ErrPlan", err)
 		}
 	})
@@ -831,7 +1017,7 @@ func TestPlanInteractiveRejectsInvalidExistingSourceBeforeDiscoveryOrPrompt(t *t
 		}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 		testAbsolutePath("runtime"), testAbsolutePath("key"),
 	)
-	if err != ErrPlan {
+	if !errors.Is(err, ErrPlan) {
 		t.Fatalf("error = %v, want exact ErrPlan", err)
 	}
 }
@@ -861,7 +1047,7 @@ func TestPlanInteractiveRejectsInexactCollisionDecisionsAtomically(t *testing.T)
 		}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 		testAbsolutePath("runtime"), testAbsolutePath("key"),
 	)
-	if err != ErrPlan {
+	if !errors.Is(err, ErrPlan) {
 		t.Fatalf("error = %v, want exact ErrPlan", err)
 	}
 	if result.Resume == nil || len(result.Resume.options.ReplaceProviders) != 0 ||
@@ -1188,7 +1374,7 @@ func TestPlanInteractiveRequiresMatchingExistingSourceBeforeInteraction(t *testi
 				}, &scriptedPrompt{}, func(SemanticDiff) error { return nil }, CollectAll,
 				testAbsolutePath("runtime"), testAbsolutePath("key"),
 			)
-			if err != ErrPlan {
+			if !errors.Is(err, ErrPlan) {
 				t.Fatalf("error = %v, want exact ErrPlan", err)
 			}
 		})
@@ -1211,7 +1397,7 @@ func TestPlanInteractiveInvalidCollectOutputIsFixedPlanFailure(t *testing.T) {
 		}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 		testAbsolutePath("runtime"), testAbsolutePath("key"),
 	)
-	if err != ErrPlan {
+	if !errors.Is(err, ErrPlan) {
 		t.Fatalf("error = %v, want exact ErrPlan", err)
 	}
 }
@@ -1225,7 +1411,7 @@ func TestPlanInteractiveDiscoveryEOFIsOperationalFailure(t *testing.T) {
 		}, &scriptedPrompt{}, func(SemanticDiff) error { return nil }, CollectAll,
 		testAbsolutePath("runtime"), testAbsolutePath("key"),
 	)
-	if err != ErrPlan {
+	if !errors.Is(err, ErrPlan) {
 		t.Fatalf("error = %v, want exact ErrPlan", err)
 	}
 }
@@ -1281,7 +1467,7 @@ func TestConfirmInteractiveRejectsUnauthorizedCollisionAndIncompleteMerge(t *tes
 					return nil
 				},
 			)
-			if err != ErrPlan {
+			if !errors.Is(err, ErrPlan) {
 				t.Fatalf("error = %v, want exact ErrPlan", err)
 			}
 		})
@@ -1305,7 +1491,7 @@ func TestConfirmInteractiveValidatesRuntimeRootOnlyForFreshPlans(t *testing.T) {
 				return nil
 			},
 		)
-		if err != ErrPlan {
+		if !errors.Is(err, ErrPlan) {
 			t.Fatalf("error = %v, want exact ErrPlan", err)
 		}
 	})
@@ -1421,7 +1607,7 @@ func TestConfirmInteractiveRequiresCompleteProductionDiffShapes(t *testing.T) {
 					return nil
 				},
 			)
-			if err != ErrPlan {
+			if !errors.Is(err, ErrPlan) {
 				t.Fatalf("error = %v, want exact ErrPlan", err)
 			}
 		})
@@ -1569,7 +1755,7 @@ func TestConfirmInteractiveEnforcesKeyActionIntegrity(t *testing.T) {
 					return nil
 				},
 			)
-			if err != ErrPlan {
+			if !errors.Is(err, ErrPlan) {
 				t.Fatalf("error = %v, want exact ErrPlan", err)
 			}
 		})
@@ -1755,7 +1941,7 @@ func TestPlanInteractiveCollisionDecisionTableIsExactAndAtomic(t *testing.T) {
 				}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 				testAbsolutePath("runtime"), testAbsolutePath("key"),
 			)
-			if err != ErrPlan {
+			if !errors.Is(err, ErrPlan) {
 				t.Fatalf("error = %v, want exact ErrPlan", err)
 			}
 			if len(result.Resume.options.ReplaceProviders) != 0 ||
@@ -1802,7 +1988,7 @@ func TestPlanInteractiveRepeatedDecidedCollisionFailsClosedWithoutReprompt(t *te
 		}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 		testAbsolutePath("runtime"), testAbsolutePath("key"),
 	)
-	if err != ErrPlan || reviewCalls != 1 {
+	if !errors.Is(err, ErrPlan) || reviewCalls != 1 {
 		t.Fatalf("error/reviewCalls = %v/%d, want ErrPlan/1", err, reviewCalls)
 	}
 }
@@ -1813,7 +1999,7 @@ func TestConvergedInteractivePlanningRejectsRepeatedCollision(t *testing.T) {
 		Collisions: []Collision{{Target: DiffProvider, Name: "codex"}},
 	}}
 	got, err := requireConvergedInteractivePlanning(preview, ErrCollision)
-	if err != ErrPlan {
+	if !errors.Is(err, ErrPlan) {
 		t.Fatalf("error = %v, want exact ErrPlan", err)
 	}
 	if !reflect.DeepEqual(got, clonePlanningResult(preview)) {
@@ -1912,10 +2098,49 @@ func TestPlanInteractiveInvalidResponseCategoriesAreFixed(t *testing.T) {
 			}, &scriptedPrompt{}, func(SemanticDiff) error { return nil }, CollectAll,
 			testAbsolutePath("runtime"), testAbsolutePath("key"),
 		)
-		if err != ErrUsage {
+		if !errors.Is(err, ErrUsage) {
 			t.Fatalf("error = %v, want exact ErrUsage", err)
 		}
 	})
+	for _, test := range []struct {
+		name     string
+		response ProviderSelectionResponse
+	}{
+		{
+			name: "provider selection back with payload",
+			response: ProviderSelectionResponse{
+				Providers: []core.ProviderName{core.ProviderCodex}, Decision: ReviewBack,
+			},
+		},
+		{
+			name:     "provider selection decline",
+			response: ProviderSelectionResponse{Decision: ReviewDecline},
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			prompt := &scriptedPrompt{
+				selectProviders: func(
+					context.Context,
+					ProviderSelectionRequest,
+				) (ProviderSelectionResponse, error) {
+					return test.response, nil
+				},
+			}
+			_, err := PlanInteractive(
+				context.Background(), Options{}, nil, Source{}, nil,
+				func(context.Context, Options) (map[core.ProviderName]ProviderDiscovery, error) {
+					t.Fatal("discovery called after invalid selection response")
+					return nil, nil
+				},
+				prompt, func(SemanticDiff) error { return nil }, CollectAll,
+				testAbsolutePath("runtime"), testAbsolutePath("key"),
+			)
+			if !errors.Is(err, ErrPlan) {
+				t.Fatalf("error = %v, want exact ErrPlan", err)
+			}
+		})
+	}
 	t.Run("unknown provider selection decision", func(t *testing.T) {
 		prompt := &scriptedPrompt{
 			selectProviders: func(context.Context, ProviderSelectionRequest) (ProviderSelectionResponse, error) {
@@ -1933,7 +2158,7 @@ func TestPlanInteractiveInvalidResponseCategoriesAreFixed(t *testing.T) {
 			}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 			testAbsolutePath("runtime"), testAbsolutePath("key"),
 		)
-		if err != ErrPlan {
+		if !errors.Is(err, ErrPlan) {
 			t.Fatalf("error = %v, want exact ErrPlan", err)
 		}
 	})
@@ -1963,7 +2188,7 @@ func TestPlanInteractiveInvalidResponseCategoriesAreFixed(t *testing.T) {
 			}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 			testAbsolutePath("runtime"), testAbsolutePath("key"),
 		)
-		if err != ErrPlan {
+		if !errors.Is(err, ErrPlan) {
 			t.Fatalf("error = %v, want exact ErrPlan", err)
 		}
 	})
@@ -1986,7 +2211,7 @@ func TestPlanInteractiveInvalidResponseCategoriesAreFixed(t *testing.T) {
 			}, prompt, func(SemanticDiff) error { return nil }, CollectAll,
 			testAbsolutePath("runtime"), testAbsolutePath("key"),
 		)
-		if err != ErrPlan {
+		if !errors.Is(err, ErrPlan) {
 			t.Fatalf("error = %v, want exact ErrPlan", err)
 		}
 	})
@@ -2051,7 +2276,7 @@ func TestConfirmInteractiveRejectsMalformedAuthorizedCollisionMetadata(t *testin
 					return nil
 				},
 			)
-			if err != ErrPlan {
+			if !errors.Is(err, ErrPlan) {
 				t.Fatalf("error = %v, want exact ErrPlan", err)
 			}
 		})
@@ -2090,7 +2315,7 @@ func TestConfirmInteractiveInvalidReviewResponseIsFixed(t *testing.T) {
 					},
 				}, func(SemanticDiff) error { return nil },
 			)
-			if err != ErrPlan || decision != 0 {
+			if !errors.Is(err, ErrPlan) || decision != 0 {
 				t.Fatalf("decision/error = %d/%v, want 0/ErrPlan", decision, err)
 			}
 		})

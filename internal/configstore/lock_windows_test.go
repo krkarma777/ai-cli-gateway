@@ -85,7 +85,7 @@ func TestLockWindowsSerializesAndValidatesPersistentSentinel(t *testing.T) {
 	if _, err := os.Stat(LockPath(configPath)); err != nil {
 		t.Fatalf("persistent sentinel missing: %v", err)
 	}
-	if windowsStoreUnsafeGrant == 0 {
+	if windowsStoreUnsafePrivateGrant == 0 || windowsStoreUnsafeAncestorGrant == 0 {
 		t.Fatal("Windows lock policy mask is empty")
 	}
 

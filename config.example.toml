@@ -12,6 +12,9 @@
 [server]
 listen = "127.0.0.1:8080"
 api_key_env = "AI_CLI_GATEWAY_API_KEY"
+# For file-backed deployment, remove api_key_env and use the mutually exclusive
+# alternative below. The path is generic: never configure both key sources.
+# api_key_file = "/absolute/private/path/to/gateway.key"
 http_body_bytes = 1048576
 input_bytes = 524288
 instructions_bytes = 262144

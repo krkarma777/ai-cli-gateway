@@ -10,7 +10,7 @@ It implements a focused **Responses API-compatible subset**, not full OpenAI API
 
 Your application calls one loopback endpoint. AI CLI Gateway routes the request to a configured Codex CLI, Claude Code, or Gemini CLI process and returns final text or locally validated JSON.
 
-[Get started](#quick-start) · [Read the full setup guide](docs/getting-started.md) · [See the API reference](docs/reference.md) · [Download v0.1.0](https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.1.0)
+[Get started](#quick-start) · [Read the full setup guide](docs/getting-started.md) · [See the API reference](docs/reference.md) · [Download v0.2.0](https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.2.0)
 
 ## From SDK to local CLI
 
@@ -52,7 +52,7 @@ The gateway must already be running, and `codex-local` must exist in your config
 
 AI CLI Gateway is designed for local or self-hosted use by one trusted OS identity. It is deliberately small: no web UI, database, or conversation store.
 
-## What v0.1.0 supports
+## What v0.2.0 supports
 
 | Area | Included |
 |---|---|
@@ -63,8 +63,9 @@ AI CLI Gateway is designed for local or self-hosted use by one trusted OS identi
 | Routing | operator-configured model aliases |
 | Reliability | bounded queues, timeouts, cancellation, output limits, and process-tree cleanup |
 | Diagnostics | `doctor` checks configuration and provider readiness without inference |
+| Setup | guided interactive init plus strict flag-only automation |
 
-Not included in v0.1.0:
+Not included in v0.2.0:
 
 - SSE streaming;
 - tool or function-call round trips;
@@ -90,49 +91,51 @@ OpenAI SDK or HTTP client
 
 ## Quick Start
 
-The complete [Getting Started guide](docs/getting-started.md) covers release selection, SHA-256 verification, optional provenance checks, POSIX and Windows permissions, private key handling, configuration, and SDK setup. Use it for the secure copy-paste installation path.
+Download and verify the matching [v0.2.0 release](https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.2.0), then place `ai-cli-gateway` on `PATH`. The complete [Getting Started guide](docs/getting-started.md) has copy-paste checksum and provenance verification for every platform.
 
-Before starting the gateway:
+### 1. Install and authenticate a provider CLI
 
-1. Install and authenticate one supported provider CLI.
-2. Download and verify the matching v0.1.0 archive.
-3. Create private configuration and runtime directories.
-4. Copy `config.example.toml` and replace its generic paths, model, and gateway settings.
-5. Store the optional gateway key outside the repository.
+Install and authenticate Codex CLI, Claude Code, or Gemini CLI with the provider's own tooling. AI CLI Gateway discovers setup candidates, but it never installs a CLI, runs login, or copies provider credentials.
 
-### 1. Check readiness
+### 2. Initialize
 
-Run Doctor with the absolute path to your configuration:
+Run the guided setup and choose at least one provider and model alias:
 
 ```bash
-ai-cli-gateway doctor --config /absolute/path/to/config.toml
+ai-cli-gateway init
 ```
 
-For machine-readable diagnostics:
+Accepting the default Gateway authentication creates a private `gateway.key` beside the default configuration. Init previews a redacted change summary, writes only after confirmation, runs Doctor without inference, and prints the exact next commands.
+
+### 3. Start the gateway
 
 ```bash
-ai-cli-gateway doctor --config /absolute/path/to/config.toml --json
-```
-
-Doctor checks the gateway configuration, executable identity and version, authentication readiness, provider capabilities, runtime containment, and configured aliases. It does not send an inference request.
-
-### 2. Start the gateway
-
-After completing the private key-loading step in the full guide, start the gateway:
-
-```bash
-ai-cli-gateway serve --config /absolute/path/to/config.toml
+ai-cli-gateway serve
 ```
 
 The listener defaults to `127.0.0.1:8080`. Keep this terminal running.
 
-### 3. Send a request
+### 4. Load the generated client key
 
-In another terminal, use the guide's bounded key-loading step, then save the request as `request.json`:
+In another POSIX terminal, load the generated key as data without printing it. This shows the default non-XDG location; use the exact path printed by init when it differs. The [full guide](docs/getting-started.md#load-the-client-key-safely) also gives the PowerShell form.
+
+```bash
+set -eu
+GATEWAY_KEY_FILE="${HOME}/.config/ai-cli-gateway/gateway.key"
+GATEWAY_KEY="$(LC_ALL=C tr -d '\r\n' < "${GATEWAY_KEY_FILE}")"
+test "${#GATEWAY_KEY}" -eq 64
+case "${GATEWAY_KEY}" in *[!0-9a-f]*) exit 1 ;; esac
+export AI_CLI_GATEWAY_API_KEY="${GATEWAY_KEY}"
+unset GATEWAY_KEY
+```
+
+### 5. Send a request
+
+Save the request as `request.json`. Replace `YOUR_ALIAS` with the exact alias you chose during init:
 
 ```json
 {
-  "model": "codex-local",
+  "model": "YOUR_ALIAS",
   "instructions": "Answer concisely.",
   "input": "Suggest three names for an AI note-taking app.",
   "text": {
@@ -151,10 +154,12 @@ Send the file so the prompt and key do not become command-line arguments:
 
 ```bash
 curl --fail-with-body \
+  -H @- \
   -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY:?not set}" \
   --data-binary @request.json \
-  http://127.0.0.1:8080/v1/responses
+  http://127.0.0.1:8080/v1/responses <<EOF
+Authorization: Bearer ${AI_CLI_GATEWAY_API_KEY}
+EOF
 ```
 
 A successful request returns a completed Responses-style object. The final provider text is under `output[0].content[0].text`; OpenAI SDK clients also expose `response.output_text`.
@@ -206,7 +211,7 @@ Read [SECURITY.md](SECURITY.md) for private vulnerability reporting and the [ope
 
 ## Release integrity
 
-The v0.1.0 release provides seven downloadable assets:
+The v0.2.0 release provides seven downloadable assets:
 
 - five platform archives;
 - `SHA256SUMS`, covering every archive and the SBOM; and
@@ -223,6 +228,7 @@ GitHub stores build-provenance attestations separately for all seven assets. Fol
 | Run the official SDK examples | [JavaScript](examples/openai-sdk/javascript/main.mjs) or [Python](examples/openai-sdk/python/main.py) |
 | Report a vulnerability privately | [Security Policy](SECURITY.md) |
 | Build, test, or contribute | [Contributing](CONTRIBUTING.md) |
-| Review the launch scope | [v0.1.0 release notes](https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.1.0) |
+| Review the current changes | [v0.2.0 release notes](docs/releases/v0.2.0.md) |
+| Review the original launch scope | [historical v0.1.0 release notes](https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.1.0) |
 
 AI CLI Gateway is Apache-2.0 licensed. You are responsible for using each provider CLI in accordance with its applicable terms.

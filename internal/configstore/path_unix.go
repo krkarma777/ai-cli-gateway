@@ -308,10 +308,10 @@ func unixStoreMetadata(stat unix.Stat_t) (nativeFileMetadata, bool) {
 	return nativeFileMetadata{
 		device:       device,
 		inode:        stat.Ino,
-		mode:         uint32(stat.Mode),
+		mode:         uint32(stat.Mode), //nolint:unconvert // Stat_t.Mode width differs across supported Unix targets.
 		uid:          stat.Uid,
 		gid:          stat.Gid,
-		nlink:        uint64(stat.Nlink), //nolint:gosec // Successful native stat link counts are nonnegative.
+		nlink:        uint64(stat.Nlink), //nolint:gosec,unconvert // Successful link counts are nonnegative; field width differs by Unix target.
 		size:         stat.Size,
 		modifiedSec:  modifiedSec,
 		modifiedNsec: modifiedNsec,

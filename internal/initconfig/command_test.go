@@ -90,14 +90,14 @@ func TestResolveCommandCandidateDiscoveryInspectionStopsOnCancellation(t *testin
 		},
 	})
 	got, err := wrapped.OpenCommandPath("ignored", CommandIdentityOnly, 0)
-	if err != context.Canceled || got != nil {
+	if !errors.Is(err, context.Canceled) || got != nil {
 		t.Fatalf("first inspection = %#v/%v, want nil/context.Canceled", got, err)
 	}
 	if calls != 1 || inspection.closes != 1 {
 		t.Fatalf("calls/closes = %d/%d, want 1/1", calls, inspection.closes)
 	}
 	got, err = wrapped.OpenCommandPath("ignored-again", CommandIdentityOnly, 0)
-	if err != context.Canceled || got != nil || calls != 1 {
+	if !errors.Is(err, context.Canceled) || got != nil || calls != 1 {
 		t.Fatalf("second inspection = %#v/%v calls=%d", got, err, calls)
 	}
 }

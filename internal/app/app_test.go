@@ -2113,7 +2113,11 @@ func newReadyAppFixture(t *testing.T) *readyAppFixture {
 	if err := os.Chmod(base, 0o700); err != nil {
 		t.Fatalf("chmod fixture parent: %v", err)
 	}
-	executable := filepath.Join(base, "fake-gateway")
+	executableName := "fake-gateway"
+	if runtime.GOOS == "windows" {
+		executableName += ".exe"
+	}
+	executable := filepath.Join(base, executableName)
 	// The owner-only fixture must also be executable for path diagnosis.
 	//nolint:gosec
 	testutil.WriteTrustedFile(t, executable, []byte("fixture"), 0o700)

@@ -306,7 +306,7 @@ func TestGuidedProviderCodexDoctorCanBlockUntilReleased(t *testing.T) {
 func TestGuidedProviderMainRejectsInferenceWithoutRecordingArguments(t *testing.T) {
 	directory := t.TempDir()
 	executable := filepath.Join(directory, "fake-guided-codex-ready")
-	const secretArgument = "PLANTED_INFERENCE_ARG_SECRET_8cd1"
+	const secretArgument = "PLANTED_INFERENCE_ARG_SECRET_8cd1" // #nosec G101 -- planted non-credential argv leak canary.
 	var stdout, stderr bytes.Buffer
 
 	code := guidedProviderMain(

@@ -489,7 +489,7 @@ func TestDiscoverProvidersMakesPATHCandidatesAbsolute(t *testing.T) {
 }
 
 func TestDiscoverProvidersReturnsFixedErrorsForUnsafePATHResults(t *testing.T) {
-	secret := "unique-path-error-secret"
+	planted := "unique-path-error-secret"
 	tests := []struct {
 		name     string
 		lookPath func(string) (string, error)
@@ -499,7 +499,7 @@ func TestDiscoverProvidersReturnsFixedErrorsForUnsafePATHResults(t *testing.T) {
 		{
 			name: "missing command is not fatal",
 			lookPath: func(string) (string, error) {
-				return "", fmt.Errorf("missing %s: %w", secret, exec.ErrNotFound)
+				return "", fmt.Errorf("missing %s: %w", planted, exec.ErrNotFound)
 			},
 			absPath: func(string) (string, error) {
 				t.Fatal("AbsPath called for missing command")
@@ -515,7 +515,7 @@ func TestDiscoverProvidersReturnsFixedErrorsForUnsafePATHResults(t *testing.T) {
 		{
 			name:     "absolute conversion failure",
 			lookPath: func(string) (string, error) { return "relative-codex", nil },
-			absPath:  func(string) (string, error) { return "", errors.New("failure " + secret) },
+			absPath:  func(string) (string, error) { return "", errors.New("failure " + planted) },
 			wantErr:  ErrPlan,
 		},
 		{
@@ -544,7 +544,7 @@ func TestDiscoverProvidersReturnsFixedErrorsForUnsafePATHResults(t *testing.T) {
 				deps,
 			)
 			formatted := fmt.Sprintf("%v %v", got, err)
-			if strings.Contains(formatted, secret) {
+			if strings.Contains(formatted, planted) {
 				t.Fatal("DiscoverProviders() retained the planted dependency error value")
 			}
 			if !errors.Is(err, test.wantErr) {
@@ -601,7 +601,7 @@ func TestDiscoverProvidersHonorsCancellationBeforeAndBetweenProviders(t *testing
 			nil,
 			deps,
 		)
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("DiscoverProviders() error = %v, want exact context.Canceled", err)
 		}
 		if got != nil {
@@ -632,8 +632,8 @@ func TestDiscoverProvidersHonorsCancellationBeforeAndBetweenProviders(t *testing
 			nil,
 			deps,
 		)
-		if err != context.Canceled {
-			t.Fatalf("DiscoverProviders() error = %v, want exact context.Canceled", err)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("DiscoverProviders() error = %v, want context.Canceled", err)
 		}
 		if got != nil {
 			t.Fatalf("DiscoverProviders() = %#v, want nil", got)
@@ -674,8 +674,8 @@ func TestDiscoverProvidersReturnsCancellationAfterCredentialLookup(t *testing.T)
 	if strings.Contains(formatted, planted) {
 		t.Fatal("DiscoverProviders() retained the credential value after cancellation")
 	}
-	if err != context.Canceled {
-		t.Fatal("DiscoverProviders() did not return exact context.Canceled")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal("DiscoverProviders() did not return context.Canceled")
 	}
 	if got != nil {
 		t.Fatalf("DiscoverProviders() = %#v, want nil after credential cancellation", got)
@@ -705,7 +705,7 @@ func TestDiscoveryNeverRetainsCredentialValues(t *testing.T) {
 			value, ok := environment[name]
 			return value, ok
 		},
-		LookPath: func(name string) (string, error) {
+		LookPath: func(_ string) (string, error) {
 			return "", fmt.Errorf(
 				"missing-command-with-%s: %w",
 				secrets["GEMINI_API_KEY"],

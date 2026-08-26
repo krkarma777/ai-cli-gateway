@@ -1,6 +1,6 @@
 # API and Operations Reference
 
-Detailed contracts and operating boundaries for AI CLI Gateway v0.1.0. For installation and a first request, start with [Getting Started](getting-started.md).
+Detailed contracts and operating boundaries for AI CLI Gateway v0.2.0. For installation and a first request, start with [Getting Started](getting-started.md).
 
 ## Architecture and endpoint scope
 
@@ -248,21 +248,42 @@ usage:
 
 Both JSON Doctor orders are accepted: `ai-cli-gateway doctor --config PATH --json` and `ai-cli-gateway doctor --json --config PATH`. The equals-sign form is intentionally not part of the grammar.
 
-### Non-interactive initialization
+### Initialization
 
-This slice supports the strict non-interactive form. Bare interactive `ai-cli-gateway init` is reserved for the next guided-init slice and currently exits 2 with instructions to pass `--non-interactive` and every required value. Non-interactive init never reads stdin, searches `PATH`, guesses a provider home, runs a login command, starts a listener, or performs inference.
+Bare `ai-cli-gateway init` starts the guided terminal setup. It selects one or more providers, offers discovered executable and config-home candidates, collects authentication and model mappings, shows a redacted change summary, and asks for final confirmation before writing. It never runs a provider login or inference and never prints credentials or Gateway key material. Both stdin and stderr must be interactive terminals; otherwise init exits 2 with instructions to use `--non-interactive` and explicit flags. Set `AI_CLI_GATEWAY_ACCESSIBLE=1` or `TERM=dumb` to use the line-oriented accessible prompts.
+
+For automation, `--non-interactive` uses the strict flag-only form. It never reads stdin, searches `PATH`, guesses a provider home, runs a login command, starts a listener, or performs inference.
+
+The complete common init flags are:
+
+```text
+--config PATH
+--non-interactive
+--dry-run
+--provider codex|claude|gemini
+--replace-provider codex|claude|gemini
+--replace-model ALIAS
+--gateway-auth file|environment|none
+--gateway-key-file ABSOLUTE_PATH
+--gateway-key-env ENVIRONMENT_NAME
+```
+
+`--provider`, `--replace-provider`, and `--replace-model` are repeatable. Every option and value is a separate argument; equals-sign option syntax is rejected.
 
 Select one or more providers with repeatable `--provider codex|claude|gemini`. A provider that is not already complete in the selected configuration needs its absolute executable and config home, plus at least one model mapping:
 
 ```text
---codex-executable PATH       --codex-config-home PATH
+--codex-executable PATH       --codex-entrypoint PATH
+--codex-config-home PATH
 --codex-model ALIAS=PROVIDER_MODEL
 
---claude-executable PATH      --claude-config-home PATH
+--claude-executable PATH      --claude-entrypoint PATH
+--claude-config-home PATH
 --claude-model ALIAS=PROVIDER_MODEL
 --claude-auth config-home|anthropic-api-key
 
---gemini-executable PATH      --gemini-config-home PATH
+--gemini-executable PATH      --gemini-entrypoint PATH
+--gemini-config-home PATH
 --gemini-model ALIAS=PROVIDER_MODEL
 --gemini-auth gemini-api-key|google-api-key|vertex-service-account
 ```
@@ -279,20 +300,39 @@ Gateway authentication is selected with one of these exact forms:
 
 A fresh configuration defaults to file authentication and a private `gateway.key` beside the configuration. Init generates a missing key without printing it. Its completion output is authentication-aware: file mode shows commands that load the private key for a client, environment mode maps the configured environment variable without reading or printing its value, and `none` mode shows requests without an `Authorization` header. An explicitly selected valid key file is reused; an unapproved orphan at the implicit path is not reused in non-interactive mode.
 
-Existing TOML is merged without rewriting unrelated text. Omitted values for an already configured selected provider are preserved. Changing an existing provider requires the matching repeatable `--replace-provider NAME`; changing an existing model alias requires `--replace-model ALIAS`. Without that explicit authority, init prints the redacted semantic diff and exits 2 without mutation. `--dry-run` performs configuration validation and read-only filesystem preflight, prints the same redacted diff, and states that no files changed and post-write Doctor was not run.
+Existing TOML is merged without rewriting unrelated text. Unselected providers, omitted aliases, comments, formatting, server settings, and runtime tuning are preserved byte-for-byte. Omitted values for an already configured selected provider are preserved. Changing an existing provider requires the matching repeatable `--replace-provider NAME`; changing an existing model alias requires `--replace-model ALIAS`. Without that explicit authority, init prints the redacted semantic diff and exits 2 without mutation.
 
-After a successful commit or semantic no-op, init runs the no-inference Doctor checks and prints the complete report. Readiness is determined by core checks and the providers selected in this invocation; an unselected, pre-existing provider remains visible in the report but does not change the init result.
+`--dry-run` performs configuration validation and read-only filesystem preflight, prints the same redacted diff, and states that no files changed and post-write Doctor was not run. It creates no directories, key, backup, lock, or temporary file and never runs provider probes.
 
-Init exit codes are:
+When an existing configuration changes, init atomically maintains one private `config.toml.bak` containing the immediately prior config. The backup contains no Gateway key. A later successful mutation replaces that one prior-version backup; an unsafe backup path or an unprovable restoration fails closed and requires recovery. Applying an identical desired state is a no-op and rewrites neither the config nor backup.
 
-| Exit | Meaning |
-|---:|---|
-| 0 | selected providers ready, dry run complete, or a future interactive confirmation declined |
-| 1 | saved but not ready, operational failure, indeterminate state, or backup recovery required |
-| 2 | invalid/incomplete input, invalid existing configuration, or an unapproved replacement/key reuse |
-| 130 | canceled before commit, or canceled after a commit that was already saved |
+After a successful commit or semantic no-op, init runs the no-inference Doctor checks and prints the complete report. Readiness is determined by core checks and the providers selected by this invocation; an unselected, pre-existing provider remains visible in the report but does not change the init result.
 
-When `--config` is omitted, POSIX uses `$XDG_CONFIG_HOME/ai-cli-gateway/config.toml` when `XDG_CONFIG_HOME` is an absolute nonempty path; otherwise it uses `$HOME/.config/ai-cli-gateway/config.toml`. Windows uses `%LOCALAPPDATA%\AI CLI Gateway\config\config.toml`. If a safe default path is unavailable, the command exits 2 and writes `default_config_path_unavailable: pass --config PATH`; pass an explicit `--config PATH` to continue.
+The exact init exit-state table is:
+
+| Outcome | Files | Exit |
+|---|---|---:|
+| Candidate stored and every selected provider ready | updated | 0 |
+| Candidate stored but core or a selected provider not ready | updated | 1 |
+| Storage, locking, or safe-path failure | old config retained | 1 |
+| Prior-backup restoration cannot be proved, including during cancellation | old config retained; backup uncertain | 1 |
+| Invalid syntax, incomplete non-interactive input, invalid existing config, or unapproved collision | unchanged | 2 |
+| Final interactive confirmation declined | unchanged | 0 |
+| Dry-run validation succeeds | unchanged | 0 |
+| Cancellation before commit after proved auxiliary restoration | unchanged | 130 |
+| Cancellation after commit during Doctor | updated | 130 |
+
+When `--config` is omitted, configuration-aware commands share these default config paths:
+
+- POSIX: `${XDG_CONFIG_HOME:-$HOME/.config}/ai-cli-gateway/config.toml`. `XDG_CONFIG_HOME` is used only when it is nonempty and absolute; otherwise the absolute `HOME` fallback is used.
+- Windows: `%LOCALAPPDATA%\AI CLI Gateway\config\config.toml`. `LOCALAPPDATA` must be a fully qualified local path.
+
+New guided configurations use these default runtime roots:
+
+- POSIX: `${XDG_STATE_HOME:-$HOME/.local/state}/ai-cli-gateway/runtime`, with the same nonempty absolute-XDG rule.
+- Windows: `%LOCALAPPDATA%\AI CLI Gateway\runtime`.
+
+If a safe default path is unavailable, the command exits 2 and writes `default_config_path_unavailable: pass --config PATH`; pass an explicit `--config PATH` to continue. Default resolution never falls back to the working directory or a shared system directory.
 
 Help is available as `ai-cli-gateway --help`, `ai-cli-gateway version --help`, `ai-cli-gateway init --help`, `ai-cli-gateway serve --help`, and `ai-cli-gateway doctor --help`.
 
@@ -352,7 +392,7 @@ Unix starts each provider in a new process group. A descendant that deliberately
 
 AI CLI Gateway makes one adapter attempt: there is no gateway retry, fallback, or provider switching. A provider CLI may perform provider-internal network retries that the gateway cannot observe or eliminate. A provider request may incur provider usage and cost.
 
-The listener accepts loopback literals only and defaults to `127.0.0.1:8080`. Bearer authentication is optional. Configure either `server.api_key_env` (including the compatible explicit empty value) or `server.api_key_file`, never both. The configuration parser recognizes drive-absolute and UNC forms as absolute on Windows, but runtime loading of `server.api_key_file` requires a drive-qualified, drive-absolute path on a fixed local drive; UNC, network, mapped, removable, and reparse locations are rejected. When enabled, the value is read from the configured source and compared without timing-sensitive string equality. Callers are trusted at the same-OS-user boundary, so a dedicated service OS user is recommended.
+The listener accepts loopback literals only and defaults to `127.0.0.1:8080`. Bearer authentication is optional. `server.api_key_env` (including the compatible explicit empty value) and `server.api_key_file` are mutually exclusive; configure at most one. The configuration parser recognizes drive-absolute and UNC forms as absolute on Windows, but runtime loading of `server.api_key_file` requires a drive-qualified, drive-absolute path on a fixed local drive; UNC, network, mapped, removable, and reparse locations are rejected. When enabled, the value is read from the configured source and compared without timing-sensitive string equality. Callers are trusted at the same-OS-user boundary, so a dedicated service OS user is recommended.
 
 Provider binaries are absolute validated paths. Processes are started from argv arrays without a shell, and the prompt is passed through stdin. Each admitted request receives a `0700` temporary runtime and `0600` request files. One process owns the runtime root exclusively, and configuration, aliases, provider readiness, and the key are immutable startup snapshots; there is no hot reload.
 

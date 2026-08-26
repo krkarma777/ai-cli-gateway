@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -449,13 +450,17 @@ func readUnixCommandAnchor(parent *os.File, name string) (unixCommandAnchor, err
 	); err != nil {
 		return unixCommandAnchor{}, ErrUnsafe
 	}
+	device, ok := unixCommandUnsignedInteger(reflect.ValueOf(stat.Dev))
+	if !ok {
+		return unixCommandAnchor{}, ErrUnsafe
+	}
 	return unixCommandAnchor{
-		dev:   uint64(stat.Dev),
-		ino:   uint64(stat.Ino),
-		mode:  uint32(stat.Mode),
+		dev:   device,
+		ino:   stat.Ino,
+		mode:  uint32(stat.Mode), //nolint:unconvert // Stat_t.Mode width differs across supported Unix targets.
 		uid:   stat.Uid,
 		gid:   stat.Gid,
-		nlink: uint64(stat.Nlink),
+		nlink: uint64(stat.Nlink), //nolint:unconvert // Stat_t.Nlink width differs across supported Unix targets.
 		size:  stat.Size,
 	}, nil
 }
@@ -481,10 +486,43 @@ func sameUnixCommandAnchorFileInfo(anchor unixCommandAnchor, info fs.FileInfo) b
 		return false
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && anchor.dev == uint64(stat.Dev) &&
-		anchor.ino == uint64(stat.Ino) && anchor.mode == uint32(stat.Mode) &&
+	if !ok {
+		return false
+	}
+	device, ok := unixCommandUnsignedInteger(reflect.ValueOf(stat.Dev))
+	return ok && anchor.dev == device &&
+		anchor.ino == stat.Ino &&
+		anchor.mode == uint32(stat.Mode) && //nolint:unconvert // Stat_t.Mode width differs across supported Unix targets.
 		anchor.uid == stat.Uid && anchor.gid == stat.Gid &&
-		anchor.nlink == uint64(stat.Nlink) && anchor.size == stat.Size
+		anchor.nlink == uint64(stat.Nlink) && //nolint:unconvert // Stat_t.Nlink width differs across supported Unix targets.
+		anchor.size == stat.Size
+}
+
+func unixCommandUnsignedInteger(value reflect.Value) (uint64, bool) {
+	if !value.IsValid() {
+		return 0, false
+	}
+	switch value.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if value.Int() < 0 {
+			if value.Kind() == reflect.Int32 {
+				return uint64(uint32(value.Int())), true // #nosec G115 -- preserves Darwin dev_t identity bits.
+			}
+			return 0, false
+		}
+		return uint64(value.Int()), true //nolint:gosec // Negative values were rejected above.
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return value.Uint(), true
+	case reflect.Invalid, reflect.Bool,
+		reflect.Float32, reflect.Float64,
+		reflect.Complex64, reflect.Complex128,
+		reflect.Array, reflect.Chan, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Pointer, reflect.Slice, reflect.String,
+		reflect.Struct, reflect.UnsafePointer:
+		return 0, false
+	default:
+		return 0, false
+	}
 }
 
 func sameUnixCommandAuthorityIdentity(left, right fs.FileInfo) bool {

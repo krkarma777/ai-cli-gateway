@@ -31,7 +31,7 @@ func TestPromptLineBufferAssemblesUTF16AndBackspacesOneRune(t *testing.T) {
 			t.Fatalf("append %#x = accepted %t, error %v", unit, accepted, err)
 		}
 	}
-	if _, _, err := buffer.appendUTF16('e'); err != ErrPlan {
+	if _, _, err := buffer.appendUTF16('e'); !errors.Is(err, ErrPlan) {
 		t.Fatalf("append beyond actual UTF-8 limit = %v, want exact ErrPlan", err)
 	}
 	value, err := buffer.value()
@@ -88,7 +88,7 @@ func TestPromptLineBufferRejectsSurrogatesThatCannotFormARune(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if err := test.run(newPromptLineBuffer(8)); err != ErrPlan {
+			if err := test.run(newPromptLineBuffer(8)); !errors.Is(err, ErrPlan) {
 				t.Fatalf("error = %v, want exact ErrPlan", err)
 			}
 		})
@@ -169,7 +169,7 @@ func TestPromptConsoleLineRejectsControlBeforeEchoAndRestoresMode(t *testing.T) 
 			var output bytes.Buffer
 
 			_, err := readPromptConsoleLine(context.Background(), &output, driver)
-			if err != ErrPlan {
+			if !errors.Is(err, ErrPlan) {
 				t.Fatalf("readPromptConsoleLine() error = %v, want exact ErrPlan", err)
 			}
 			if output.Len() != 0 {
@@ -242,7 +242,7 @@ func TestPromptConsoleLineRestoresModeOnEveryPostEntryReturn(t *testing.T) {
 			driver := &scriptedPromptConsoleDriver{}
 			ctx, output := test.configure(driver)
 			_, err := readPromptConsoleLine(ctx, output, driver)
-			if err != test.wantErr {
+			if !errors.Is(err, test.wantErr) {
 				t.Fatalf("readPromptConsoleLine() error = %v, want exact %v", err, test.wantErr)
 			}
 			if driver.enterCalls != 1 || driver.restoreCalls != 1 {
@@ -273,7 +273,7 @@ func TestPromptConsoleLineRestoreFailureOutranksReadResult(t *testing.T) {
 func TestPromptConsoleLineDoesNotRestoreWhenModeEntryFails(t *testing.T) {
 	driver := &scriptedPromptConsoleDriver{enterErr: errors.New("planted mode entry failure")}
 	_, err := readPromptConsoleLine(context.Background(), io.Discard, driver)
-	if err != ErrPlan {
+	if !errors.Is(err, ErrPlan) {
 		t.Fatalf("readPromptConsoleLine() error = %v, want exact ErrPlan", err)
 	}
 	if driver.restoreCalls != 0 {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/krkarma777/ai-cli-gateway/internal/testutil"
 	"golang.org/x/sys/windows"
@@ -93,6 +94,128 @@ func TestLoadWindowsPrivateConfigAndRejectsUnsafeObjects(t *testing.T) {
 			t.Fatalf("Load(reparse) error = %v", err)
 		}
 	})
+}
+
+func TestLoadWindowsAllowsUntrustedCreateGrantOnNonPrivateAncestor(t *testing.T) {
+	root := testutil.TrustedTempDir(t)
+	installWindowsStoreDACL(t, root, "D:P(A;;FA;;;%s)(A;;0x00000002;;;WD)")
+	private := filepath.Join(root, "private")
+	createWindowsTestPrivateDirectory(t, private)
+
+	path := filepath.Join(private, "config.toml")
+	snapshot, err := NewWriter().Load(context.Background(), path)
+	if err != nil || snapshot.Exists() || snapshot.Path() != path {
+		t.Fatalf("Load(missing below creatable ancestor) = %#v, %v", snapshot, err)
+	}
+}
+
+func TestWindowsStoreFinalPathAcceptsTrustedTempLongName(t *testing.T) {
+	root := testutil.TrustedTempDir(t)
+	handle, err := openWindowsStorePath(root, true)
+	if err != nil {
+		t.Fatalf("open trusted fixture: %v", err)
+	}
+	defer handle.Close() //nolint:errcheck // Test cleanup after assertion.
+
+	if !windowsStoreFinalPathMatches(handle, root) {
+		t.Fatalf("final path did not match trusted fixture %q", root)
+	}
+}
+
+func TestLoadWindowsCanonicalizesShortAndLongConfigAliases(t *testing.T) {
+	root := testutil.TrustedTempDir(t)
+	longPath := filepath.Join(root, "configuration-for-guided-init.toml")
+	testutil.WriteTrustedFile(t, longPath, validWindowsStoreConfig(t, root, ""), 0o600)
+	shortPath := windowsStoreShortPath(t, longPath)
+	if strings.EqualFold(filepath.Base(shortPath), filepath.Base(longPath)) {
+		t.Skip("test volume did not expose a DOS 8.3 alias for the config file")
+	}
+
+	longSnapshot, err := NewWriter().Load(context.Background(), longPath)
+	if err != nil {
+		t.Fatalf("Load(long path): %v", err)
+	}
+	shortSnapshot, err := NewWriter().Load(context.Background(), shortPath)
+	if err != nil {
+		t.Fatalf("Load(short path): %v", err)
+	}
+	if !strings.EqualFold(longSnapshot.Path(), shortSnapshot.Path()) ||
+		!strings.EqualFold(LockPath(longSnapshot.Path()), LockPath(shortSnapshot.Path())) {
+		t.Fatalf(
+			"aliases retained different config/lock paths: long=%q short=%q",
+			longSnapshot.Path(), shortSnapshot.Path(),
+		)
+	}
+	longKey, longOK := nativeStorePathKey(longPath)
+	shortKey, shortOK := nativeStorePathKey(shortPath)
+	if !longOK || !shortOK || longKey != shortKey {
+		t.Fatalf("alias keys = %q/%t and %q/%t", longKey, longOK, shortKey, shortOK)
+	}
+
+	first, err := NewWriter().acquireLock(context.Background(), longSnapshot)
+	if err != nil {
+		t.Fatalf("acquire long-path lock: %v", err)
+	}
+	defer first.release() //nolint:errcheck // Best-effort cleanup after assertions.
+	waitCtx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	second, secondErr := NewWriter().acquireLock(waitCtx, shortSnapshot)
+	if second != nil {
+		_ = second.release()
+	}
+	if !errors.Is(secondErr, context.DeadlineExceeded) {
+		t.Fatalf("short-path alias acquired a distinct lock: %v", secondErr)
+	}
+}
+
+func TestLoadWindowsCanonicalizesMissingTargetBelowShortAncestor(t *testing.T) {
+	root := testutil.TrustedTempDir(t)
+	longParent := filepath.Join(root, "private-configuration-directory")
+	createWindowsTestPrivateDirectory(t, longParent)
+	shortParent := windowsStoreShortPath(t, longParent)
+	if strings.EqualFold(filepath.Base(shortParent), filepath.Base(longParent)) {
+		t.Skip("test volume did not expose a DOS 8.3 alias for the existing parent")
+	}
+
+	longPath := filepath.Join(longParent, "future-configuration.toml")
+	shortPath := filepath.Join(shortParent, filepath.Base(longPath))
+	longSnapshot, err := NewWriter().Load(context.Background(), longPath)
+	if err != nil {
+		t.Fatalf("Load(long missing path): %v", err)
+	}
+	shortSnapshot, err := NewWriter().Load(context.Background(), shortPath)
+	if err != nil {
+		t.Fatalf("Load(short missing path): %v", err)
+	}
+	if longSnapshot.Exists() || shortSnapshot.Exists() ||
+		!strings.EqualFold(longSnapshot.Path(), shortSnapshot.Path()) ||
+		!strings.EqualFold(LockPath(longSnapshot.Path()), LockPath(shortSnapshot.Path())) {
+		t.Fatalf(
+			"missing aliases retained different config/lock paths: long=%q short=%q",
+			longSnapshot.Path(), shortSnapshot.Path(),
+		)
+	}
+}
+
+func windowsStoreShortPath(t *testing.T, path string) string {
+	t.Helper()
+	pointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatalf("UTF16PtrFromString: %v", err)
+	}
+	size := uint32(windows.MAX_PATH)
+	for {
+		buffer := make([]uint16, size)
+		length, err := windows.GetShortPathName(pointer, &buffer[0], size)
+		if err != nil || length == 0 {
+			t.Skipf("DOS 8.3 aliases unavailable: %v", err)
+		}
+		if length >= size {
+			size = length + 1
+			continue
+		}
+		return windows.UTF16ToString(buffer[:length])
+	}
 }
 
 func TestNativePathWindowsRejectsAmbiguousComponentsAndRequiresACLVolume(t *testing.T) {

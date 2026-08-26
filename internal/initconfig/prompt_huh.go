@@ -28,6 +28,40 @@ type huhPrompt struct {
 	output io.Writer
 }
 
+// huhContextCanceledMsg asks the form model to take its normal abort path.
+// Keeping cancellation inside the update loop lets Bubble Tea shut its input
+// reader down gracefully instead of killing the program while a PTY read is
+// still in flight.
+type huhContextCanceledMsg struct{}
+
+// huhProgramModel adapts Huh's public v1-compatible model interface to the
+// Bubble Tea v2 model interface. The prompts in this package always build
+// non-empty, visual forms with the default key map and do not configure Huh's
+// private timeout or view hook; those are the invariants that let this package
+// own the Tea program.
+type huhProgramModel struct {
+	model huh.Model
+}
+
+func (model huhProgramModel) Init() tea.Cmd {
+	return model.model.Init()
+}
+
+func (model huhProgramModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	if _, canceled := message.(huhContextCanceledMsg); canceled {
+		message = tea.KeyPressMsg(tea.Key{Code: 'c', Mod: tea.ModCtrl})
+	}
+	updated, command := model.model.Update(message)
+	model.model = updated
+	return model, command
+}
+
+func (model huhProgramModel) View() tea.View {
+	view := tea.View{ReportFocus: true}
+	view.SetContent(model.model.View())
+	return view
+}
+
 func newHuhPrompt(input io.Reader, output io.Writer) *huhPrompt {
 	return &huhPrompt{input: input, output: output}
 }
@@ -144,7 +178,7 @@ func (prompt *huhPrompt) Collect(
 			}
 			for collectAnother {
 				model, another, decision, err := prompt.collectModelForm(
-					ctx, name, options, request.Existing,
+					ctx, name, options,
 				)
 				if err != nil {
 					return CollectResponse{}, err
@@ -479,10 +513,9 @@ func (prompt *huhPrompt) collectModelForm(
 	ctx context.Context,
 	name core.ProviderName,
 	options Options,
-	existing *config.Config,
 ) (ModelMapping, bool, ReviewDecision, error) {
 	alias := string(name) + "-local"
-	if promptAliasExists(alias, options, existing) {
+	if promptAliasAlreadyCollected(alias, options) {
 		alias = ""
 	}
 	providerModel := ""
@@ -495,7 +528,7 @@ func (prompt *huhPrompt) collectModelForm(
 		Value(&alias).
 		Validate(func(value string) error {
 			if !validPromptAlias(value, name) ||
-				promptAliasExists(value, options, existing) {
+				promptAliasAlreadyCollected(value, options) {
 				return errHuhInvalidAlias
 			}
 			return nil
@@ -668,10 +701,12 @@ func huhAuthOptions(
 	choices []AuthID,
 ) ([]huh.Option[AuthID], error) {
 	want := 1
-	if name == core.ProviderClaude {
+	switch name {
+	case core.ProviderClaude:
 		want = 2
-	} else if name == core.ProviderGemini {
+	case core.ProviderGemini:
 		want = 3
+	case core.ProviderCodex:
 	}
 	if len(choices) != want {
 		return nil, ErrPlan
@@ -721,12 +756,12 @@ func (prompt *huhPrompt) run(ctx context.Context, form *huh.Form) error {
 		}
 		return ErrPlan
 	}
-	// Bubble Tea cannot discover dimensions from an injected non-file writer.
-	// A real terminal replaces this fallback with its actual size during Run.
-	form.WithProgramOptions(tea.WithWindowSize(80, 24)).
-		WithAccessible(false).
-		WithInput(prompt.input).
-		WithOutput(prompt.output)
+	form.WithAccessible(false)
+	form.SubmitCmd = tea.Quit
+	// Huh normally uses tea.Interrupt here. Bubble Tea treats an interrupt as
+	// a killed program and can close its PTY cancel reader before the read loop
+	// has stopped. A regular quit takes the graceful shutdown path and waits.
+	form.CancelCmd = tea.Quit
 
 	var descriptor uintptr
 	var original *xterm.State
@@ -739,7 +774,49 @@ func (prompt *huhPrompt) run(ctx context.Context, form *huh.Form) error {
 		}
 		original = state
 	}
-	runErr := form.RunWithContext(ctx)
+	program := tea.NewProgram(
+		huhProgramModel{model: form},
+		tea.WithInput(prompt.input),
+		tea.WithOutput(prompt.output),
+		// Bubble Tea cannot discover dimensions from an injected non-file
+		// writer. A real terminal replaces this fallback during Run.
+		tea.WithWindowSize(80, 24),
+		// The command owns signal cancellation through its caller context.
+		// Disabling Tea's handler keeps SIGINT/SIGTERM on the same graceful path.
+		tea.WithoutSignalHandler(),
+	)
+	watchCtx, stopWatcher := context.WithCancel(ctx)
+	programDone := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-watchCtx.Done():
+			if ctx.Err() != nil {
+				program.Send(huhContextCanceledMsg{})
+			}
+		case <-programDone:
+		}
+	}()
+
+	finalModel, runErr := program.Run()
+	close(programDone)
+	stopWatcher()
+	<-watcherDone
+	if wrapped, ok := finalModel.(huhProgramModel); ok {
+		if finalForm, formOK := wrapped.model.(*huh.Form); formOK {
+			form = finalForm
+		} else if runErr == nil {
+			runErr = ErrPlan
+		}
+	} else if runErr == nil {
+		runErr = ErrPlan
+	}
+	if form.State == huh.StateAborted {
+		runErr = huh.ErrUserAborted
+	} else if form.State != huh.StateCompleted && runErr == nil && ctx.Err() == nil {
+		runErr = ErrPlan
+	}
 	var restoreErr error
 	if original != nil {
 		restoreErr = xterm.Restore(descriptor, original)

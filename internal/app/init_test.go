@@ -19,6 +19,7 @@ import (
 	"github.com/krkarma777/ai-cli-gateway/internal/initconfig"
 	"github.com/krkarma777/ai-cli-gateway/internal/process"
 	"github.com/krkarma777/ai-cli-gateway/internal/provider"
+	"github.com/krkarma777/ai-cli-gateway/internal/testutil"
 )
 
 func TestProductionInitDependenciesAreCompleteAndLazy(t *testing.T) {
@@ -93,7 +94,7 @@ func TestInitInteractiveNonTerminalReturnsFixedFlagGuidanceWithoutPlanning(t *te
 		ConfigPath: filepath.Join(t.TempDir(), "config.toml"),
 	}, Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr}, InitDependencies{
 		Store: store,
-		IsTerminal: func(input io.Reader, output io.Writer) bool {
+		IsTerminal: func(_ io.Reader, _ io.Writer) bool {
 			terminalCalls++
 			return false
 		},
@@ -174,7 +175,7 @@ func TestInitInteractiveDryRunDiscoversSelectedProviderBeforeFinalReview(t *test
 	}, Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr}, InitDependencies{
 		Store: store, Entropy: panicInitReader{},
 		DefaultInitRuntimeRoot: func() (string, error) { return runtimeRoot, nil },
-		IsTerminal: func(input io.Reader, output io.Writer) bool {
+		IsTerminal: func(_ io.Reader, _ io.Writer) bool {
 			events = append(events, "terminal")
 			return true
 		},
@@ -1519,12 +1520,7 @@ func TestInitPostWriteDoctorReadinessAndCleanupMatrix(t *testing.T) {
 func TestInitDryRunAllProvidersMultipleModelsFreezesOnlyVertexCredentialPath(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	// The storage policy requires the test-owned transaction directory to be private.
-	//nolint:gosec
-	if err := os.Chmod(root, 0o700); err != nil {
-		t.Fatalf("Chmod fixture: %v", err)
-	}
+	root := testutil.TrustedTempDir(t)
 	existingHome := filepath.Join(root, "codex-home")
 	// This exact path is below the private test-owned fixture.
 	//nolint:gosec
@@ -1707,12 +1703,7 @@ func freshInitFixture(
 	t *testing.T,
 ) (configstore.Snapshot, initconfig.Options, string) {
 	t.Helper()
-	root := t.TempDir()
-	// The storage policy requires the test-owned transaction directory to be private.
-	//nolint:gosec
-	if err := os.Chmod(root, 0o700); err != nil {
-		t.Fatalf("Chmod fixture: %v", err)
-	}
+	root := testutil.TrustedTempDir(t)
 	configPath := filepath.Join(root, "config.toml")
 	snapshot, err := configstore.NewWriter().Load(context.Background(), configPath)
 	if err != nil {

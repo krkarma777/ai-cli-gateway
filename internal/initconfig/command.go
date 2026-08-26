@@ -8,8 +8,6 @@ import (
 	"github.com/krkarma777/ai-cli-gateway/internal/trustedpath"
 )
 
-const maxWindowsCommandShimBytes int64 = 16 << 10
-
 var windowsProviderEntrypoints = map[core.ProviderName]string{
 	core.ProviderCodex:  `node_modules\@openai\codex\bin\codex.js`,
 	core.ProviderClaude: `node_modules\@anthropic-ai\claude-code\cli.js`,
