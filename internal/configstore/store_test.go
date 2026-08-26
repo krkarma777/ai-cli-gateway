@@ -75,6 +75,24 @@ func TestWindowsPrivateStorePolicyRejectsEveryUntrustedAllow(t *testing.T) {
 	}
 }
 
+func TestWindowsStorePolicyIgnoresInheritOnlyAllows(t *testing.T) {
+	t.Parallel()
+
+	const unsafeWrite = uint32(0x00000002)
+	if !safeWindowsStoreUntrustedACE(true, true, unsafeWrite, unsafeWrite) {
+		t.Fatal("private policy rejected an inherit-only allow that does not apply to the object")
+	}
+	if !safeWindowsStoreUntrustedACE(false, true, unsafeWrite, unsafeWrite) {
+		t.Fatal("ancestor policy rejected an inherit-only allow that does not apply to the object")
+	}
+	if safeWindowsStoreUntrustedACE(true, false, 0, unsafeWrite) {
+		t.Fatal("private policy accepted an applicable untrusted allow")
+	}
+	if safeWindowsStoreUntrustedACE(false, false, unsafeWrite, unsafeWrite) {
+		t.Fatal("ancestor policy accepted an applicable unsafe write allow")
+	}
+}
+
 func TestSnapshotZeroValueIsOpaqueAndDefensive(t *testing.T) {
 	t.Parallel()
 

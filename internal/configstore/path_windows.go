@@ -462,8 +462,11 @@ func safeWindowsStoreSecurity(file *os.File, directory bool, private bool) bool 
 		trusted := sid.String() == userSID || sid.String() == windowsStoreSystemSID ||
 			sid.String() == windowsStoreAdministratorsSID || (!private && sid.String() == windowsStoreTrustedInstallerSID)
 		if native.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE && !trusted &&
-			!safeWindowsStoreUntrustedAllow(
-				private, uint32(native.Mask), unsafeGrant,
+			!safeWindowsStoreUntrustedACE(
+				private,
+				native.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0,
+				uint32(native.Mask),
+				unsafeGrant,
 			) {
 			return false
 		}

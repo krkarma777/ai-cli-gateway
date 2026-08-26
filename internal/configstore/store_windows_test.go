@@ -109,6 +109,23 @@ func TestLoadWindowsAllowsUntrustedCreateGrantOnNonPrivateAncestor(t *testing.T)
 	}
 }
 
+func TestLoadWindowsIgnoresInheritOnlyAncestorAllow(t *testing.T) {
+	root := testutil.TrustedTempDir(t)
+	private := filepath.Join(root, "private")
+	createWindowsTestPrivateDirectory(t, private)
+	installWindowsStoreDACL(
+		t,
+		root,
+		"D:P(A;;FA;;;%s)(A;OICIIO;FA;;;WD)",
+	)
+
+	path := filepath.Join(private, "config.toml")
+	snapshot, err := NewWriter().Load(context.Background(), path)
+	if err != nil || snapshot.Exists() || snapshot.Path() != path {
+		t.Fatalf("Load(missing below inherit-only grant) = %#v, %v", snapshot, err)
+	}
+}
+
 func TestWindowsStoreFinalPathAcceptsTrustedTempLongName(t *testing.T) {
 	root := testutil.TrustedTempDir(t)
 	handle, err := openWindowsStorePath(root, true)

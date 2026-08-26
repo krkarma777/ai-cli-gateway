@@ -243,15 +243,17 @@ func TestHuhPromptRunFinalizationRestoreFailureOutranksCancellation(t *testing.T
 func TestHuhPromptCollectUsesSelectInputConfirmAndMultipleModels(t *testing.T) {
 	executable := testAbsolutePath("bin", "codex")
 	configHome := testAbsolutePath("homes", "codex")
-	input := stagedHuhInput(t,
-		"\r", "\r", "\r", // Discovered command, home, continue.
-		"\r", "gpt-user\r", "y", "\r", // First model.
-		"codex-deep\r", "gpt-deep-user\r", "n", "\r", // Second model.
-		"j", "j", "\r", "\r", // Gateway auth none, continue.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	input := newFormHuhInput(
+		[]string{"\r", "\r", "\r"}, // Discovered command, home, continue.
+		[]string{"\r", "gpt-user\r", "y", "\r"},
+		[]string{"codex-deep\r", "gpt-deep-user\r", "n", "\r"},
+		[]string{"j", "j", "\r", "\r"}, // Gateway auth none, continue.
 	)
 	prompt := newHuhPrompt(input, io.Discard)
 
-	response, err := prompt.Collect(context.Background(), CollectRequest{
+	response, err := prompt.Collect(ctx, CollectRequest{
 		Initial: Options{Providers: []core.ProviderName{core.ProviderCodex}},
 		Discovery: map[core.ProviderName]ProviderDiscovery{
 			core.ProviderCodex: {
@@ -287,16 +289,13 @@ func TestHuhPromptCollectModelAllowsExistingAliasForProviderChange(t *testing.T)
 	existing := &config.Config{Models: []config.Model{{
 		ID: "shared-existing", Provider: "claude", ProviderModel: "claude-existing",
 	}}}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var output bytes.Buffer
-	prompt := newHuhPrompt(stagedHuhInput(t,
-		"\r", "\r", "\r", // Discovered command, home, continue.
-		"\x15shared-existing\r",
-		"gpt-replacement\r",
-		"n",
-		"\r",
-		"\r", "\r", // Existing config defaults Gateway auth to none; continue.
+	prompt := newHuhPrompt(newFormHuhInput(
+		[]string{"\r", "\r", "\r"}, // Discovered command, home, continue.
+		[]string{"\x15shared-existing\r", "gpt-replacement\r", "n", "\r"},
+		[]string{"\r", "\r"}, // Existing config defaults Gateway auth to none; continue.
 	), &output)
 
 	response, err := prompt.Collect(ctx, CollectRequest{
@@ -327,13 +326,13 @@ func TestHuhPromptCollectModelRejectsAliasAlreadyCollectedThisSession(t *testing
 	options := Options{Models: []ModelMapping{{
 		ID: "codex-local", Provider: core.ProviderCodex, ProviderModel: "gpt-first",
 	}}}
-	prompt := newHuhPrompt(newSteppedHuhInput(
+	prompt := newHuhPrompt(newFormHuhInput([]string{
 		"codex-local\r",
 		"\x15codex-second\r",
 		"gpt-second\r",
 		"n",
 		"\r",
-	), io.Discard)
+	}), io.Discard)
 
 	model, another, decision, err := prompt.collectModelForm(
 		context.Background(), core.ProviderCodex, options,
@@ -349,12 +348,12 @@ func TestHuhPromptCollectModelRejectsAliasAlreadyCollectedThisSession(t *testing
 
 func TestHuhPromptGatewayKeyFileRejectsRelativeThenAcceptsAbsolute(t *testing.T) {
 	absolutePath := testAbsolutePath("gateway.key")
-	prompt := newHuhPrompt(newSteppedHuhInput(
+	prompt := newHuhPrompt(newFormHuhInput([]string{
 		"\r",
 		"relative.key\r",
-		"\x15"+absolutePath+"\r",
+		"\x15" + absolutePath + "\r",
 		"\r",
-	), io.Discard)
+	}), io.Discard)
 
 	gateway, decision, err := prompt.collectGatewayForm(
 		context.Background(), GatewayInput{}, nil,
@@ -372,7 +371,7 @@ func TestHuhPromptGatewayKeyFileRejectsRelativeThenAcceptsAbsolute(t *testing.T)
 
 func TestHuhPromptReviewAndKeyConfirmation(t *testing.T) {
 	t.Run("collision choices", func(t *testing.T) {
-		prompt := newHuhPrompt(newSteppedHuhInput("\r", "l\r", "\r"), io.Discard)
+		prompt := newHuhPrompt(newFormHuhInput([]string{"\r", "l\r", "\r"}), io.Discard)
 		response, err := prompt.Review(context.Background(), ReviewRequest{
 			Collisions: []Collision{
 				{Target: DiffProvider, Name: "codex"},
@@ -403,7 +402,7 @@ func TestHuhPromptReviewAndKeyConfirmation(t *testing.T) {
 	})
 
 	t.Run("key decline", func(t *testing.T) {
-		prompt := newHuhPrompt(newSteppedHuhInput("n", "\r"), io.Discard)
+		prompt := newHuhPrompt(newFormHuhInput([]string{"n", "\r"}), io.Discard)
 		decision, err := prompt.ConfirmKeyAction(context.Background(), KeyConfirmationRequest{
 			Kind: ConfirmMissingConfiguredKeyCreation,
 			Path: "/srv/gateway.key",
@@ -421,7 +420,7 @@ func TestHuhPromptPreviousGroupNavigationRevisesProviderChoice(t *testing.T) {
 	// Enter first reaches config home; Shift+Tab emits Huh's PrevGroup
 	// navigation and revises the command before completing the form.
 	prompt := newHuhPrompt(
-		newSteppedHuhInput("\r", "\x1b[Z", "j", "\r", "\r", "\r"),
+		newFormHuhInput([]string{"\r", "\x1b[Z", "j", "\r", "\r", "\r"}),
 		io.Discard,
 	)
 	input, decision, err := prompt.collectProviderForm(
@@ -804,50 +803,57 @@ func runPromptPTYParent(
 	}
 }
 
-func stagedHuhInput(t *testing.T, chunks ...string) *os.File {
-	t.Helper()
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe(): %v", err)
+// formHuhReader gives each Bubble Tea program one complete form script and
+// then returns EOF. This matters on Windows, where cancelreader cannot cancel
+// a blocked read from an injected pipe and an old program can otherwise steal
+// input intended for the next form.
+type formHuhReader struct {
+	mutex     sync.Mutex
+	forms     [][]string
+	next      int
+	chunk     int
+	offset    int
+	formEnded bool
+}
+
+func newFormHuhInput(forms ...[]string) *formHuhReader {
+	cloned := make([][]string, len(forms))
+	for index, form := range forms {
+		cloned[index] = append([]string(nil), form...)
 	}
-	t.Cleanup(func() { _ = reader.Close() })
-	go func() {
-		defer func() { _ = writer.Close() }()
-		for index, chunk := range chunks {
-			if index > 0 {
-				time.Sleep(75 * time.Millisecond)
-			}
-			if _, writeErr := io.WriteString(writer, chunk); writeErr != nil {
-				return
-			}
-		}
-	}()
-	return reader
+	return &formHuhReader{forms: cloned}
 }
 
-type steppedHuhReader struct {
-	chunks []string
-	next   int
-	offset int
-}
-
-func newSteppedHuhInput(chunks ...string) *steppedHuhReader {
-	return &steppedHuhReader{chunks: append([]string(nil), chunks...)}
-}
-
-func (reader *steppedHuhReader) Read(buffer []byte) (int, error) {
-	if reader.next >= len(reader.chunks) {
+func (reader *formHuhReader) Read(buffer []byte) (int, error) {
+	reader.mutex.Lock()
+	defer reader.mutex.Unlock()
+	if reader.next >= len(reader.forms) {
 		return 0, io.EOF
 	}
-	if reader.offset == 0 && reader.next > 0 {
-		time.Sleep(75 * time.Millisecond)
+	if reader.formEnded {
+		reader.next++
+		reader.chunk = 0
+		reader.offset = 0
+		reader.formEnded = false
+		return 0, io.EOF
 	}
-	chunk := reader.chunks[reader.next]
+	form := reader.forms[reader.next]
+	if reader.chunk >= len(form) {
+		reader.formEnded = true
+		return 0, io.EOF
+	}
+	if reader.offset == 0 && reader.chunk > 0 {
+		time.Sleep(250 * time.Millisecond)
+	}
+	chunk := form[reader.chunk]
 	count := copy(buffer, chunk[reader.offset:])
 	reader.offset += count
 	if reader.offset == len(chunk) {
-		reader.next++
+		reader.chunk++
 		reader.offset = 0
+		if reader.chunk == len(form) {
+			reader.formEnded = true
+		}
 	}
 	return count, nil
 }

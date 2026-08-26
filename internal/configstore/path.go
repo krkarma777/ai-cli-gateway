@@ -58,3 +58,15 @@ func windowsStoreComponentUTF16Length(component string) int {
 func safeWindowsStoreUntrustedAllow(private bool, mask, unsafeGrant uint32) bool {
 	return !private && mask&unsafeGrant == 0
 }
+
+func safeWindowsStoreUntrustedACE(
+	private bool,
+	inheritOnly bool,
+	mask uint32,
+	unsafeGrant uint32,
+) bool {
+	// An INHERIT_ONLY_ACE does not grant access to the object whose DACL is
+	// being evaluated. Private descendants use protected DACLs, so an
+	// inheritance template on an ancestor cannot flow into the store tree.
+	return inheritOnly || safeWindowsStoreUntrustedAllow(private, mask, unsafeGrant)
+}

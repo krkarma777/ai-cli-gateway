@@ -1741,11 +1741,7 @@ func existingInitFixture(
 	if err != nil {
 		t.Fatalf("PlanNonInteractive fixture: %v", err)
 	}
-	// fresh.Path is an exact path below the test-owned private fixture.
-	//nolint:gosec
-	if err := os.WriteFile(fresh.Path(), planning.Merge.Candidate, 0o600); err != nil {
-		t.Fatalf("WriteFile existing fixture: %v", err)
-	}
+	testutil.WriteTrustedFile(t, fresh.Path(), planning.Merge.Candidate, 0o600)
 	snapshot, err := configstore.NewWriter().Load(context.Background(), fresh.Path())
 	if err != nil {
 		t.Fatalf("Load existing fixture: %v", err)
