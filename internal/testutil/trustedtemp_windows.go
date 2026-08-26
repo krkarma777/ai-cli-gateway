@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"unsafe"
 
@@ -66,6 +67,53 @@ func TrustedTempDir(t testing.TB) string {
 	}
 	t.Fatal("exhausted trusted fixture directory names")
 	return ""
+}
+
+// CreateTrustedDirectory creates every missing component below an existing
+// absolute path with a TokenUser owner and a protected inheritable DACL.
+func CreateTrustedDirectory(t testing.TB, path string) {
+	t.Helper()
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		t.Fatalf("trusted fixture directory path is not absolute: %q", path)
+	}
+
+	current := clean
+	missing := make([]string, 0, 4)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if !info.IsDir() {
+				t.Fatalf("trusted fixture parent is not a directory: %q", current)
+			}
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("inspect trusted fixture directory %q: %v", current, err)
+		}
+		missing = append(missing, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			t.Fatalf("trusted fixture directory has no existing ancestor: %q", path)
+		}
+		current = parent
+	}
+
+	attributes, descriptor, err := trustedWindowsSecurityAttributes(true)
+	if err != nil {
+		t.Fatalf("construct trusted fixture directory security: %v", err)
+	}
+	for index := len(missing) - 1; index >= 0; index-- {
+		component := missing[index]
+		pointer, err := windows.UTF16PtrFromString(component)
+		if err != nil {
+			t.Fatalf("encode trusted fixture directory %q: %v", component, err)
+		}
+		if err := windows.CreateDirectory(pointer, attributes); err != nil {
+			t.Fatalf("create trusted fixture directory %q: %v", component, err)
+		}
+	}
+	runtime.KeepAlive(descriptor)
 }
 
 // WriteTrustedFile creates a TokenUser-owned file with a protected DACL.

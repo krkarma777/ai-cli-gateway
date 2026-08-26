@@ -34,6 +34,23 @@ func TrustedTempDir(t testing.TB) string {
 	return directory
 }
 
+// CreateTrustedDirectory creates a private directory tree at an absolute path.
+func CreateTrustedDirectory(t testing.TB, path string) {
+	t.Helper()
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		t.Fatalf("trusted fixture directory path is not absolute: %q", path)
+	}
+	//nolint:gosec // This is the required owner-only directory mode.
+	if err := os.MkdirAll(clean, 0o700); err != nil {
+		t.Fatalf("create trusted fixture directory %q: %v", clean, err)
+	}
+	//nolint:gosec // This is the required owner-only directory mode.
+	if err := os.Chmod(clean, 0o700); err != nil {
+		t.Fatalf("secure trusted fixture directory %q: %v", clean, err)
+	}
+}
+
 // WriteTrustedFile creates a test file with the requested Unix permissions.
 func WriteTrustedFile(
 	t testing.TB,

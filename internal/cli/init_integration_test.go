@@ -423,15 +423,7 @@ func replaceInitEnvironment(environment []string, overrides map[string]string) [
 
 func privateInitDirectory(t *testing.T, path string) string {
 	t.Helper()
-	// The path is an exact child of a private test-owned fixture.
-	//nolint:gosec
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		t.Fatalf("MkdirAll private fixture: %v", err)
-	}
-	//nolint:gosec
-	if err := os.Chmod(path, 0o700); err != nil {
-		t.Fatalf("Chmod private fixture: %v", err)
-	}
+	testutil.CreateTrustedDirectory(t, path)
 	return path
 }
 
