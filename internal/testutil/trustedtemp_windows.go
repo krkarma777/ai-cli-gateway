@@ -20,10 +20,16 @@ import (
 const trustedTempAttempts = 100
 
 // TrustedTempDir creates a TokenUser-owned fixture with a protected inheritable
-// DACL below the current user's temporary directory.
+// DACL below the current user's local cache directory. Hosted Windows runners
+// can place os.TempDir on a shared work drive whose ancestors intentionally
+// grant untrusted delete access, which strict path-policy tests must reject.
 func TrustedTempDir(t testing.TB) string {
 	t.Helper()
-	parent, err := filepath.Abs(os.TempDir())
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("resolve trusted fixture cache: %v", err)
+	}
+	parent, err := filepath.Abs(cache)
 	if err != nil {
 		t.Fatalf("resolve trusted fixture parent: %v", err)
 	}
