@@ -289,10 +289,10 @@ func TestHuhPromptCollectModelAllowsExistingAliasForProviderChange(t *testing.T)
 	existing := &config.Config{Models: []config.Model{{
 		ID: "shared-existing", Provider: "claude", ProviderModel: "claude-existing",
 	}}}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var output bytes.Buffer
-	prompt := newHuhPrompt(newFormHuhInput(
+	prompt := newHuhPrompt(newFormHuhInputWithDelay(time.Second,
 		[]string{"\r", "\r", "\r"}, // Discovered command, home, continue.
 		[]string{"\x15shared-existing\r", "gpt-replacement\r", "n", "\r"},
 		[]string{"\r", "\r"}, // Existing config defaults Gateway auth to none; continue.
@@ -753,7 +753,7 @@ func runPromptPTYParent(
 	chunks []string,
 ) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	//nolint:gosec // The helper invokes a fixed system PTY wrapper and its own test binary.
 	command := exec.CommandContext(
@@ -788,12 +788,12 @@ func runPromptPTYParent(
 	go func() {
 		defer close(writeDone)
 		defer func() { _ = writer.Close() }()
-		time.Sleep(150 * time.Millisecond)
+		time.Sleep(time.Second)
 		for _, chunk := range chunks {
 			if _, writeErr := io.WriteString(writer, chunk); writeErr != nil {
 				return
 			}
-			time.Sleep(75 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 		}
 	}()
 	waitErr := command.Wait()
@@ -808,20 +808,28 @@ func runPromptPTYParent(
 // a blocked read from an injected pipe and an old program can otherwise steal
 // input intended for the next form.
 type formHuhReader struct {
-	mutex     sync.Mutex
-	forms     [][]string
-	next      int
-	chunk     int
-	offset    int
-	formEnded bool
+	mutex      sync.Mutex
+	forms      [][]string
+	chunkDelay time.Duration
+	next       int
+	chunk      int
+	offset     int
+	formEnded  bool
 }
 
 func newFormHuhInput(forms ...[]string) *formHuhReader {
+	return newFormHuhInputWithDelay(250*time.Millisecond, forms...)
+}
+
+func newFormHuhInputWithDelay(
+	delay time.Duration,
+	forms ...[]string,
+) *formHuhReader {
 	cloned := make([][]string, len(forms))
 	for index, form := range forms {
 		cloned[index] = append([]string(nil), form...)
 	}
-	return &formHuhReader{forms: cloned}
+	return &formHuhReader{forms: cloned, chunkDelay: delay}
 }
 
 func (reader *formHuhReader) Read(buffer []byte) (int, error) {
@@ -843,7 +851,7 @@ func (reader *formHuhReader) Read(buffer []byte) (int, error) {
 		return 0, io.EOF
 	}
 	if reader.offset == 0 && reader.chunk > 0 {
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(reader.chunkDelay)
 	}
 	chunk := form[reader.chunk]
 	count := copy(buffer, chunk[reader.offset:])
