@@ -67,6 +67,17 @@ func TestApplicationGuidedSetupInitUsesOnlyClosedDoctorProbes(t *testing.T) {
 	deps.Entropy = bytes.NewReader(bytes.Repeat([]byte{0x42}, 32))
 	deps.DefaultInitRuntimeRoot = func() (string, error) { return runtimeRoot, nil }
 	deps.Runtime.GatewayExecutable = func() (string, error) { return gatewayExecutable, nil }
+	deps.Runtime.NewProbeController = func(
+		root *process.Root,
+		limits process.Limits,
+		newRuntimeID func() (string, error),
+	) (doctor.ProbeController, error) {
+		// Full-package integration runs launch many compiled helpers concurrently.
+		// Keep the production five-second policy covered by doctor tests while
+		// giving this real nested-process proof a host-scheduling budget.
+		limits.Execution = 30 * time.Second
+		return doctor.NewProcessProbeController(root, limits, newRuntimeID)
+	}
 	var stdout, stderr bytes.Buffer
 
 	result := Init(context.Background(), initconfig.Options{

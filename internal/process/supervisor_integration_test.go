@@ -702,24 +702,36 @@ func TestSupervisorStartsWaitOnlyAfterKILLSignalDecision(t *testing.T) {
 func TestSupervisorGraceDoesNotConsumeCleanupBudget(t *testing.T) {
 	executable := testutil.BuildFakeCLI(t)
 	limits := supervisorTestLimits()
-	limits.Execution = time.Second
+	limits.Execution = 10 * time.Millisecond
 	limits.TermGrace = 50 * time.Millisecond
 	limits.Cleanup = 10 * time.Millisecond
 	supervisor := newSupervisorForTest(t, limits)
 	requestRuntime := prepareSupervisorRuntime(t, supervisor, "gracebudget")
-	outer, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	var terminationStarted time.Time
+	supervisor.hooks.beforeCommit = func(events runnerEventView) {
+		waitForIntegrationPath(
+			t,
+			filepath.Join(requestRuntime.Dir, ".fake-child-ready"),
+		)
+		waitForRunnerEvent(t, events.timeoutReady)
+		terminationStarted = time.Now()
+	}
+	outer, cancel := integrationContext(t)
 	defer cancel()
-	started := time.Now()
 	result, err := supervisor.Execute(outer, requestRuntime, CommandSpec{
 		Executable: executable,
-		Args:       []string{"--mode=ignore-term"},
+		Args:       []string{"--mode=ignore-term-ready"},
 		Dir:        requestRuntime.Dir,
 	})
 	assertRunErrorKind(t, err, ErrorTimeout)
-	if result.StopAction != StopActionKILL {
-		t.Fatalf("stop action=%q", result.StopAction)
+	if result.StopReason != StopReasonSupervisorTimeout ||
+		result.StopAction != StopActionKILL {
+		t.Fatalf("result=%+v", result)
 	}
-	if elapsed := time.Since(started); elapsed < limits.Execution+limits.TermGrace {
+	if terminationStarted.IsZero() {
+		t.Fatal("termination start was not observed")
+	}
+	if elapsed := time.Since(terminationStarted); elapsed < limits.TermGrace {
 		t.Fatalf("grace was not accounted separately: %v", elapsed)
 	}
 }
