@@ -23,7 +23,7 @@ func main() {
 		context.Background(),
 		shutdownSignals()...,
 	)
-	code := cli.RunContext(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	code := cli.RunContext(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
 }

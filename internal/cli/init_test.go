@@ -2,11 +2,15 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/krkarma777/ai-cli-gateway/internal/app"
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
 	"github.com/krkarma777/ai-cli-gateway/internal/initconfig"
 )
@@ -254,18 +258,237 @@ func TestParseInitArgsRejectsEverythingOutsideExactGrammar(t *testing.T) {
 	}
 }
 
-func TestParseInitArgsDoesNotDispatchInitBeforeSafeStorageExists(t *testing.T) {
+func TestRunContextDispatchesBareInteractiveWithExactStreams(t *testing.T) {
 	t.Parallel()
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	if code := Run([]string{"init"}, &stdout, &stderr); code != 2 {
-		t.Fatalf("Run(init) code = %d, want 2", code)
-	}
-	if stdout.Len() != 0 || stderr.String() != usage {
-		t.Fatalf("Run(init) stdout = %q, stderr = %q", stdout.String(), stderr.String())
+	input := &panicCLIReader{}
+	var stdout, stderr bytes.Buffer
+	defaultPath := cliTestAbsolutePath("config.toml")
+	defaultCalls := 0
+	initCalls := 0
+	var got initconfig.Options
+	code := runContext(
+		context.Background(),
+		[]string{"init"},
+		input,
+		&stdout,
+		&stderr,
+		commands{
+			defaultConfigPath: func() (string, error) {
+				defaultCalls++
+				return defaultPath, nil
+			},
+			init: func(_ context.Context, options initconfig.Options, streams app.Streams) app.InitResult {
+				initCalls++
+				got = options
+				if streams.In != input || streams.Out != &stdout || streams.Err != &stderr {
+					t.Fatal("interactive init streams were not forwarded exactly")
+				}
+				return app.InitResult{Outcome: app.InitReady}
+			},
+		},
+	)
+
+	if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 ||
+		defaultCalls != 1 || initCalls != 1 || got.ConfigPath != defaultPath ||
+		got.NonInteractive {
+		t.Fatalf(
+			"runContext(init) = %d stdout %q stderr %q default/init %d/%d options %#v",
+			code, stdout.String(), stderr.String(), defaultCalls, initCalls, got,
+		)
 	}
 }
+
+func TestRunContextProductionInteractiveInitRejectsNonTerminalWithoutReadingInput(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	code := RunContext(
+		context.Background(),
+		[]string{"init", "--config", cliTestAbsolutePath("missing", "config.toml")},
+		panicCLIReader{},
+		&stdout,
+		&stderr,
+	)
+
+	want := "init_requires_non_interactive: pass --non-interactive and all required flags\n"
+	if code != 2 || stdout.Len() != 0 || stderr.String() != want {
+		t.Fatalf("RunContext(init) = %d stdout/stderr=%q/%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunContextDispatchesNonInteractiveInitWithResolvedConfigExactly(t *testing.T) {
+	t.Parallel()
+
+	type contextKey struct{}
+	requestContext := context.WithValue(context.Background(), contextKey{}, "init")
+	defaultPath := cliTestAbsolutePath("default", "config.toml")
+	explicitPath := "relative/explicit.toml"
+	for _, test := range []struct {
+		name        string
+		explicit    string
+		wantPath    string
+		wantDefault int
+	}{
+		{name: "default", wantPath: defaultPath, wantDefault: 1},
+		{name: "explicit", explicit: explicitPath, wantPath: explicitPath},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			args := validNonInteractiveInitArgs()
+			if test.explicit != "" {
+				args = append(args, "--config", test.explicit)
+			}
+			parsed, err := parseInitArgs(args[1:])
+			if err != nil {
+				t.Fatalf("parseInitArgs fixture: %v", err)
+			}
+			parsed.ConfigPath = test.wantPath
+			input := &panicCLIReader{}
+			var stdout, stderr bytes.Buffer
+			defaultCalls := 0
+			initCalls := 0
+			var got initconfig.Options
+
+			code := runContext(
+				requestContext,
+				args,
+				input,
+				&stdout,
+				&stderr,
+				commands{
+					defaultConfigPath: func() (string, error) {
+						defaultCalls++
+						return defaultPath, nil
+					},
+					init: func(ctx context.Context, options initconfig.Options, streams app.Streams) app.InitResult {
+						initCalls++
+						if ctx != requestContext || streams.In != input ||
+							streams.Out != &stdout || streams.Err != &stderr {
+							t.Fatal("init context/stdin/stdout/stderr were not forwarded exactly")
+						}
+						got = options
+						_, _ = io.WriteString(streams.Out, "init output\n")
+						return app.InitResult{Outcome: app.InitReady, Saved: true}
+					},
+				},
+			)
+
+			if code != 0 || initCalls != 1 || defaultCalls != test.wantDefault ||
+				!reflect.DeepEqual(got, parsed) || stdout.String() != "init output\n" ||
+				stderr.Len() != 0 {
+				t.Fatalf(
+					"code/init/default/options/stdout/stderr = %d/%d/%d/%#v/%q/%q",
+					code, initCalls, defaultCalls, got, stdout.String(), stderr.String(),
+				)
+			}
+		})
+	}
+}
+
+func TestRunContextMapsEveryInitOutcomeToExactExitCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		outcome app.InitOutcome
+		code    int
+	}{
+		{name: "ready", outcome: app.InitReady, code: 0},
+		{name: "declined", outcome: app.InitDeclined, code: 0},
+		{name: "dry run", outcome: app.InitDryRun, code: 0},
+		{name: "not ready", outcome: app.InitNotReady, code: 1},
+		{name: "failed", outcome: app.InitFailed, code: 1},
+		{name: "recovery required", outcome: app.InitRecoveryRequired, code: 1},
+		{name: "usage", outcome: app.InitUsage, code: 2},
+		{name: "canceled", outcome: app.InitCanceled, code: 130},
+		{name: "zero", outcome: 0, code: 1},
+		{name: "unknown", outcome: app.InitOutcome(255), code: 1},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			code := runContext(
+				context.Background(),
+				append(validNonInteractiveInitArgs(), "--config", cliTestAbsolutePath("config.toml")),
+				panicCLIReader{},
+				&stdout,
+				&stderr,
+				commands{init: func(_ context.Context, _ initconfig.Options, streams app.Streams) app.InitResult {
+					_, _ = io.WriteString(streams.Out, "closed init output\n")
+					return app.InitResult{Outcome: test.outcome}
+				}},
+			)
+			if code != test.code || stdout.String() != "closed init output\n" || stderr.Len() != 0 {
+				t.Fatalf("runContext() = %d stdout %q stderr %q, want %d", code, stdout.String(), stderr.String(), test.code)
+			}
+		})
+	}
+}
+
+func TestRunContextInitParseAndDefaultFailuresStayOnStderr(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "parse", args: []string{"init", "--unknown"}, want: wantUsage},
+		{
+			name: "default", args: validNonInteractiveInitArgs(),
+			want: "default_config_path_unavailable: pass --config PATH\n",
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			initCalls := 0
+			defaultCalls := 0
+			code := runContext(
+				context.Background(), test.args, panicCLIReader{}, &stdout, &stderr,
+				commands{
+					defaultConfigPath: func() (string, error) {
+						defaultCalls++
+						return "", errors.New("PLANTED_DEFAULT_SECRET")
+					},
+					init: func(context.Context, initconfig.Options, app.Streams) app.InitResult {
+						initCalls++
+						return app.InitResult{Outcome: app.InitReady}
+					},
+				},
+			)
+			wantDefault := 1
+			if test.name == "parse" {
+				wantDefault = 0
+			}
+			if code != 2 || stdout.Len() != 0 || stderr.String() != test.want ||
+				defaultCalls != wantDefault || initCalls != 0 || strings.Contains(stderr.String(), "PLANTED") {
+				t.Fatalf("code/output/default/init = %d/%q/%q/%d/%d", code, stdout.String(), stderr.String(), defaultCalls, initCalls)
+			}
+		})
+	}
+}
+
+func validNonInteractiveInitArgs() []string {
+	return []string{
+		"init",
+		"--non-interactive",
+		"--provider", "codex",
+		"--codex-executable", cliTestAbsolutePath("bin", "codex"),
+		"--codex-config-home", cliTestAbsolutePath("home", "codex"),
+		"--codex-model", "codex-local=gpt-test",
+		"--gateway-auth", "none",
+	}
+}
+
+type panicCLIReader struct{}
+
+func (panicCLIReader) Read([]byte) (int, error) { panic("CLI read non-interactive stdin") }
 
 func cliTestAbsolutePath(parts ...string) string {
 	if runtime.GOOS == "windows" {

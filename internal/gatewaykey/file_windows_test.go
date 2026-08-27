@@ -47,6 +47,32 @@ func TestLoadFileWindowsPathIdentityUsesCompatibleShareWithRetainedHandle(t *tes
 	}
 }
 
+func TestLoadFileWindowsContentOpenRejectsRetainedWriter(t *testing.T) {
+	path := writeWindowsKeyFile(t, testKey+"\n")
+	pointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatalf("encode key path: %v", err)
+	}
+	writer, err := windows.CreateFile(
+		pointer,
+		windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("open retained writer: %v", err)
+	}
+	defer windows.CloseHandle(writer) //nolint:errcheck // Test reports the sharing failure directly.
+
+	snapshot, err := LoadFile(path, nil)
+	if err != ErrUnavailable || snapshot.Valid() || snapshot.Matches(testKey) {
+		t.Fatalf("LoadFile() with retained writer = %#v, %v; want unavailable", snapshot, err)
+	}
+}
+
 func TestLoadFileWindowsDistinctIdentityIsStabilizedBeforeContentOpen(t *testing.T) {
 	path := writeWindowsKeyFile(t, testKey+"\n")
 	pathBacked, err := os.Stat(path)

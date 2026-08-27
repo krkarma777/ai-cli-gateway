@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"unsafe"
 
@@ -20,10 +21,16 @@ import (
 const trustedTempAttempts = 100
 
 // TrustedTempDir creates a TokenUser-owned fixture with a protected inheritable
-// DACL below the current user's temporary directory.
+// DACL below the current user's local cache directory. Hosted Windows runners
+// can place os.TempDir on a shared work drive whose ancestors intentionally
+// grant untrusted delete access, which strict path-policy tests must reject.
 func TrustedTempDir(t testing.TB) string {
 	t.Helper()
-	parent, err := filepath.Abs(os.TempDir())
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("resolve trusted fixture cache: %v", err)
+	}
+	parent, err := filepath.Abs(cache)
 	if err != nil {
 		t.Fatalf("resolve trusted fixture parent: %v", err)
 	}
@@ -60,6 +67,53 @@ func TrustedTempDir(t testing.TB) string {
 	}
 	t.Fatal("exhausted trusted fixture directory names")
 	return ""
+}
+
+// CreateTrustedDirectory creates every missing component below an existing
+// absolute path with a TokenUser owner and a protected inheritable DACL.
+func CreateTrustedDirectory(t testing.TB, path string) {
+	t.Helper()
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		t.Fatalf("trusted fixture directory path is not absolute: %q", path)
+	}
+
+	current := clean
+	missing := make([]string, 0, 4)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if !info.IsDir() {
+				t.Fatalf("trusted fixture parent is not a directory: %q", current)
+			}
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("inspect trusted fixture directory %q: %v", current, err)
+		}
+		missing = append(missing, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			t.Fatalf("trusted fixture directory has no existing ancestor: %q", path)
+		}
+		current = parent
+	}
+
+	attributes, descriptor, err := trustedWindowsSecurityAttributes(true)
+	if err != nil {
+		t.Fatalf("construct trusted fixture directory security: %v", err)
+	}
+	for index := len(missing) - 1; index >= 0; index-- {
+		component := missing[index]
+		pointer, err := windows.UTF16PtrFromString(component)
+		if err != nil {
+			t.Fatalf("encode trusted fixture directory %q: %v", component, err)
+		}
+		if err := windows.CreateDirectory(pointer, attributes); err != nil {
+			t.Fatalf("create trusted fixture directory %q: %v", component, err)
+		}
+	}
+	runtime.KeepAlive(descriptor)
 }
 
 // WriteTrustedFile creates a TokenUser-owned file with a protected DACL.

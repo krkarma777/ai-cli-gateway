@@ -430,20 +430,30 @@ func TestServeListenerConstructionFailureUnwindsCompleteAssembly(t *testing.T) {
 }
 
 func TestServeHTTPIDFailureUnwindsBeforeListener(t *testing.T) {
-	for name, factory := range map[string]func() (httpapi.IDSource, error){
-		"factory error": func() (httpapi.IDSource, error) {
-			return nil, errors.New("PLANTED_HTTP_ID_ERROR_SECRET")
+	tests := []struct {
+		name    string
+		factory func() (httpapi.IDSource, error)
+	}{
+		{
+			name: "factory error",
+			factory: func() (httpapi.IDSource, error) {
+				return nil, errors.New("PLANTED_HTTP_ID_ERROR_SECRET")
+			},
 		},
-		"typed nil": func() (httpapi.IDSource, error) {
-			var source *appTestIDSource
-			return source, nil
+		{
+			name: "typed nil",
+			factory: func() (httpapi.IDSource, error) {
+				var source *appTestIDSource
+				return source, nil
+			},
 		},
-	} {
-		t.Run(name, func(t *testing.T) {
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			fixture := newReadyAppFixture(t)
 			fixture.deps.NewHTTPIDs = func() (httpapi.IDSource, error) {
 				fixture.httpIDCalls++
-				return factory()
+				return test.factory()
 			}
 
 			err := Serve(context.Background(), fixture.configPath, fixture.deps)
@@ -474,13 +484,13 @@ func TestServeHTTPIDFailureUnwindsBeforeListener(t *testing.T) {
 
 func TestServeRejectsAdapterIdentityDriftAfterDiagnosis(t *testing.T) {
 	fixture := newReadyAppFixture(t)
-	base := fixture.deps.Adapters[core.ProviderCodex].(*appTestAdapter)
-	fixture.deps.Adapters[core.ProviderCodex] = &appDriftingAdapter{
-		stableNameCalls: 1,
-		health:          base.health.Clone(),
+	adapter := fixture.deps.Adapters[core.ProviderCodex].(*appTestAdapter)
+	startup := productionStartupDependencies()
+	startup.postDiagnosis = func() {
+		adapter.name = core.ProviderClaude
 	}
 
-	err := Serve(context.Background(), fixture.configPath, fixture.deps)
+	err := serve(context.Background(), fixture.configPath, fixture.deps, startup)
 
 	if err != ErrStartup { //nolint:errorlint // Successful cleanup promises exact identity.
 		t.Fatalf("Serve() error = %v, want exact %v", err, ErrStartup)
@@ -2113,7 +2123,11 @@ func newReadyAppFixture(t *testing.T) *readyAppFixture {
 	if err := os.Chmod(base, 0o700); err != nil {
 		t.Fatalf("chmod fixture parent: %v", err)
 	}
-	executable := filepath.Join(base, "fake-gateway")
+	executableName := "fake-gateway"
+	if runtime.GOOS == "windows" {
+		executableName += ".exe"
+	}
+	executable := filepath.Join(base, executableName)
 	// The owner-only fixture must also be executable for path diagnosis.
 	//nolint:gosec
 	testutil.WriteTrustedFile(t, executable, []byte("fixture"), 0o700)
@@ -2141,9 +2155,7 @@ provider_model = "gpt-test"
 created = 7
 `, strconv.Quote(runtimeRoot), strconv.Quote(executable), strconv.Quote(configHome))
 	configPath := filepath.Join(base, "config.toml")
-	if err := os.WriteFile(configPath, []byte(document), 0o600); err != nil {
-		t.Fatalf("write ready config: %v", err)
-	}
+	testutil.WriteTrustedFile(t, configPath, []byte(document), 0o600)
 
 	fixture := &readyAppFixture{
 		configPath: configPath,

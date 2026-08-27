@@ -25,12 +25,102 @@ import (
 	"github.com/krkarma777/ai-cli-gateway/internal/core"
 	"github.com/krkarma777/ai-cli-gateway/internal/doctor"
 	"github.com/krkarma777/ai-cli-gateway/internal/httpapi"
+	"github.com/krkarma777/ai-cli-gateway/internal/initconfig"
 	"github.com/krkarma777/ai-cli-gateway/internal/process"
 	"github.com/krkarma777/ai-cli-gateway/internal/provider"
 	"github.com/krkarma777/ai-cli-gateway/internal/testutil"
 )
 
 const appIntegrationOuterTimeout = 15 * time.Second
+
+func TestApplicationGuidedSetupInitUsesOnlyClosedDoctorProbes(t *testing.T) {
+	base := testutil.TrustedTempDir(t)
+	// The application fixture parent intentionally requires owner-only access.
+	//nolint:gosec
+	if err := os.Chmod(base, 0o700); err != nil {
+		t.Fatalf("chmod application init fixture: %v", err)
+	}
+	source := testutil.BuildFakeCLI(t)
+	name := "fake-guided-codex-ready"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	executable := filepath.Join(base, name)
+	payload, err := os.ReadFile(source) //nolint:gosec // Exact test-owned build output.
+	if err != nil {
+		t.Fatalf("ReadFile guided fake: %v", err)
+	}
+	testutil.WriteTrustedFile(t, executable, payload, 0o700)
+	if runtime.GOOS != "windows" {
+		// The path is an exact private test-owned executable.
+		//nolint:gosec
+		if err := os.Chmod(executable, 0o700); err != nil {
+			t.Fatalf("Chmod guided fake: %v", err)
+		}
+	}
+	configPath := filepath.Join(base, "config.toml")
+	configHome := filepath.Join(base, "codex-home")
+	runtimeRoot := filepath.Join(base, "runtime")
+	gatewayExecutable := testutil.BuildGateway(t)
+	var logs bytes.Buffer
+	deps := ProductionInitDependencies(&logs)
+	deps.Entropy = bytes.NewReader(bytes.Repeat([]byte{0x42}, 32))
+	deps.DefaultInitRuntimeRoot = func() (string, error) { return runtimeRoot, nil }
+	deps.Runtime.GatewayExecutable = func() (string, error) { return gatewayExecutable, nil }
+	var stdout, stderr bytes.Buffer
+
+	result := Init(context.Background(), initconfig.Options{
+		ConfigPath:     configPath,
+		NonInteractive: true,
+		Providers:      []core.ProviderName{core.ProviderCodex},
+		Provider: map[core.ProviderName]initconfig.ProviderInput{
+			core.ProviderCodex: {
+				Executable: initconfig.StringValue{Set: true, Value: executable},
+				ConfigHome: initconfig.StringValue{Set: true, Value: configHome},
+			},
+		},
+		Models: []initconfig.ModelMapping{{
+			ID: "codex-local", Provider: core.ProviderCodex, ProviderModel: "gpt-test",
+		}},
+	}, Streams{In: bytes.NewReader(nil), Out: &stdout, Err: &stderr}, deps)
+
+	if result != (InitResult{Outcome: InitReady, Saved: true}) ||
+		!strings.Contains(stdout.String(), "codex\tready") ||
+		!strings.HasSuffix(stdout.String(), "setup_ready\n") ||
+		stderr.Len() != 0 {
+		t.Fatalf(
+			"guided application Init=%#v stdout=%q stderr=%q logs=%q",
+			result,
+			stdout.String(),
+			stderr.String(),
+			logs.String(),
+		)
+	}
+	if _, err := os.Lstat(executable + ".unexpected-call"); !os.IsNotExist(err) {
+		t.Fatalf("application init invoked request/inference path: %v", err)
+	}
+	keyPath := filepath.Join(base, "gateway.key")
+	key := strings.TrimSpace(string(mustReadAppIntegrationFile(t, keyPath)))
+	visible := stdout.String() + stderr.String() + logs.String() +
+		string(mustReadAppIntegrationFile(t, configPath))
+	for _, forbidden := range []string{
+		"PLANTED_GUIDED_" + "RAW_PROVIDER_OUTPUT_6f71",
+		key,
+	} {
+		if forbidden != "" && strings.Contains(visible, forbidden) {
+			t.Fatalf("application init surface exposed protected value")
+		}
+	}
+}
+
+func mustReadAppIntegrationFile(t *testing.T, path string) []byte {
+	t.Helper()
+	payload, err := os.ReadFile(path) //nolint:gosec // Caller supplies an exact test-owned path.
+	if err != nil {
+		t.Fatalf("ReadFile %q: %v", path, err)
+	}
+	return payload
+}
 
 func TestApplicationRealFakeCLITextStructuredModelsAndShutdown(t *testing.T) {
 	harness := newAppIntegrationHarness(t, "")

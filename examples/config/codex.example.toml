@@ -1,6 +1,8 @@
 # Replace all four generic values before serving.
 # This model marker is not a provider default or entitlement claim; replace it
 # with a model accessible to the already authenticated CLI.
+# This explicit deployment example stays environment-backed. Guided init
+# generated local configs use the mutually exclusive `api_key_file` form.
 [server]
 listen = "127.0.0.1:8080"
 api_key_env = "AI_CLI_GATEWAY_API_KEY"

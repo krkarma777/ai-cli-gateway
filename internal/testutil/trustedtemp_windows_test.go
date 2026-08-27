@@ -11,6 +11,8 @@ import (
 
 func TestTrustedWindowsFixturesPinTokenUserAndProtectedDACL(t *testing.T) {
 	directory := TrustedTempDir(t)
+	nested := filepath.Join(directory, "nested", "private")
+	CreateTrustedDirectory(t, nested)
 	file := filepath.Join(directory, "private.json")
 	WriteTrustedFile(t, file, []byte("fixture"), 0o600)
 
@@ -18,7 +20,12 @@ func TestTrustedWindowsFixturesPinTokenUserAndProtectedDACL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{directory, file} {
+	for _, path := range []string{
+		directory,
+		filepath.Dir(nested),
+		nested,
+		file,
+	} {
 		descriptor, err := windows.GetNamedSecurityInfo(
 			path,
 			windows.SE_FILE_OBJECT,

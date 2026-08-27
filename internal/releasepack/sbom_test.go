@@ -3,21 +3,86 @@
 package releasepack
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
 const testSyftCreator = "Tool: syft-1.50.0"
+
+var reviewedSBOMDependencies = []sbomComponent{
+	{Name: "charm.land/bubbles/v2", Version: "v2.0.0"},
+	{Name: "charm.land/bubbletea/v2", Version: "v2.0.5"},
+	{Name: "charm.land/huh/v2", Version: "v2.0.3"},
+	{Name: "charm.land/lipgloss/v2", Version: "v2.0.1"},
+	{Name: "github.com/atotto/clipboard", Version: "v0.1.4"},
+	{Name: "github.com/catppuccin/go", Version: "v0.2.0"},
+	{Name: "github.com/charmbracelet/colorprofile", Version: "v0.4.3"},
+	{Name: "github.com/charmbracelet/ultraviolet", Version: "v0.0.0-20260413211237-bd52878bcec2"},
+	{Name: "github.com/charmbracelet/x/ansi", Version: "v0.11.7"},
+	{Name: "github.com/charmbracelet/x/exp/ordered", Version: "v0.1.0"},
+	{Name: "github.com/charmbracelet/x/exp/strings", Version: "v0.0.0-20240722160745-212f7b056ed0"},
+	{Name: "github.com/charmbracelet/x/term", Version: "v0.2.2"},
+	{Name: "github.com/charmbracelet/x/termios", Version: "v0.1.1"},
+	{Name: "github.com/charmbracelet/x/windows", Version: "v0.2.2"},
+	{Name: "github.com/clipperhouse/displaywidth", Version: "v0.11.0"},
+	{Name: "github.com/clipperhouse/uax29/v2", Version: "v2.7.0"},
+	{Name: "github.com/dustin/go-humanize", Version: "v1.0.1"},
+	{Name: "github.com/lucasb-eyer/go-colorful", Version: "v1.4.0"},
+	{Name: "github.com/mattn/go-runewidth", Version: "v0.0.23"},
+	{Name: "github.com/mitchellh/hashstructure/v2", Version: "v2.0.2"},
+	{Name: "github.com/muesli/cancelreader", Version: "v0.2.2"},
+	{Name: "github.com/pelletier/go-toml/v2", Version: "v2.4.3"},
+	{Name: "github.com/rivo/uniseg", Version: "v0.4.7"},
+	{Name: "github.com/santhosh-tekuri/jsonschema/v6", Version: "v6.0.2"},
+	{Name: "github.com/xo/terminfo", Version: "v0.0.0-20220910002029-abceb7e1c41e"},
+	{Name: "golang.org/x/sync", Version: "v0.20.0"},
+	{Name: "golang.org/x/sys", Version: "v0.47.0"},
+	{Name: "golang.org/x/text", Version: "v0.14.0"},
+}
+
+func TestReleaseTargetsCompileExactReviewedDependencyGraphs(t *testing.T) {
+	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
+	wantUnion := dependencyIdentities(reviewedSBOMDependencies)
+	gotUnion := make(map[string]struct{}, len(wantUnion))
+	for _, releaseTarget := range releaseTargets {
+		releaseTarget := releaseTarget
+		t.Run(releaseTarget.GOOS+"_"+releaseTarget.GOARCH, func(t *testing.T) {
+			got := compiledExternalModules(t, repositoryRoot, releaseTarget)
+			want := dependencyIdentities(reviewedDependenciesForTarget(releaseTarget))
+			if !slices.Equal(got, want) {
+				t.Fatalf("compiled external modules = %q, want frozen graph %q", got, want)
+			}
+			for _, module := range got {
+				gotUnion[module] = struct{}{}
+			}
+		})
+	}
+	gotUnionValues := make([]string, 0, len(gotUnion))
+	for module := range gotUnion {
+		gotUnionValues = append(gotUnionValues, module)
+	}
+	slices.Sort(gotUnionValues)
+	if !slices.Equal(gotUnionValues, wantUnion) {
+		t.Fatalf("five-target compiled module union = %q, want reviewed union %q", gotUnionValues, wantUnion)
+	}
+}
 
 func TestFinalizeSPDXAcceptsClosedFiveTargetProjection(t *testing.T) {
 	options, catalog := testSBOMCatalog()
@@ -84,17 +149,16 @@ func TestFinalizeSPDXAcceptsClosedFiveTargetProjection(t *testing.T) {
 		t.Fatalf("file names = %q, want %q", gotFiles, wantFiles)
 	}
 	packages := mustJSONArray(t, document, "packages")
-	if len(packages) != 6 {
-		t.Fatalf("len(packages) = %d, want deduplicated main, four dependencies, stdlib", len(packages))
+	if want := len(reviewedSBOMDependencies) + 2; len(packages) != want {
+		t.Fatalf("len(packages) = %d, want deduplicated main, 28 dependencies, stdlib (%d)", len(packages), want)
 	}
 	wantPackageIDs := make(map[string]string)
 	wantPURLs := map[string]string{
-		releaseModulePath:                          "pkg:golang/" + releaseModulePath,
-		"github.com/pelletier/go-toml/v2":          "pkg:golang/github.com/pelletier/go-toml/v2@v2.4.3",
-		"github.com/santhosh-tekuri/jsonschema/v6": "pkg:golang/github.com/santhosh-tekuri/jsonschema/v6@v6.0.2",
-		"golang.org/x/sys":                         "pkg:golang/golang.org/x/sys@v0.47.0",
-		"golang.org/x/text":                        "pkg:golang/golang.org/x/text@v0.14.0",
-		"stdlib":                                   "pkg:golang/stdlib@1.26.5",
+		releaseModulePath: "pkg:golang/" + releaseModulePath,
+		"stdlib":          "pkg:golang/stdlib@1.26.5",
+	}
+	for _, dependency := range reviewedSBOMDependencies {
+		wantPURLs[dependency.Name] = "pkg:golang/" + dependency.Name + "@" + dependency.Version
 	}
 	packageSortKeys := make([]string, 0, len(packages))
 	for _, value := range packages {
@@ -173,8 +237,8 @@ func TestFinalizeSPDXAcceptsCheckedSyft150Fixture(t *testing.T) {
 	if err := json.Unmarshal(raw, &rawDocument); err != nil {
 		t.Fatalf("Unmarshal(checked fixture): %v", err)
 	}
-	if got := len(rawDocument["packages"].([]any)); got != 32 {
-		t.Fatalf("checked fixture package count = %d, want real Syft count 32", got)
+	if got := len(rawDocument["packages"].([]any)); got != 151 {
+		t.Fatalf("checked fixture package count = %d, want real Syft count 151", got)
 	}
 	if got := len(rawDocument["files"].([]any)); got != 5 {
 		t.Fatalf("checked fixture file count = %d, want 5", got)
@@ -186,8 +250,8 @@ func TestFinalizeSPDXAcceptsCheckedSyft150Fixture(t *testing.T) {
 			t.Fatalf("checked fixture file %q checksums = %#v, want real Syft SHA1 and SHA256", file["fileName"], checksums)
 		}
 	}
-	if got := len(rawDocument["relationships"].([]any)); got != 88 {
-		t.Fatalf("checked fixture relationship count = %d, want real Syft count 88", got)
+	if got := len(rawDocument["relationships"].([]any)); got != 445 {
+		t.Fatalf("checked fixture relationship count = %d, want real Syft count 445", got)
 	}
 	for _, rawID := range []string{"SPDXRef-DocumentRoot-Directory-fixture-root-marker", "SPDXRef-File-darwin-amd64-ai-cli-gateway-fe4b5f1ef8dea09f"} {
 		if strings.Contains(string(finalized), rawID) {
@@ -468,16 +532,16 @@ func TestFinalizeSPDXRejectsClosedWorldViolations(t *testing.T) {
 			findPackage(doc, "SPDXRef-Package-stdlib-0")["versionInfo"] = "go9.9.9"
 		}},
 		{"purl prefix collision", func(doc map[string]any, _ *sbomCatalog, _ *SBOMOptions) {
-			setPackagePURL(findPackage(doc, "SPDXRef-Package-dep-0"), "pkg:golang/golang.org/x/text-extra@v0.14.0")
+			setPackagePURL(findPackage(doc, "SPDXRef-Package-dep-0"), "pkg:golang/charm.land/bubbles/v2-extra@v2.0.0")
 		}},
 		{"encoded purl collision", func(doc map[string]any, _ *sbomCatalog, _ *SBOMOptions) {
-			setPackagePURL(findPackage(doc, "SPDXRef-Package-dep-0"), "pkg:golang/golang.org%2Fx/text@v0.14.0")
+			setPackagePURL(findPackage(doc, "SPDXRef-Package-dep-0"), "pkg:golang/charm.land%2Fbubbles/v2@v2.0.0")
 		}},
 		{"purl qualifier", func(doc map[string]any, _ *sbomCatalog, _ *SBOMOptions) {
-			setPackagePURL(findPackage(doc, "SPDXRef-Package-dep-0"), "pkg:golang/golang.org/x/text@v0.14.0?x=y")
+			setPackagePURL(findPackage(doc, "SPDXRef-Package-dep-0"), "pkg:golang/charm.land/bubbles/v2@v2.0.0?x=y")
 		}},
 		{"purl subpath", func(doc map[string]any, _ *sbomCatalog, _ *SBOMOptions) {
-			setPackagePURL(findPackage(doc, "SPDXRef-Package-dep-0"), "pkg:golang/golang.org/x/text@v0.14.0#sub")
+			setPackagePURL(findPackage(doc, "SPDXRef-Package-dep-0"), "pkg:golang/charm.land/bubbles/v2@v2.0.0#sub")
 		}},
 		{"omitted catalog target", func(_ map[string]any, catalog *sbomCatalog, _ *SBOMOptions) { catalog.Targets = catalog.Targets[1:] }},
 		{"wrong catalog target hash", func(_ map[string]any, catalog *sbomCatalog, _ *SBOMOptions) {
@@ -521,7 +585,7 @@ func TestWriteSBOMValidatesBuildInfoAndWritesNoClobberAsset(t *testing.T) {
 	options := SBOMOptions{RepositoryRoot: fixture.repositoryRoot, StagingRoot: fixture.stagingRoot, OutputRoot: fixture.outputRoot, RawPath: filepath.Join(filepath.Dir(fixture.repositoryRoot), "raw.spdx.json"), Tag: "v0.1.0", SourceTime: fixture.options.SourceTime}
 	catalog := catalogForStagedFixture(t, fixture)
 	mustWriteBytes(t, options.RawPath, marshalRawSPDX(t, rawSPDXForCatalog(catalog, options.StagingRoot)))
-	withBuildInfoReader(t, func(string) (*debug.BuildInfo, error) { return testBuildInfo(), nil })
+	withBuildInfoReader(t, func(path string) (*debug.BuildInfo, error) { return testBuildInfo(path), nil })
 
 	asset, err := WriteSBOM(options)
 	if err != nil {
@@ -553,8 +617,8 @@ func TestWriteSBOMOperationalFailuresAreClosedAndClean(t *testing.T) {
 			withBuildInfoReader(t, func(string) (*debug.BuildInfo, error) { return nil, errors.New("private build path") })
 		}},
 		{"replacement build info", func(t *testing.T, _ *SBOMOptions) {
-			withBuildInfoReader(t, func(string) (*debug.BuildInfo, error) {
-				info := testBuildInfo()
+			withBuildInfoReader(t, func(path string) (*debug.BuildInfo, error) {
+				info := testBuildInfo(path)
 				info.Deps[0].Replace = &debug.Module{Path: "private/replacement", Version: "v1.0.0"}
 				return info, nil
 			})
@@ -573,7 +637,7 @@ func TestWriteSBOMOperationalFailuresAreClosedAndClean(t *testing.T) {
 			options := SBOMOptions{RepositoryRoot: fixture.repositoryRoot, StagingRoot: fixture.stagingRoot, OutputRoot: fixture.outputRoot, RawPath: filepath.Join(filepath.Dir(fixture.repositoryRoot), "raw.spdx.json"), Tag: "v0.1.0", SourceTime: fixture.options.SourceTime}
 			catalog := catalogForStagedFixture(t, fixture)
 			mustWriteBytes(t, options.RawPath, marshalRawSPDX(t, rawSPDXForCatalog(catalog, options.StagingRoot)))
-			withBuildInfoReader(t, func(string) (*debug.BuildInfo, error) { return testBuildInfo(), nil })
+			withBuildInfoReader(t, func(path string) (*debug.BuildInfo, error) { return testBuildInfo(path), nil })
 			test.prepare(t, &options)
 			asset, err := WriteSBOM(options)
 			if asset != (Asset{}) {
@@ -594,7 +658,7 @@ func TestWriteSBOMPreservesAttackerReplacement(t *testing.T) {
 	options := SBOMOptions{RepositoryRoot: fixture.repositoryRoot, StagingRoot: fixture.stagingRoot, OutputRoot: fixture.outputRoot, RawPath: filepath.Join(filepath.Dir(fixture.repositoryRoot), "raw.spdx.json"), Tag: "v0.1.0", SourceTime: fixture.options.SourceTime}
 	catalog := catalogForStagedFixture(t, fixture)
 	mustWriteBytes(t, options.RawPath, marshalRawSPDX(t, rawSPDXForCatalog(catalog, options.StagingRoot)))
-	withBuildInfoReader(t, func(string) (*debug.BuildInfo, error) { return testBuildInfo(), nil })
+	withBuildInfoReader(t, func(path string) (*debug.BuildInfo, error) { return testBuildInfo(path), nil })
 	finalPath := filepath.Join(fixture.outputRoot, "ai-cli-gateway_0.1.0_sbom.spdx.json")
 	const attacker = "attacker-owned\n"
 	original := sbomWriteOutput
@@ -693,7 +757,7 @@ func TestWriteSBOMRejectsRelativeSymlinkedAndOverlappingRawPaths(t *testing.T) {
 			mustMkdir(t, fixture.outputRoot)
 			writeExpectedArchives(t, fixture.outputRoot, "0.1.0")
 			calls := 0
-			withBuildInfoReader(t, func(string) (*debug.BuildInfo, error) { calls++; return testBuildInfo(), nil })
+			withBuildInfoReader(t, func(path string) (*debug.BuildInfo, error) { calls++; return testBuildInfo(path), nil })
 			_, err := WriteSBOM(SBOMOptions{RepositoryRoot: fixture.repositoryRoot, StagingRoot: fixture.stagingRoot, OutputRoot: fixture.outputRoot, RawPath: test.rawPath(t, fixture), Tag: "v0.1.0", SourceTime: fixture.options.SourceTime})
 			assertCategory(t, err, categoryUnsafePath)
 			if calls != 0 {
@@ -709,7 +773,7 @@ func TestWriteSBOMRejectsRawInputOver16MiB(t *testing.T) {
 	writeExpectedArchives(t, fixture.outputRoot, "0.1.0")
 	rawPath := filepath.Join(filepath.Dir(fixture.repositoryRoot), "oversized.spdx.json")
 	mustWriteBytes(t, rawPath, make([]byte, maxRawSPDXBytes+1))
-	withBuildInfoReader(t, func(string) (*debug.BuildInfo, error) { return testBuildInfo(), nil })
+	withBuildInfoReader(t, func(path string) (*debug.BuildInfo, error) { return testBuildInfo(path), nil })
 	asset, err := WriteSBOM(SBOMOptions{RepositoryRoot: fixture.repositoryRoot, StagingRoot: fixture.stagingRoot, OutputRoot: fixture.outputRoot, RawPath: rawPath, Tag: "v0.1.0", SourceTime: fixture.options.SourceTime})
 	if asset != (Asset{}) {
 		t.Fatalf("asset = %#v, want zero", asset)
@@ -717,11 +781,87 @@ func TestWriteSBOMRejectsRawInputOver16MiB(t *testing.T) {
 	assertCategory(t, err, categorySBOMFailure)
 }
 
+func compiledExternalModules(t *testing.T, repositoryRoot string, releaseTarget target) []string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "list", "-mod=readonly", "-deps", "-f", `{{with .Module}}{{if not .Main}}{{.Path}}@{{.Version}}{{end}}{{end}}`, "./cmd/ai-cli-gateway") //nolint:gosec // Fixed Go tool and repository package audit.
+	command.Dir = repositoryRoot
+	command.Env = goListEnvironment(releaseTarget)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err := command.Run()
+	if ctx.Err() != nil {
+		t.Fatal("cross-target go list exceeded its local deadline")
+	}
+	if err != nil {
+		t.Fatalf("go list %s/%s: %v: %s", releaseTarget.GOOS, releaseTarget.GOARCH, err, stderr.Bytes())
+	}
+	unique := make(map[string]struct{})
+	for _, line := range strings.Split(strings.ReplaceAll(stdout.String(), "\r\n", "\n"), "\n") {
+		module := strings.TrimSpace(line)
+		if module != "" {
+			unique[module] = struct{}{}
+		}
+	}
+	modules := make([]string, 0, len(unique))
+	for module := range unique {
+		modules = append(modules, module)
+	}
+	slices.Sort(modules)
+	return modules
+}
+
+func goListEnvironment(releaseTarget target) []string {
+	overridden := map[string]struct{}{
+		"CGO_ENABLED": {},
+		"GOARCH":      {},
+		"GOFLAGS":     {},
+		"GOOS":        {},
+		"GOWORK":      {},
+	}
+	environment := make([]string, 0, len(os.Environ())+5)
+	for _, value := range os.Environ() {
+		name, _, _ := strings.Cut(value, "=")
+		if _, exists := overridden[name]; !exists {
+			environment = append(environment, value)
+		}
+	}
+	return append(environment,
+		"CGO_ENABLED=0",
+		"GOARCH="+releaseTarget.GOARCH,
+		"GOFLAGS=",
+		"GOOS="+releaseTarget.GOOS,
+		"GOWORK=off",
+	)
+}
+
+func reviewedDependenciesForTarget(releaseTarget target) []sbomComponent {
+	dependencies := slices.Clone(reviewedSBOMDependencies)
+	if releaseTarget.GOOS != "windows" {
+		return dependencies
+	}
+	return slices.DeleteFunc(dependencies, func(component sbomComponent) bool {
+		return component.Name == "github.com/charmbracelet/x/termios"
+	})
+}
+
+func dependencyIdentities(dependencies []sbomComponent) []string {
+	identities := make([]string, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		identities = append(identities, dependency.Name+"@"+dependency.Version)
+	}
+	slices.Sort(identities)
+	return identities
+}
+
 func testSBOMCatalog() (SBOMOptions, sbomCatalog) {
 	options := SBOMOptions{RepositoryRoot: "fixture-repository-marker", StagingRoot: "fixture-root-marker", OutputRoot: "fixture-output-marker", Tag: "v0.1.0", SourceTime: time.Date(2026, 8, 4, 6, 29, 53, 0, time.UTC)}
 	targets := make([]sbomTargetCatalog, 0, len(releaseTargets))
 	for i, releaseTarget := range releaseTargets {
-		targets = append(targets, sbomTargetCatalog{Target: releaseTarget, RelativePath: filepath.ToSlash(filepath.Join(releaseTarget.Directory, releaseTarget.Executable)), SHA256: strings.Repeat(string(rune('a'+i)), 64), GoVersion: "go1.26.5", Main: sbomComponent{Name: releaseModulePath, Version: "(devel)"}, Dependencies: []sbomComponent{{Name: "github.com/pelletier/go-toml/v2", Version: "v2.4.3"}, {Name: "github.com/santhosh-tekuri/jsonschema/v6", Version: "v6.0.2"}, {Name: "golang.org/x/sys", Version: "v0.47.0"}, {Name: "golang.org/x/text", Version: "v0.14.0"}}})
+		targets = append(targets, sbomTargetCatalog{Target: releaseTarget, RelativePath: filepath.ToSlash(filepath.Join(releaseTarget.Directory, releaseTarget.Executable)), SHA256: strings.Repeat(string(rune('a'+i)), 64), GoVersion: "go1.26.5", Main: sbomComponent{Name: releaseModulePath, Version: "(devel)"}, Dependencies: reviewedDependenciesForTarget(releaseTarget)})
 	}
 	return options, sbomCatalog{Targets: targets}
 }
@@ -739,7 +879,7 @@ func rawSPDXForCatalog(catalog sbomCatalog, stagingRoot string) map[string]any {
 		for componentIndex, component := range components {
 			kind := "dep"
 			if componentIndex > 1 && componentIndex < len(components)-1 {
-				kind += string(rune('0' + componentIndex))
+				kind += strconv.Itoa(componentIndex)
 			}
 			version := component.Version
 			purl := "pkg:golang/" + component.Name + "@" + component.Version
@@ -880,8 +1020,21 @@ func addClassifier(document map[string]any, id, fileID string) {
 	document["packages"] = append(document["packages"].([]any), map[string]any{"name": "ai-cli-gateway", "SPDXID": id, "versionInfo": "UNKNOWN", "downloadLocation": "NOASSERTION", "filesAnalyzed": false})
 	document["relationships"] = append(document["relationships"].([]any), map[string]any{"spdxElementId": id, "relationshipType": "OTHER", "relatedSpdxElement": fileID, "comment": "evident-by: indicates the package's existence is evident by the given file"}, map[string]any{"spdxElementId": "SPDXRef-Package-root", "relationshipType": "CONTAINS", "relatedSpdxElement": id})
 }
-func testBuildInfo() *debug.BuildInfo {
-	return &debug.BuildInfo{GoVersion: "go1.26.5", Main: debug.Module{Path: releaseModulePath, Version: "(devel)"}, Deps: []*debug.Module{{Path: "github.com/pelletier/go-toml/v2", Version: "v2.4.3"}, {Path: "github.com/santhosh-tekuri/jsonschema/v6", Version: "v6.0.2"}, {Path: "golang.org/x/sys", Version: "v0.47.0"}, {Path: "golang.org/x/text", Version: "v0.14.0"}}}
+func testBuildInfo(path string) *debug.BuildInfo {
+	dependencies := reviewedSBOMDependencies
+	cleanPath := filepath.Clean(path)
+	for _, releaseTarget := range releaseTargets {
+		if filepath.Base(cleanPath) == releaseTarget.Executable && filepath.Base(filepath.Dir(cleanPath)) == releaseTarget.Directory {
+			dependencies = reviewedDependenciesForTarget(releaseTarget)
+			break
+		}
+	}
+	modules := make([]*debug.Module, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		dependency := dependency
+		modules = append(modules, &debug.Module{Path: dependency.Name, Version: dependency.Version})
+	}
+	return &debug.BuildInfo{GoVersion: "go1.26.5", Main: debug.Module{Path: releaseModulePath, Version: "(devel)"}, Deps: modules}
 }
 func withBuildInfoReader(t *testing.T, reader func(string) (*debug.BuildInfo, error)) {
 	t.Helper()
@@ -896,7 +1049,7 @@ func catalogForStagedFixture(t *testing.T, fixture releaseFixture) sbomCatalog {
 		path := filepath.Join(fixture.stagingRoot, releaseTarget.Directory, releaseTarget.Executable)
 		contents := mustReadFile(t, path)
 		sum := sha256.Sum256(contents)
-		targets = append(targets, sbomTargetCatalog{Target: releaseTarget, RelativePath: filepath.ToSlash(filepath.Join(releaseTarget.Directory, releaseTarget.Executable)), SHA256: hex.EncodeToString(sum[:]), GoVersion: "go1.26.5", Main: sbomComponent{Name: releaseModulePath, Version: "(devel)"}, Dependencies: []sbomComponent{{Name: "github.com/pelletier/go-toml/v2", Version: "v2.4.3"}, {Name: "github.com/santhosh-tekuri/jsonschema/v6", Version: "v6.0.2"}, {Name: "golang.org/x/sys", Version: "v0.47.0"}, {Name: "golang.org/x/text", Version: "v0.14.0"}}})
+		targets = append(targets, sbomTargetCatalog{Target: releaseTarget, RelativePath: filepath.ToSlash(filepath.Join(releaseTarget.Directory, releaseTarget.Executable)), SHA256: hex.EncodeToString(sum[:]), GoVersion: "go1.26.5", Main: sbomComponent{Name: releaseModulePath, Version: "(devel)"}, Dependencies: reviewedDependenciesForTarget(releaseTarget)})
 	}
 	return sbomCatalog{Targets: targets}
 }
