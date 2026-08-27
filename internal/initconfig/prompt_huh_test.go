@@ -243,7 +243,7 @@ func TestHuhPromptRunFinalizationRestoreFailureOutranksCancellation(t *testing.T
 func TestHuhPromptCollectUsesSelectInputConfirmAndMultipleModels(t *testing.T) {
 	executable := testAbsolutePath("bin", "codex")
 	configHome := testAbsolutePath("homes", "codex")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	input := newFormHuhInput(
 		[]string{"\r", "\r", "\r"}, // Discovered command, home, continue.
@@ -326,6 +326,8 @@ func TestHuhPromptCollectModelRejectsAliasAlreadyCollectedThisSession(t *testing
 	options := Options{Models: []ModelMapping{{
 		ID: "codex-local", Provider: core.ProviderCodex, ProviderModel: "gpt-first",
 	}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 	prompt := newHuhPrompt(newFormHuhInput([]string{
 		"codex-local\r",
 		"\x15codex-second\r",
@@ -335,7 +337,7 @@ func TestHuhPromptCollectModelRejectsAliasAlreadyCollectedThisSession(t *testing
 	}), io.Discard)
 
 	model, another, decision, err := prompt.collectModelForm(
-		context.Background(), core.ProviderCodex, options,
+		ctx, core.ProviderCodex, options,
 	)
 	if err != nil {
 		t.Fatalf("collectModelForm() error = %v", err)
@@ -348,6 +350,8 @@ func TestHuhPromptCollectModelRejectsAliasAlreadyCollectedThisSession(t *testing
 
 func TestHuhPromptGatewayKeyFileRejectsRelativeThenAcceptsAbsolute(t *testing.T) {
 	absolutePath := testAbsolutePath("gateway.key")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 	prompt := newHuhPrompt(newFormHuhInput([]string{
 		"\r",
 		"relative.key\r",
@@ -356,7 +360,7 @@ func TestHuhPromptGatewayKeyFileRejectsRelativeThenAcceptsAbsolute(t *testing.T)
 	}), io.Discard)
 
 	gateway, decision, err := prompt.collectGatewayForm(
-		context.Background(), GatewayInput{}, nil,
+		ctx, GatewayInput{}, nil,
 	)
 	if err != nil {
 		t.Fatalf("collectGatewayForm() error = %v", err)
@@ -371,8 +375,10 @@ func TestHuhPromptGatewayKeyFileRejectsRelativeThenAcceptsAbsolute(t *testing.T)
 
 func TestHuhPromptReviewAndKeyConfirmation(t *testing.T) {
 	t.Run("collision choices", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
 		prompt := newHuhPrompt(newFormHuhInput([]string{"\r", "l\r", "\r"}), io.Discard)
-		response, err := prompt.Review(context.Background(), ReviewRequest{
+		response, err := prompt.Review(ctx, ReviewRequest{
 			Collisions: []Collision{
 				{Target: DiffProvider, Name: "codex"},
 				{Target: DiffModel, Name: "codex-local"},
@@ -402,8 +408,10 @@ func TestHuhPromptReviewAndKeyConfirmation(t *testing.T) {
 	})
 
 	t.Run("key decline", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
 		prompt := newHuhPrompt(newFormHuhInput([]string{"n", "\r"}), io.Discard)
-		decision, err := prompt.ConfirmKeyAction(context.Background(), KeyConfirmationRequest{
+		decision, err := prompt.ConfirmKeyAction(ctx, KeyConfirmationRequest{
 			Kind: ConfirmMissingConfiguredKeyCreation,
 			Path: "/srv/gateway.key",
 		})
@@ -417,6 +425,8 @@ func TestHuhPromptPreviousGroupNavigationRevisesProviderChoice(t *testing.T) {
 	firstExecutable := testAbsolutePath("bin", "codex-a")
 	secondExecutable := testAbsolutePath("bin", "codex-b")
 	configHome := testAbsolutePath("homes", "codex")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 	// Enter first reaches config home; Shift+Tab emits Huh's PrevGroup
 	// navigation and revises the command before completing the form.
 	prompt := newHuhPrompt(
@@ -424,7 +434,7 @@ func TestHuhPromptPreviousGroupNavigationRevisesProviderChoice(t *testing.T) {
 		io.Discard,
 	)
 	input, decision, err := prompt.collectProviderForm(
-		context.Background(),
+		ctx,
 		core.ProviderCodex,
 		ProviderDiscovery{
 			Commands: []CommandCandidate{
@@ -818,7 +828,9 @@ type formHuhReader struct {
 }
 
 func newFormHuhInput(forms ...[]string) *formHuhReader {
-	return newFormHuhInputWithDelay(250*time.Millisecond, forms...)
+	// Race-enabled hosted runners can need more than 250ms to apply a Huh
+	// group transition before the next scripted key is read.
+	return newFormHuhInputWithDelay(time.Second, forms...)
 }
 
 func newFormHuhInputWithDelay(
