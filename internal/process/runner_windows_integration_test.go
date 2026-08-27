@@ -1157,15 +1157,13 @@ func TestWindowsSupervisorClosesOwnedNativeResourcesAcrossStressScenarios(
 					supervisor,
 					requestRuntime,
 					CommandSpec{
-						Executable: filepath.Join(
-							requestRuntime.Dir,
-							"bad-provider.exe",
-						),
+						Executable: executable,
+						// Fail CreateProcess after native stdio and the
+						// attribute list have been acquired.
+						Args: []string{
+							strings.Repeat("x", 1<<16),
+						},
 						Dir: requestRuntime.Dir,
-						Files: []FileSpec{{
-							Name: "bad-provider.exe",
-							Data: []byte("not a Windows executable"),
-						}},
 					},
 				)
 			},
