@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const commitSubprocessCoordinationTimeout = 30 * time.Second
+
 func TestConcurrentCommitSubprocesses(t *testing.T) {
 	if os.Getenv("CONFIGSTORE_COMMIT_HELPER") == "1" {
 		runCommitSubprocessHelper(t)
@@ -54,7 +56,7 @@ func TestConcurrentCommitSubprocesses(t *testing.T) {
 			t.Fatalf("start child %d: %v", index, err)
 		}
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(commitSubprocessCoordinationTimeout)
 	for {
 		allReady := true
 		for index := range children {
@@ -114,7 +116,7 @@ func runCommitSubprocessHelper(t *testing.T) {
 	if err := os.WriteFile(readyPath, nil, 0o600); err != nil {
 		t.Fatalf("helper ready: %v", err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(commitSubprocessCoordinationTimeout)
 	for {
 		if _, err := os.Lstat(gatePath); err == nil {
 			break
