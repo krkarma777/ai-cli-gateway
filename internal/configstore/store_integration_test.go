@@ -22,6 +22,9 @@ func TestConcurrentCommitSubprocesses(t *testing.T) {
 	}
 
 	root := privateStoreDir(t)
+	// Keep test-owned synchronization files outside the transaction directory,
+	// whose metadata is intentionally revalidated during Commit.
+	coordinationRoot := privateStoreDir(t)
 	configPath := filepath.Join(root, "config.toml")
 	source := validStoreConfig(t)
 	writePrivateStoreFile(t, configPath, source, 0o600)
@@ -35,11 +38,11 @@ func TestConcurrentCommitSubprocesses(t *testing.T) {
 		ready   string
 		result  string
 	}
-	gate := filepath.Join(root, "commit.gate")
+	gate := filepath.Join(coordinationRoot, "commit.gate")
 	children := make([]child, 2)
 	for index, model := range []string{"gpt-subprocess-one", "gpt-subprocess-two"} {
-		ready := filepath.Join(root, model+".ready")
-		result := filepath.Join(root, model+".result")
+		ready := filepath.Join(coordinationRoot, model+".ready")
+		result := filepath.Join(coordinationRoot, model+".result")
 		command := exec.Command(executable, "-test.run=^TestConcurrentCommitSubprocesses$") // #nosec G204 -- exact current test binary.
 		command.Env = append(os.Environ(),
 			"CONFIGSTORE_COMMIT_HELPER=1",
