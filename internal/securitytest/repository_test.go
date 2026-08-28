@@ -4344,6 +4344,20 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			),
 		},
 		{name: "missing workflow_call trigger", mutate: replaceCIOnce("  workflow_call:\n", "")},
+		{
+			name: "unfiltered push trigger",
+			mutate: replaceCIOnce(
+				"  push:\n    branches:\n      - \"**\"\n",
+				"  push:\n",
+			),
+		},
+		{
+			name: "tag-filtered push trigger",
+			mutate: replaceCIOnce(
+				"    branches:\n      - \"**\"\n",
+				"    tags:\n      - \"**\"\n",
+			),
+		},
 		{name: "extra trigger", mutate: replaceCIOnce("  workflow_call:\n", "  workflow_call:\n  schedule:\n")},
 		{name: "workflow_call inputs", mutate: replaceCIOnce("  workflow_call:\n", "  workflow_call:\n    inputs:\n")},
 		{name: "workflow_call secrets", mutate: replaceCIOnce("  workflow_call:\n", "  workflow_call:\n    secrets:\n")},
@@ -4787,7 +4801,9 @@ func validateSDKCIWorkflowContract(workflow string) error {
 	if !reflect.DeepEqual(topLevelFields, wantTopLevelFields) {
 		return fmt.Errorf("top-level fields = %v, want exact fields %v", topLevelFields, wantTopLevelFields)
 	}
-	if got, want := topLevelYAMLBlockLines(workflow, "on:"), []string{"push:", "pull_request:", "workflow_call:"}; !reflect.DeepEqual(got, want) {
+	if got, want := topLevelYAMLBlockLines(workflow, "on:"), []string{
+		"push:", "branches:", `- "**"`, "pull_request:", "workflow_call:",
+	}; !reflect.DeepEqual(got, want) {
 		return fmt.Errorf("top-level triggers = %q, want exactly %q without inputs or secrets", got, want)
 	}
 	if got := topLevelYAMLBlockLines(workflow, "permissions:"); !reflect.DeepEqual(got, []string{"contents: read"}) {

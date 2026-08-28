@@ -5,6 +5,8 @@ name: CI
 # or later.
 on:
   push:
+    branches:
+      - "**"
   pull_request:
   workflow_call:
 
