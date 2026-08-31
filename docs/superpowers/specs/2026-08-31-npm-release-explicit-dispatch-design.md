@@ -1,6 +1,6 @@
 # Explicit npm Release Dispatch Design
 
-**Status:** Approved approach; awaiting written-spec review on 2026-08-31
+**Status:** Approved for implementation planning on 2026-09-01
 
 ## Incident and Current State
 
