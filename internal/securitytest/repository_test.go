@@ -7072,9 +7072,13 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "unknown top field", mutate: replaceNPMReleaseOnce("name: npm Release\n", "name: npm Release\nunexpected: true\n")},
 		{name: "unknown job field", mutate: replaceNPMReleaseOnce("  package:\n    runs-on: ubuntu-24.04\n", "  package:\n    runs-on: ubuntu-24.04\n    if: always()\n")},
 		{name: "step continue on error", mutate: replaceNPMReleaseOnce("      - name: Validate immutable release metadata\n", "      - name: Validate immutable release metadata\n        continue-on-error: true\n")},
-		{name: "event widened", mutate: replaceNPMReleaseOnce("      - published\n", "      - published\n      - created\n")},
+		{name: "release trigger restored", mutate: replaceNPMReleaseOnce("  workflow_dispatch:\n", "  release:\n")},
+		{name: "tag input optional", mutate: replaceNPMReleaseOnce("        required: true\n", "        required: false\n")},
+		{name: "tag input defaulted", mutate: replaceNPMReleaseOnce("        required: true\n", "        required: true\n        default: v0.2.1\n")},
+		{name: "tag input type changed", mutate: replaceNPMReleaseOnce("        type: string\n", "        type: choice\n")},
+		{name: "extra dispatch input", mutate: replaceNPMReleaseOnce("      tag:\n", "      attacker:\n        description: attacker\n        required: false\n        type: string\n      tag:\n")},
 		{name: "top permission widened", mutate: replaceNPMReleaseOnce("permissions: {}\n", "permissions:\n  contents: write\n")},
-		{name: "concurrency changed", mutate: replaceNPMReleaseOnce("npm-release-${{ github.repository }}-${{ github.event.release.tag_name }}", "npm-release-${{ github.repository }}")},
+		{name: "concurrency changed", mutate: replaceNPMReleaseOnce("npm-release-${{ github.repository }}-${{ inputs.tag }}", "npm-release-${{ github.repository }}")},
 		{name: "cancellation enabled", mutate: replaceNPMReleaseOnce("  cancel-in-progress: false\n", "  cancel-in-progress: true\n")},
 		{name: "package runner changed", mutate: replaceNPMReleaseOnce("  package:\n    runs-on: ubuntu-24.04\n", "  package:\n    runs-on: ubuntu-latest\n")},
 		{name: "package timeout changed", mutate: replaceNPMReleaseOnce("    timeout-minutes: 25\n", "    timeout-minutes: 26\n")},
@@ -7089,9 +7093,15 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "checkout persists credentials", mutate: replaceNPMReleaseOnce("          persist-credentials: false\n", "          persist-credentials: true\n")},
 		{name: "wrong go version", mutate: replaceNPMReleaseOnce("          go-version: 1.26.5\n", "          go-version: latest\n")},
 		{name: "wrong node version", mutate: replaceNPMReleaseOnce("          node-version: \"24.13.0\"\n", "          node-version: latest\n")},
+		{name: "dispatch event guard removed", mutate: replaceNPMReleaseOnce("          test \"${EVENT_NAME}\" = workflow_dispatch\n", "")},
+		{name: "dispatch repository guard removed", mutate: replaceNPMReleaseOnce("          test \"${EVENT_REPOSITORY}\" = \"${repository}\"\n", "")},
+		{name: "recovery branch widened", mutate: replaceNPMReleaseOnce("refs/heads/main) readonly source_mode=recovery ;;", "refs/heads/*) readonly source_mode=recovery ;;")},
+		{name: "recovery main head guard removed", mutate: replaceNPMReleaseOnce("            test \"${live_main}\" = \"${EVENT_SHA}\"\n", "")},
+		{name: "tag source SHA guard removed", mutate: replaceNPMReleaseOnce("            test \"${EVENT_SHA}\" = \"${tag_commit}\"\n", "")},
+		{name: "release lookup changed to id input", mutate: replaceNPMReleaseOnce("releases/tags/${INPUT_TAG}", "releases/${INPUT_TAG}")},
 		{name: "immutable guard removed", mutate: replaceNPMReleaseOnce("            (.immutable == true) and\n", "")},
 		{name: "repository authority changed", mutate: replaceNPMReleaseOnce("readonly repository=krkarma777/ai-cli-gateway", "readonly repository=attacker/ai-cli-gateway")},
-		{name: "canonical tag widened", mutate: replaceNPMReleaseOnce("test \"${EVENT_TAG}\" = v0.2.1", "[[ \"${EVENT_TAG}\" = v* ]]")},
+		{name: "canonical tag widened", mutate: replaceNPMReleaseOnce("test \"${INPUT_TAG}\" = v0.2.1", "[[ \"${INPUT_TAG}\" = v* ]]")},
 		{name: "asset allowlist weakened", mutate: replaceNPMReleaseOnce("          ai-cli-gateway_0.2.1_linux_arm64.tar.gz\n", "")},
 		{name: "asset digest weakened", mutate: replaceNPMReleaseOnce("^sha256:[0-9a-f]{64}$", "^sha256:")},
 		{name: "strict checksums removed", mutate: replaceNPMReleaseOnce("sha256sum --check --strict SHA256SUMS", "sha256sum --check SHA256SUMS")},
@@ -7285,21 +7295,29 @@ func validateClosedNPMReleaseYAMLNode(node *yaml.Node) error {
 }
 
 func validateNPMReleaseTrigger(node *yaml.Node) error {
-	trigger, err := closedYAMLMapping(node, "release")
+	trigger, err := closedYAMLMapping(node, "workflow_dispatch")
 	if err != nil {
 		return fmt.Errorf("trigger: %w", err)
 	}
-	release, err := closedYAMLMapping(trigger["release"], "types")
+	dispatch, err := closedYAMLMapping(trigger["workflow_dispatch"], "inputs")
 	if err != nil {
-		return fmt.Errorf("release trigger: %w", err)
+		return fmt.Errorf("workflow_dispatch trigger: %w", err)
 	}
-	types := release["types"]
-	if types.Kind != yaml.SequenceNode || len(types.Content) != 1 {
-		return errors.New("npm release trigger must have one release type")
+	inputs, err := closedYAMLMapping(dispatch["inputs"], "tag")
+	if err != nil {
+		return fmt.Errorf("workflow_dispatch inputs: %w", err)
 	}
-	value, err := closedYAMLScalar(types.Content[0])
-	if err != nil || value != "published" {
-		return errors.New("npm release trigger must be only published")
+	tag, err := closedYAMLScalarMap(inputs["tag"], "description", "required", "type")
+	if err != nil {
+		return fmt.Errorf("workflow_dispatch tag input: %w", err)
+	}
+	want := map[string]string{
+		"description": "Immutable release tag to publish",
+		"required":    "true",
+		"type":        "string",
+	}
+	if !reflect.DeepEqual(tag, want) {
+		return fmt.Errorf("workflow_dispatch tag input = %v, want %v", tag, want)
 	}
 	return nil
 }
@@ -7310,7 +7328,7 @@ func validateNPMReleaseConcurrency(node *yaml.Node) error {
 		return fmt.Errorf("concurrency: %w", err)
 	}
 	want := map[string]string{
-		"group":              "npm-release-${{ github.repository }}-${{ github.event.release.tag_name }}",
+		"group":              "npm-release-${{ github.repository }}-${{ inputs.tag }}",
 		"cancel-in-progress": "false",
 	}
 	if !reflect.DeepEqual(concurrency, want) {
@@ -7390,6 +7408,9 @@ func validateNPMReleaseWorkflowContract(workflow npmReleaseWorkflowDocument) err
 	if err := validateNPMReleaseStepShapes(packageJob, publishJob); err != nil {
 		return err
 	}
+	if err := validateNPMReleaseDispatchMetadataContract(packageJob); err != nil {
+		return err
+	}
 	if err := validateNPMReleaseArtifactDigestContract(publishJob); err != nil {
 		return err
 	}
@@ -7397,6 +7418,52 @@ func validateNPMReleaseWorkflowContract(workflow npmReleaseWorkflowDocument) err
 		return err
 	}
 	return validateNPMReleaseRunHashes(packageJob, publishJob)
+}
+
+func validateNPMReleaseDispatchMetadataContract(packageJob releaseWorkflowJob) error {
+	metadata, err := namedReleaseStep(packageJob.Steps, "Validate immutable release metadata")
+	if err != nil {
+		return err
+	}
+	script := shellWithoutCommentOnlyLines(metadata.Run)
+	lines := trimmedShellLines(script)
+	wantUnique := []string{
+		`test "${EVENT_NAME}" = workflow_dispatch`,
+		`test "${EVENT_REPOSITORY}" = "${repository}"`,
+		`"refs/tags/${INPUT_TAG}") readonly source_mode=tag ;;`,
+		`refs/heads/main) readonly source_mode=recovery ;;`,
+		`tag_commit="$(resolve_live_tag)"`,
+		`test "${EVENT_SHA}" = "${tag_commit}"`,
+		`test "${live_main}" = "${EVENT_SHA}"`,
+		`printf 'tag=%s\n' "${INPUT_TAG}"`,
+		`printf 'version=%s\n' "${INPUT_TAG#v}"`,
+		`printf 'tag_commit=%s\n' "${tag_commit}"`,
+		`printf 'release_id=%s\n' "${release_id}"`,
+	}
+	for _, line := range wantUnique {
+		if shellLineCount(lines, line) != 1 {
+			return fmt.Errorf("npm dispatch metadata line %q is not exact and unique", line)
+		}
+	}
+	if shellLineCount(lines, `test "${INPUT_TAG}" = v0.2.1`) != 2 {
+		return errors.New("npm dispatch metadata must bind both the workflow and recovery path to v0.2.1")
+	}
+	if strings.Count(script, `releases/tags/${INPUT_TAG}`) != 1 || strings.Contains(script, "github.event.release") {
+		return errors.New("npm dispatch metadata must query one tag-derived release without release-event authority")
+	}
+	if err := requireOrderedMarkers(script,
+		`test "${EVENT_NAME}" = workflow_dispatch`,
+		`case "${EVENT_REF}" in`,
+		`tag_commit="$(resolve_live_tag)"`,
+		`if test "${source_mode}" = tag; then`,
+		`test "${EVENT_SHA}" = "${tag_commit}"`,
+		`test "${live_main}" = "${EVENT_SHA}"`,
+		`releases/tags/${INPUT_TAG}`,
+		`printf 'release_id=%s\n' "${release_id}"`,
+	); err != nil {
+		return fmt.Errorf("npm dispatch metadata order: %w", err)
+	}
+	return nil
 }
 
 func validateNPMReleaseArtifactDigestContract(publishJob releaseWorkflowJob) error {
@@ -7512,9 +7579,8 @@ func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) err
 	}
 	wantPackage := []shape{
 		{name: "Validate immutable release metadata", id: "metadata", shell: "bash", env: map[string]string{ //nolint:gosec // This is GitHub's documented token expression, not a credential.
-			"GH_TOKEN": "${{ github.token }}", "EVENT_ACTION": "${{ github.event.action }}", "EVENT_REPOSITORY": "${{ github.repository }}",
-			"EVENT_RELEASE_ID": "${{ github.event.release.id }}", "EVENT_TAG": "${{ github.event.release.tag_name }}",
-			"EVENT_DRAFT": "${{ github.event.release.draft }}", "EVENT_PRERELEASE": "${{ github.event.release.prerelease }}",
+			"GH_TOKEN": "${{ github.token }}", "EVENT_NAME": "${{ github.event_name }}", "EVENT_REPOSITORY": "${{ github.repository }}",
+			"EVENT_REF": "${{ github.ref }}", "EVENT_SHA": "${{ github.sha }}", "INPUT_TAG": "${{ inputs.tag }}",
 		}},
 		{uses: checkoutAction},
 		{uses: setupGoAction},
@@ -7577,7 +7643,7 @@ func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) err
 
 func validateNPMReleaseRunHashes(packageJob, publishJob releaseWorkflowJob) error {
 	want := map[string]string{
-		"package/Validate immutable release metadata":          "adbdec70d8ed9440db1929aafc6ad19447f40105799c71a9475f3105b16cda77",
+		"package/Validate immutable release metadata":          "eba092f7faa1171107bf9a8ef91de7fb669bac3cdcd308d54f8ce60d387a1053",
 		"package/Validate toolchain and source":                "631712fb03df18ac2a9572c46e11d4c769477aa60f9d1a96fcee3fb3627770ad",
 		"package/Download and verify immutable release assets": "63da1cd453591d8674f6e4d04bbde51b886f0e8a7b182a3c30e8ad31fce79120",
 		"package/Rebuild and compare release archives":         "a29e7f9ab62446c35ba3ffce2606e723b5eb492b54afa15a0ec3fb1e3e8612d9",

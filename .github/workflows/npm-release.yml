@@ -1,14 +1,17 @@
 name: npm Release
 
 on:
-  release:
-    types:
-      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Immutable release tag to publish
+        required: true
+        type: string
 
 permissions: {}
 
 concurrency:
-  group: npm-release-${{ github.repository }}-${{ github.event.release.tag_name }}
+  group: npm-release-${{ github.repository }}-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -26,53 +29,38 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_NAME: ${{ github.event_name }}
           EVENT_REPOSITORY: ${{ github.repository }}
-          EVENT_RELEASE_ID: ${{ github.event.release.id }}
-          EVENT_TAG: ${{ github.event.release.tag_name }}
-          EVENT_DRAFT: ${{ github.event.release.draft }}
-          EVENT_PRERELEASE: ${{ github.event.release.prerelease }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           umask 077
           readonly repository=krkarma777/ai-cli-gateway
           readonly commit_pattern='^[0-9a-f]{40}$'
           readonly release_id_pattern='^[1-9][0-9]*$'
-          test "${EVENT_ACTION}" = published
+          test "${EVENT_NAME}" = workflow_dispatch
           test "${EVENT_REPOSITORY}" = "${repository}"
-          test "${EVENT_DRAFT}" = false
-          test "${EVENT_PRERELEASE}" = false
-          test "${EVENT_TAG}" = v0.2.1
-          [[ "${EVENT_RELEASE_ID}" =~ ${release_id_pattern} ]]
+          test "${INPUT_TAG}" = v0.2.1
+          [[ "${EVENT_SHA}" =~ ${commit_pattern} ]]
+          case "${EVENT_REF}" in
+            "refs/tags/${INPUT_TAG}") readonly source_mode=tag ;;
+            refs/heads/main) readonly source_mode=recovery ;;
+            *) exit 1 ;;
+          esac
           command -v gh >/dev/null
           command -v jq >/dev/null
           gh --version >/dev/null
           jq --version >/dev/null
-
-          release_response="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/${repository}/releases/${EVENT_RELEASE_ID}")"
-          jq -e \
-            --argjson release_id "${EVENT_RELEASE_ID}" \
-            --arg tag "${EVENT_TAG}" '
-            type == "object" and
-            (.id == $release_id) and
-            (.tag_name == $tag) and
-            (.draft == false) and
-            (.prerelease == false) and
-            (.immutable == true) and
-            (.published_at | type == "string" and length > 0) and
-            (.assets | type == "array" and length == 7)
-          ' >/dev/null <<<"${release_response}"
 
           resolve_live_tag() {
             local ref_response object_type object_sha tag_response resolved
             ref_response="$(gh api \
               -H 'Accept: application/vnd.github+json' \
               -H 'X-GitHub-Api-Version: 2026-03-10' \
-              "repos/${repository}/git/ref/tags/${EVENT_TAG}")" || return 1
-            jq -e --arg ref "refs/tags/${EVENT_TAG}" '
+              "repos/${repository}/git/ref/tags/${INPUT_TAG}")" || return 1
+            jq -e --arg ref "refs/tags/${INPUT_TAG}" '
               type == "object" and
               .ref == $ref and
               (.object | type == "object") and
@@ -103,10 +91,46 @@ jobs:
 
           tag_commit="$(resolve_live_tag)"
           [[ "${tag_commit}" =~ ${commit_pattern} ]]
+          if test "${source_mode}" = tag; then
+            test "${EVENT_SHA}" = "${tag_commit}"
+          else
+            test "${INPUT_TAG}" = v0.2.1
+            main_response="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${repository}/git/ref/heads/main")"
+            jq -e --arg sha "${EVENT_SHA}" '
+              type == "object" and
+              .ref == "refs/heads/main" and
+              (.object | type == "object") and
+              .object.type == "commit" and
+              .object.sha == $sha
+            ' >/dev/null <<<"${main_response}"
+            live_main="$(jq -r '.object.sha' <<<"${main_response}")"
+            test "${live_main}" = "${EVENT_SHA}"
+          fi
+
+          release_response="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${repository}/releases/tags/${INPUT_TAG}")"
+          jq -e --arg tag "${INPUT_TAG}" '
+            type == "object" and
+            (.id | type == "number" and . > 0 and floor == .) and
+            (.tag_name == $tag) and
+            (.draft == false) and
+            (.prerelease == false) and
+            (.immutable == true) and
+            (.published_at | type == "string" and length > 0) and
+            (.assets | type == "array" and length == 7)
+          ' >/dev/null <<<"${release_response}"
+          release_id="$(jq -r '.id' <<<"${release_response}")"
+          [[ "${release_id}" =~ ${release_id_pattern} ]]
           {
-            printf 'tag=%s\n' "${EVENT_TAG}"
-            printf 'version=%s\n' "${EVENT_TAG#v}"
+            printf 'tag=%s\n' "${INPUT_TAG}"
+            printf 'version=%s\n' "${INPUT_TAG#v}"
             printf 'tag_commit=%s\n' "${tag_commit}"
+            printf 'release_id=%s\n' "${release_id}"
           } >> "${GITHUB_OUTPUT}"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
