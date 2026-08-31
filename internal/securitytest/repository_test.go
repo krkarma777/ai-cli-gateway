@@ -1632,7 +1632,7 @@ func releaseNotesNPMTargetTable() []string {
 }
 
 func validateExactDocumentationTable(document, heading string, expected []string) error {
-	section, err := extractTopLevelMarkdownSection(document, heading)
+	section, err := extractActiveTopLevelMarkdownSection(document, heading)
 	if err != nil {
 		return err
 	}
@@ -1651,6 +1651,59 @@ func validateExactDocumentationTable(document, heading string, expected []string
 		return fmt.Errorf("section %q pipe-containing lines = %v, want exact table %v", heading, pipeLines, expected)
 	}
 	return nil
+}
+
+func extractActiveTopLevelMarkdownSection(document, heading string) (string, error) {
+	normalized := strings.ReplaceAll(document, "\r\n", "\n")
+	wantHeading := "## " + heading
+	found := false
+	inSection := false
+	sectionLines := make([]string, 0)
+	var fenceMarker byte
+	fenceLength := 0
+	for _, line := range strings.Split(normalized, "\n") {
+		if fenceLength > 0 {
+			if isGFMFenceClosing(line, fenceMarker, fenceLength) {
+				fenceMarker = 0
+				fenceLength = 0
+			}
+			continue
+		}
+		marker, length, _, opening, err := parseGFMFenceOpening(line)
+		if err != nil {
+			return "", fmt.Errorf("documentation fence: %w", err)
+		}
+		if opening {
+			fenceMarker = marker
+			fenceLength = length
+			continue
+		}
+		if containsREADMERawHTMLConstruct(line) {
+			return "", errors.New("documentation contains raw HTML outside a GFM code fence")
+		}
+		if line == wantHeading {
+			if found {
+				return "", fmt.Errorf("document contains duplicate active %q section", heading)
+			}
+			found = true
+			inSection = true
+			continue
+		}
+		if inSection && strings.HasPrefix(line, "## ") {
+			inSection = false
+			continue
+		}
+		if inSection {
+			sectionLines = append(sectionLines, line)
+		}
+	}
+	if fenceLength > 0 {
+		return "", errors.New("documentation contains an unterminated GFM code fence")
+	}
+	if !found {
+		return "", fmt.Errorf("document is missing active top-level %q section", heading)
+	}
+	return strings.Join(sectionLines, "\n"), nil
 }
 
 func TestDocumentationNPMTargetTablesRejectExtraRows(t *testing.T) {
@@ -1710,6 +1763,63 @@ func TestDocumentationNPMTargetTablesRejectExtraRows(t *testing.T) {
 					}
 				})
 			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectHiddenTables(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateExactDocumentationTable(test.document, test.heading, test.expected); err != nil {
+				t.Fatalf("baseline exact target table: %v", err)
+			}
+			sealedTable := strings.Join(test.expected, "\n") + "\n\n"
+			if strings.Count(test.document, sealedTable) != 1 {
+				t.Fatal("exact terminated target table is not unique")
+			}
+			tableSource := strings.TrimSuffix(sealedTable, "\n\n")
+			mutations := []struct {
+				name        string
+				replacement string
+			}{
+				{name: "HTML comment", replacement: "<!--\n" + sealedTable + "-->\n\n"},
+				{name: "GFM text fence", replacement: "```text\n" + sealedTable + "```\n\n"},
+				{name: "indented code block", replacement: "    " + strings.ReplaceAll(tableSource, "\n", "\n    ") + "\n\n"},
+				{name: "block quote container", replacement: "> " + strings.ReplaceAll(tableSource, "\n", "\n> ") + "\n>\n\n"},
+			}
+			for _, mutation := range mutations {
+				t.Run(mutation.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, sealedTable, mutation.replacement, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a non-rendered table")
+					}
+				})
+			}
+			t.Run("unterminated GFM fence", func(t *testing.T) {
+				mutated := test.document + "\n```text\n"
+				if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+					t.Fatal("exact target-table contract accepted an unterminated GFM fence")
+				}
+			})
 		})
 	}
 }
