@@ -18,6 +18,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -27,7 +28,10 @@ import { packAndVerify, sourceCheck } from "../scripts/verify-packages.js";
 
 const npmRoot = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const sourceRepositoryRoot = path.dirname(npmRoot);
+const completionMarkerContent = "ai-cli-gateway npm staging complete\n";
 const temporaryRoots = [];
+const require = createRequire(import.meta.url);
+const mutableFsPromises = require("node:fs/promises");
 
 after(async () => {
   await Promise.all(
@@ -140,6 +144,29 @@ async function mode(filename) {
   return (await stat(filename)).mode & 0o777;
 }
 
+async function assertMode(filename, expected) {
+  if (process.platform !== "win32") {
+    assert.equal(await mode(filename), expected);
+  }
+}
+
+async function withFsPromisePatches(patches, operation) {
+  const originals = new Map();
+  for (const [name, replacement] of Object.entries(patches)) {
+    originals.set(name, mutableFsPromises[name]);
+    mutableFsPromises[name] = replacement;
+  }
+  syncBuiltinESMExports();
+  try {
+    return await operation();
+  } finally {
+    for (const [name, original] of originals) {
+      mutableFsPromises[name] = original;
+    }
+    syncBuiltinESMExports();
+  }
+}
+
 test("stages all native packages followed by the launcher", async () => {
   const fixture = await stagingFixture();
   const staged = await stagePackages(stagingOptions(fixture));
@@ -167,7 +194,11 @@ test("stages all native packages followed by the launcher", async () => {
       root: path.join(fixture.outputRoot, "launcher"),
     },
   ]);
-  assert.equal(await mode(fixture.outputRoot), 0o700);
+  await assertMode(fixture.outputRoot, 0o700);
+  assert.equal(
+    await readFile(path.join(fixture.outputRoot, ".complete"), "utf8"),
+    completionMarkerContent,
+  );
 
   for (const target of TARGETS) {
     const packageRoot = path.join(fixture.outputRoot, target.key);
@@ -178,10 +209,10 @@ test("stages all native packages followed by the launcher", async () => {
       `bin/${target.executable}`,
       "package.json",
     ]);
-    assert.equal(await mode(path.join(packageRoot, "LICENSE")), 0o644);
-    assert.equal(await mode(path.join(packageRoot, "README.md")), 0o644);
-    assert.equal(await mode(path.join(packageRoot, "package.json")), 0o644);
-    assert.equal(await mode(executable), target.platform === "win32" ? 0o644 : 0o755);
+    await assertMode(path.join(packageRoot, "LICENSE"), 0o644);
+    await assertMode(path.join(packageRoot, "README.md"), 0o644);
+    await assertMode(path.join(packageRoot, "package.json"), 0o644);
+    await assertMode(executable, target.platform === "win32" ? 0o644 : 0o755);
     assert.equal(await readFile(executable, "utf8"), `${target.key}\n`);
   }
 
@@ -193,11 +224,11 @@ test("stages all native packages followed by the launcher", async () => {
     "lib/launcher.js",
     "package.json",
   ]);
-  assert.equal(await mode(path.join(launcherRoot, "LICENSE")), 0o644);
-  assert.equal(await mode(path.join(launcherRoot, "README.md")), 0o644);
-  assert.equal(await mode(path.join(launcherRoot, "package.json")), 0o644);
-  assert.equal(await mode(path.join(launcherRoot, "lib/launcher.js")), 0o644);
-  assert.equal(await mode(path.join(launcherRoot, "bin/ai-cli-gateway.js")), 0o755);
+  await assertMode(path.join(launcherRoot, "LICENSE"), 0o644);
+  await assertMode(path.join(launcherRoot, "README.md"), 0o644);
+  await assertMode(path.join(launcherRoot, "package.json"), 0o644);
+  await assertMode(path.join(launcherRoot, "lib/launcher.js"), 0o644);
+  await assertMode(path.join(launcherRoot, "bin/ai-cli-gateway.js"), 0o755);
 });
 
 test("stages one exact target and the launcher", async () => {
@@ -217,7 +248,10 @@ test("stages one exact target and the launcher", async () => {
       root: path.join(fixture.outputRoot, "launcher"),
     },
   ]);
-  assert.deepEqual((await readdir(fixture.outputRoot)).sort(), ["launcher", target.key]);
+  assert.deepEqual(
+    (await readdir(fixture.outputRoot)).sort(),
+    [".complete", "launcher", target.key].sort(),
+  );
 });
 
 test("rejects every relative root", async (t) => {
@@ -445,17 +479,135 @@ test("rejects output-root replacement and preserves the replacement", async () =
   const fixture = await stagingFixture();
   const capturedRoot = path.join(fixture.outputParent, "captured-staging");
   const replacer = outputReplacementProcess(fixture.outputRoot, capturedRoot);
+  const replaced = waitForLine(replacer, "REPLACED");
   await waitForLine(replacer, "READY");
 
   await assertStagingFailure(stagingOptions(fixture));
-  await waitForLine(replacer, "REPLACED");
+  await replaced;
 
   assert.equal(
     await readFile(path.join(fixture.outputRoot, "attacker-marker"), "utf8"),
     "replacement\n",
   );
   assert.equal(await pathExists(capturedRoot), true);
+  assert.deepEqual(await readdir(fixture.outputRoot), ["attacker-marker"]);
   await assertNoOwnedTemporaryRoot(fixture);
+});
+
+test("never clobbers an output root raced after validation", async () => {
+  const fixture = await stagingFixture();
+  const originalMkdir = mutableFsPromises.mkdir;
+  const originalRename = mutableFsPromises.rename;
+  const originalLstat = mutableFsPromises.lstat;
+  let racedIdentity;
+  const reserveRacedRoot = async () => {
+    await originalMkdir(fixture.outputRoot, { mode: 0o700 });
+    racedIdentity = await originalLstat(fixture.outputRoot, { bigint: true });
+  };
+
+  await withFsPromisePatches(
+    {
+      mkdir: async (directory, options) => {
+        if (directory === fixture.outputRoot && racedIdentity === undefined) {
+          await reserveRacedRoot();
+        }
+        return originalMkdir(directory, options);
+      },
+      rename: async (source, destination) => {
+        if (destination === fixture.outputRoot && racedIdentity === undefined) {
+          await reserveRacedRoot();
+        }
+        return originalRename(source, destination);
+      },
+    },
+    () => assertStagingFailure(stagingOptions(fixture)),
+  );
+
+  assert.ok(racedIdentity);
+  const actual = await lstat(fixture.outputRoot, { bigint: true });
+  assert.equal(actual.dev, racedIdentity.dev);
+  assert.equal(actual.ino, racedIdentity.ino);
+  assert.deepEqual(await readdir(fixture.outputRoot), []);
+  await assertNoOwnedTemporaryRoot(fixture);
+});
+
+test("rejects an intermediate source directory replaced after validation", async () => {
+  const fixture = await stagingFixture();
+  const sourceDirectory = path.join(fixture.repositoryRoot, "npm", "launcher", "bin");
+  const replacementDirectory = path.join(fixture.fixtureRoot, "replacement-launcher-bin");
+  const capturedDirectory = path.join(fixture.fixtureRoot, "captured-launcher-bin");
+  await mkdir(replacementDirectory, { mode: 0o700 });
+  await copyFile(
+    path.join(sourceDirectory, "ai-cli-gateway.js"),
+    path.join(replacementDirectory, "ai-cli-gateway.js"),
+  );
+  await chmod(path.join(replacementDirectory, "ai-cli-gateway.js"), 0o755);
+  const originalMkdir = mutableFsPromises.mkdir;
+  const originalRename = mutableFsPromises.rename;
+  let replaced = false;
+
+  await withFsPromisePatches(
+    {
+      mkdir: async (directory, options) => {
+        const result = await originalMkdir(directory, options);
+        if (
+          !replaced &&
+          path.basename(directory) === "launcher" &&
+          path.dirname(directory).startsWith(
+            path.join(fixture.outputParent, `.${path.basename(fixture.outputRoot)}-`),
+          )
+        ) {
+          await originalRename(sourceDirectory, capturedDirectory);
+          await originalRename(replacementDirectory, sourceDirectory);
+          replaced = true;
+        }
+        return result;
+      },
+    },
+    () => assertStagingFailure(stagingOptions(fixture)),
+  );
+
+  assert.equal(replaced, true);
+  assert.equal(await pathExists(fixture.outputRoot), false);
+  assert.equal(await pathExists(capturedDirectory), true);
+  await assertNoOwnedTemporaryRoot(fixture);
+});
+
+test("rejects unsafe launcher source bytes before staging", async (t) => {
+  await t.test("entry", async () => {
+    const fixture = await stagingFixture();
+    const entry = path.join(
+      fixture.repositoryRoot,
+      "npm",
+      "launcher",
+      "bin",
+      "ai-cli-gateway.js",
+    );
+    const original = await readFile(entry, "utf8");
+    await writeFile(entry, original.replace("slice(2)", "slice(1)"), "utf8");
+    await chmod(entry, 0o755);
+
+    await assertStagingFailure(stagingOptions(fixture));
+    assert.equal(await pathExists(fixture.outputRoot), false);
+  });
+
+  await t.test("implementation", async () => {
+    const fixture = await stagingFixture();
+    const implementation = path.join(
+      fixture.repositoryRoot,
+      "npm",
+      "launcher",
+      "lib",
+      "launcher.js",
+    );
+    const original = await readFile(implementation, "utf8");
+    const unsafe = original.replace("shell: false", "shell: true ");
+    assert.equal(unsafe.length, original.length);
+    await writeFile(implementation, unsafe, "utf8");
+
+    await assertStagingFailure(stagingOptions(fixture));
+    assert.equal(await pathExists(fixture.outputRoot), false);
+  });
 });
 
 test("stage CLI rejects an unknown option with a fixed path-free error", async () => {
@@ -505,7 +657,7 @@ test("stage CLI accepts the exact target-selecting shape", async () => {
   assert.deepEqual(result, { code: 0, signal: null, stderr: "", stdout: "" });
   assert.deepEqual(
     (await readdir(fixture.outputRoot)).sort(),
-    ["launcher", target.key].sort(),
+    [".complete", "launcher", target.key].sort(),
   );
 });
 
@@ -526,13 +678,14 @@ function expectedPackageFiles(target) {
 }
 
 async function writeFakeNpm(fixtureRoot, mutation = "none") {
-  const executable = path.join(fixtureRoot, `fake npm ${mutation}.js`);
-  const source = `#!${process.execPath}
-const fs = require("node:fs");
+  const script = path.join(fixtureRoot, `fake npm ${mutation}.js`);
+  const startedMarker = `${script}.started`;
+  const source = `const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
 const mutation = ${JSON.stringify(mutation)};
+const startedMarker = ${JSON.stringify(startedMarker)};
 const args = process.argv.slice(2);
 if (
   args.length !== 5 ||
@@ -549,6 +702,13 @@ if (
   process.exit(91);
 }
 
+fs.writeFileSync(startedMarker, "started\\n", { flag: "a" });
+if (mutation === "hang") setInterval(() => {}, 1_000);
+if (mutation === "oversized-stdout") process.stdout.write("x".repeat(1024 * 1024 + 1));
+if (mutation === "oversized-stderr") process.stderr.write("x".repeat(1024 * 1024 + 1));
+if (mutation === "nonzero-exit") process.exit(37);
+if (mutation === "signal-exit") process.kill(process.pid, "SIGTERM");
+
 const packageRoot = process.cwd();
 const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
 const files = [];
@@ -562,7 +722,16 @@ function visit(directory, prefix = "") {
       visit(filename, relative);
     } else {
       const metadata = fs.lstatSync(filename);
-      files.push({ path: relative, size: metadata.size, mode: metadata.mode & 0o777 });
+      const executablePath = manifest.name === "ai-cli-gateway"
+        ? "bin/ai-cli-gateway.js"
+        : manifest.os?.[0] === "win32"
+          ? undefined
+          : "bin/ai-cli-gateway";
+      files.push({
+        path: relative,
+        size: metadata.size,
+        mode: relative === executablePath ? 0o755 : 0o644,
+      });
     }
   }
 }
@@ -571,10 +740,16 @@ visit(packageRoot);
 const filename = manifest.name + "-" + manifest.version + ".tgz";
 const tarball = Buffer.from("verified fake tarball for " + manifest.name + "\\n");
 const tarballPath = path.join(args[4], filename);
+if (mutation === "replace-earlier-tarball") {
+  const earlier = fs.readdirSync(args[4]).filter((entry) => entry.endsWith(".tgz")).sort()[0];
+  if (earlier !== undefined) {
+    fs.writeFileSync(path.join(args[4], earlier), Buffer.from("tampered after first hash\\n"));
+  }
+}
 if (mutation === "linked-tarball") {
   const outside = path.join(path.dirname(args[4]), "outside-" + filename);
   fs.writeFileSync(outside, tarball);
-  fs.symlinkSync(outside, tarballPath, "file");
+  fs.linkSync(outside, tarballPath);
 } else {
   fs.writeFileSync(tarballPath, tarball, { flag: "wx", mode: 0o644 });
 }
@@ -615,9 +790,8 @@ if (mutation === "invalid-json") {
   process.stdout.write(JSON.stringify([record]) + "\\n");
 }
 `;
-  await writeFile(executable, source, { mode: 0o755 });
-  await chmod(executable, 0o755);
-  return executable;
+  await writeFile(script, source, { mode: 0o644 });
+  return { script, startedMarker };
 }
 
 async function packFixture({ mutation = "none", targets = [TARGETS[2]] } = {}) {
@@ -626,11 +800,13 @@ async function packFixture({ mutation = "none", targets = [TARGETS[2]] } = {}) {
   const tarballRoot = path.join(fixture.fixtureRoot, "tarballs");
   await mkdir(tarballRoot, { mode: 0o700 });
   const descriptor = path.join(tarballRoot, "packages.json");
-  const npmExecutable = await writeFakeNpm(fixture.fixtureRoot, mutation);
+  const fakeNpm = await writeFakeNpm(fixture.fixtureRoot, mutation);
   return {
     ...fixture,
     descriptor,
-    npmExecutable,
+    npmExecutable: process.execPath,
+    npmScript: fakeNpm.script,
+    npmStartedMarker: fakeNpm.startedMarker,
     tarballRoot,
     targets,
     options: {
@@ -638,7 +814,8 @@ async function packFixture({ mutation = "none", targets = [TARGETS[2]] } = {}) {
       tarballRoot,
       descriptor,
       version: PACKAGE_VERSION,
-      npmExecutable,
+      npmExecutable: process.execPath,
+      npmArguments: [fakeNpm.script],
     },
   };
 }
@@ -694,6 +871,24 @@ test("packs verified descriptors in native-first canonical order", async () => {
   );
 });
 
+test("rejects an incomplete staging root without the exact completion marker", async () => {
+  const fixture = await packFixture();
+  await rm(path.join(fixture.outputRoot, ".complete"), { force: true });
+
+  await assertVerificationFailure(fixture.options);
+
+  assert.equal(await pathExists(fixture.descriptor), false);
+});
+
+test("revalidates every earlier tarball after later npm executions", async () => {
+  const fixture = await packFixture({ mutation: "replace-earlier-tarball" });
+
+  await assertVerificationFailure(fixture.options);
+
+  assert.equal(await pathExists(fixture.npmStartedMarker), true);
+  assert.equal(await pathExists(fixture.descriptor), false);
+});
+
 test("rejects adversarial npm JSON and metadata fixtures", async (t) => {
   const mutations = [
     "invalid-json",
@@ -721,15 +916,12 @@ test("rejects adversarial npm JSON and metadata fixtures", async (t) => {
   }
 });
 
-test(
-  "rejects a linked tarball",
-  { skip: process.platform === "win32" },
-  async () => {
-    const fixture = await packFixture({ mutation: "linked-tarball" });
-    await assertVerificationFailure(fixture.options);
-    assert.equal(await pathExists(fixture.descriptor), false);
-  },
-);
+test("rejects a hard-linked tarball on every platform", async () => {
+  const fixture = await packFixture({ mutation: "linked-tarball" });
+  await assertVerificationFailure(fixture.options);
+  assert.equal(await pathExists(fixture.npmStartedMarker), true);
+  assert.equal(await pathExists(fixture.descriptor), false);
+});
 
 test("rejects lifecycle scripts in the staged launcher manifest", async () => {
   const fixture = await packFixture();
@@ -740,6 +932,98 @@ test("rejects lifecycle scripts in the staged launcher manifest", async () => {
 
   await assertVerificationFailure(fixture.options);
   assert.equal(await pathExists(fixture.descriptor), false);
+});
+
+test("rejects unsafe same-size staged launcher implementation bytes", async () => {
+  const fixture = await packFixture();
+  const implementation = path.join(
+    fixture.outputRoot,
+    "launcher",
+    "lib",
+    "launcher.js",
+  );
+  const original = await readFile(implementation, "utf8");
+  const unsafe = original.replace("shell: false", "shell: true ");
+  assert.equal(unsafe.length, original.length);
+  await writeFile(implementation, unsafe, "utf8");
+
+  await assertVerificationFailure(fixture.options);
+
+  assert.equal(await pathExists(fixture.descriptor), false);
+});
+
+test("never overwrites a descriptor raced during publication", async () => {
+  const fixture = await packFixture();
+  const originalLink = mutableFsPromises.link;
+  const originalLstat = mutableFsPromises.lstat;
+  const originalRename = mutableFsPromises.rename;
+  const originalWriteFile = mutableFsPromises.writeFile;
+  let racedIdentity;
+  const publishRacedDescriptor = async () => {
+    await originalWriteFile(fixture.descriptor, "attacker descriptor\n", {
+      flag: "wx",
+      mode: 0o600,
+    });
+    racedIdentity = await originalLstat(fixture.descriptor, { bigint: true });
+  };
+
+  await withFsPromisePatches(
+    {
+      link: async (source, destination) => {
+        if (destination === fixture.descriptor && racedIdentity === undefined) {
+          await publishRacedDescriptor();
+        }
+        return originalLink(source, destination);
+      },
+      rename: async (source, destination) => {
+        if (destination === fixture.descriptor && racedIdentity === undefined) {
+          await publishRacedDescriptor();
+        }
+        return originalRename(source, destination);
+      },
+    },
+    () => assertVerificationFailure(fixture.options),
+  );
+
+  assert.ok(racedIdentity);
+  assert.equal(await readFile(fixture.descriptor, "utf8"), "attacker descriptor\n");
+  const actual = await lstat(fixture.descriptor, { bigint: true });
+  assert.equal(actual.dev, racedIdentity.dev);
+  assert.equal(actual.ino, racedIdentity.ino);
+});
+
+test("supports an absolute Node executable with one fixed absolute npm script prefix", async () => {
+  const fixture = await packFixture();
+
+  const descriptors = await packAndVerify({
+    ...fixture.options,
+    npmExecutable: process.execPath,
+    npmArguments: [fixture.npmScript],
+  });
+
+  assert.deepEqual(descriptors.map(({ name }) => name), [
+    fixture.targets[0].packageName,
+    "ai-cli-gateway",
+  ]);
+  assert.equal(await pathExists(fixture.npmStartedMarker), true);
+});
+
+test("bounds npm child timeout, output, exit, and signal failures", async (t) => {
+  const cases = [
+    ["hang", { npmTimeoutMs: 750 }],
+    ["oversized-stdout", {}],
+    ["oversized-stderr", {}],
+    ["nonzero-exit", {}],
+    ["signal-exit", {}],
+  ];
+  for (const [mutation, overrides] of cases) {
+    await t.test(mutation, async () => {
+      const fixture = await packFixture({ mutation });
+      await assertVerificationFailure({ ...fixture.options, ...overrides });
+      assert.equal(await pathExists(fixture.npmStartedMarker), true);
+      assert.equal(await pathExists(fixture.descriptor), false);
+    });
+  }
 });
 
 test("rejects dependencies in a staged native manifest", async () => {
@@ -812,6 +1096,50 @@ test("source check validates exact package sources and rejects a native binary",
   );
 });
 
+test("source check rejects unsafe same-size launcher implementation bytes", async () => {
+  const fixture = await stagingFixture();
+  const implementation = path.join(
+    fixture.repositoryRoot,
+    "npm",
+    "launcher",
+    "lib",
+    "launcher.js",
+  );
+  const original = await readFile(implementation, "utf8");
+  const unsafe = original.replace("shell: false", "shell: true ");
+  assert.equal(unsafe.length, original.length);
+  await writeFile(implementation, unsafe, "utf8");
+
+  await assert.rejects(
+    sourceCheck({ repositoryRoot: fixture.repositoryRoot, version: PACKAGE_VERSION }),
+    { name: "Error", message: "npm package verification failed" },
+  );
+});
+
+test(
+  "source check validates ownership beyond the repository root when supported",
+  { skip: typeof process.getuid !== "function" },
+  async () => {
+    const fixture = await stagingFixture();
+    const originalGetuid = process.getuid;
+    const currentUid = originalGetuid();
+    let calls = 0;
+    process.getuid = () => {
+      calls += 1;
+      return calls === 1 ? currentUid : currentUid + 1;
+    };
+    try {
+      await assert.rejects(
+        sourceCheck({ repositoryRoot: fixture.repositoryRoot, version: PACKAGE_VERSION }),
+        { name: "Error", message: "npm package verification failed" },
+      );
+    } finally {
+      process.getuid = originalGetuid;
+    }
+    assert.ok(calls > 1);
+  },
+);
+
 function hostTarget() {
   const target = TARGETS.find(
     ({ platform, arch }) => platform === process.platform && arch === process.arch,
@@ -820,19 +1148,31 @@ function hostTarget() {
   return target;
 }
 
-async function installedNpmExecutable() {
+async function installedNpmOptions() {
   if (process.platform === "win32") {
-    return undefined;
+    return {
+      npmArguments: [
+        path.join(
+          path.dirname(process.execPath),
+          "node_modules",
+          "npm",
+          "bin",
+          "npm-cli.js",
+        ),
+      ],
+      npmExecutable: process.execPath,
+    };
   }
-  return realpath(path.join(path.dirname(process.execPath), "npm"));
+  return {
+    npmExecutable: await realpath(path.join(path.dirname(process.execPath), "npm")),
+  };
 }
 
 test(
   "real npm pack is reproducible for the staged host native package and launcher",
-  { skip: process.platform === "win32" },
   async () => {
     const target = hostTarget();
-    const npmExecutable = await installedNpmExecutable();
+    const npmOptions = await installedNpmOptions();
     const descriptorDocuments = [];
 
     for (let index = 0; index < 2; index += 1) {
@@ -847,7 +1187,7 @@ test(
         tarballRoot,
         descriptor,
         version: PACKAGE_VERSION,
-        npmExecutable,
+        ...npmOptions,
       });
 
       assert.deepEqual(descriptors.map(({ name }) => name), [

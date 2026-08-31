@@ -1,10 +1,12 @@
 import { constants } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   chmod,
   copyFile,
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   realpath,
@@ -25,6 +27,16 @@ const STAGE_OPTION_KEYS = new Set([
   "targets",
 ]);
 const FILE_TYPE_MASK = 0o170000n;
+const COMPLETION_MARKER_CONTENT = Buffer.from(
+  "ai-cli-gateway npm staging complete\n",
+  "utf8",
+);
+const LAUNCHER_ENTRY_CONTENT = Buffer.from(
+  '#!/usr/bin/env node\nimport { main } from "../lib/launcher.js";\n\nawait main(process.argv.slice(2));\n',
+  "utf8",
+);
+const LAUNCHER_IMPLEMENTATION_SHA512 =
+  "a547259ed0358f3fe873eaac1144feb499217b068ee4b969dbe0a2e47e6fec1c1185f073001cd4f5af7ef28b531da9c86ff965efd4dbc5f2a8bdc5c54bca1990";
 
 function stagingError() {
   return new Error(STAGING_FAILURE);
@@ -44,11 +56,22 @@ function sameNode(left, right) {
 }
 
 function sameFile(left, right) {
-  return left.size === right.size && left.isFile() && right.isFile() && sameNode(left, right);
+  return (
+    left.size === right.size &&
+    left.nlink === right.nlink &&
+    left.isFile() &&
+    right.isFile() &&
+    sameNode(left, right)
+  );
 }
 
-function sameCompletedRoot(left, right) {
-  return left.size === right.size && left.isDirectory() && right.isDirectory() && sameNode(left, right);
+function sameDirectory(left, right) {
+  return (
+    left.nlink === right.nlink &&
+    left.isDirectory() &&
+    right.isDirectory() &&
+    sameNode(left, right)
+  );
 }
 
 function ownedByCurrentUser(metadata) {
@@ -74,8 +97,13 @@ async function existingCanonicalDirectory(directory) {
 }
 
 async function exactDirectory(directory, expectedEntries) {
-  const metadata = await lstat(directory, { bigint: true });
-  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+  const before = await lstat(directory, { bigint: true });
+  if (
+    before.isSymbolicLink() ||
+    !before.isDirectory() ||
+    !ownedByCurrentUser(before) ||
+    (await realpath(directory)) !== directory
+  ) {
     throw stagingError();
   }
   const entries = await readdir(directory);
@@ -85,20 +113,38 @@ async function exactDirectory(directory, expectedEntries) {
   ) {
     throw stagingError();
   }
-  return metadata;
+  const after = await lstat(directory, { bigint: true });
+  if (!sameDirectory(before, after) || !ownedByCurrentUser(after)) {
+    throw stagingError();
+  }
+  return after;
 }
 
 async function regularDirectory(directory) {
-  const metadata = await lstat(directory, { bigint: true });
-  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+  const before = await lstat(directory, { bigint: true });
+  if (
+    before.isSymbolicLink() ||
+    !before.isDirectory() ||
+    !ownedByCurrentUser(before) ||
+    (await realpath(directory)) !== directory
+  ) {
     throw stagingError();
   }
-  return metadata;
+  const after = await lstat(directory, { bigint: true });
+  if (!sameDirectory(before, after) || !ownedByCurrentUser(after)) {
+    throw stagingError();
+  }
+  return after;
 }
 
 async function regularSource(filename) {
   const before = await lstat(filename, { bigint: true });
-  if (before.isSymbolicLink() || !before.isFile()) {
+  if (
+    before.isSymbolicLink() ||
+    !before.isFile() ||
+    before.nlink !== 1n ||
+    !ownedByCurrentUser(before)
+  ) {
     throw stagingError();
   }
   return before;
@@ -106,16 +152,37 @@ async function regularSource(filename) {
 
 async function validatedRead(filename) {
   const before = await regularSource(filename);
-  const content = await readFile(filename, "utf8");
+  const content = await readFile(filename);
   const after = await lstat(filename, { bigint: true });
-  if (!sameFile(before, after) || after.isSymbolicLink()) {
+  if (
+    !sameFile(before, after) ||
+    after.isSymbolicLink() ||
+    after.nlink !== 1n ||
+    !ownedByCurrentUser(after)
+  ) {
     throw stagingError();
   }
-  return content;
+  return { content, metadata: after };
+}
+
+async function validatedRegularSource(filename, { nonempty = false } = {}) {
+  const before = await regularSource(filename);
+  const after = await lstat(filename, { bigint: true });
+  if (
+    !sameFile(before, after) ||
+    after.isSymbolicLink() ||
+    after.nlink !== 1n ||
+    !ownedByCurrentUser(after) ||
+    (nonempty && after.size === 0n)
+  ) {
+    throw stagingError();
+  }
+  return { metadata: after };
 }
 
 async function validateManifest(filename, name, version) {
-  const manifest = JSON.parse(await validatedRead(filename));
+  const source = await validatedRead(filename);
+  const manifest = JSON.parse(source.content.toString("utf8"));
   if (
     manifest === null ||
     typeof manifest !== "object" ||
@@ -125,6 +192,7 @@ async function validateManifest(filename, name, version) {
   ) {
     throw stagingError();
   }
+  return source;
 }
 
 async function validateSourceTree(repositoryRoot, version) {
@@ -132,27 +200,65 @@ async function validateSourceTree(repositoryRoot, version) {
   const launcherRoot = path.join(npmDirectory, "launcher");
   const platformsRoot = path.join(npmDirectory, "platforms");
 
-  await regularDirectory(npmDirectory);
-  await exactDirectory(launcherRoot, ["README.md", "bin", "lib", "package.json"]);
-  await exactDirectory(path.join(launcherRoot, "bin"), ["ai-cli-gateway.js"]);
-  await exactDirectory(path.join(launcherRoot, "lib"), ["launcher.js"]);
-  await exactDirectory(platformsRoot, TARGETS.map(({ key }) => key));
-  await validateManifest(path.join(launcherRoot, "package.json"), LAUNCHER_NAME, version);
-  await regularSource(path.join(repositoryRoot, "LICENSE"));
-  await regularSource(path.join(launcherRoot, "README.md"));
-  await regularSource(path.join(launcherRoot, "bin", "ai-cli-gateway.js"));
-  await regularSource(path.join(launcherRoot, "lib", "launcher.js"));
+  const plan = { directories: new Map(), files: new Map() };
+  const rememberDirectory = async (directory, entries) => {
+    const metadata =
+      entries === undefined
+        ? await regularDirectory(directory)
+        : await exactDirectory(directory, entries);
+    plan.directories.set(directory, metadata);
+  };
+  const rememberFile = async (filename, source) => {
+    const validated = source ?? (await validatedRead(filename));
+    plan.files.set(filename, validated);
+    return validated;
+  };
+
+  await rememberDirectory(npmDirectory);
+  await rememberDirectory(launcherRoot, ["README.md", "bin", "lib", "package.json"]);
+  await rememberDirectory(path.join(launcherRoot, "bin"), ["ai-cli-gateway.js"]);
+  await rememberDirectory(path.join(launcherRoot, "lib"), ["launcher.js"]);
+  await rememberDirectory(platformsRoot, TARGETS.map(({ key }) => key));
+  await rememberFile(
+    path.join(launcherRoot, "package.json"),
+    await validateManifest(
+      path.join(launcherRoot, "package.json"),
+      LAUNCHER_NAME,
+      version,
+    ),
+  );
+  await rememberFile(path.join(repositoryRoot, "LICENSE"));
+  await rememberFile(path.join(launcherRoot, "README.md"));
+  const entry = await rememberFile(
+    path.join(launcherRoot, "bin", "ai-cli-gateway.js"),
+  );
+  if (!entry.content.equals(LAUNCHER_ENTRY_CONTENT)) {
+    throw stagingError();
+  }
+  const implementation = await rememberFile(
+    path.join(launcherRoot, "lib", "launcher.js"),
+  );
+  if (
+    createHash("sha512").update(implementation.content).digest("hex") !==
+    LAUNCHER_IMPLEMENTATION_SHA512
+  ) {
+    throw stagingError();
+  }
 
   for (const target of TARGETS) {
     const sourceRoot = path.join(platformsRoot, target.key);
-    await exactDirectory(sourceRoot, ["README.md", "package.json"]);
-    await regularSource(path.join(sourceRoot, "README.md"));
-    await validateManifest(
+    await rememberDirectory(sourceRoot, ["README.md", "package.json"]);
+    await rememberFile(path.join(sourceRoot, "README.md"));
+    await rememberFile(
       path.join(sourceRoot, "package.json"),
-      target.packageName,
-      version,
+      await validateManifest(
+        path.join(sourceRoot, "package.json"),
+        target.packageName,
+        version,
+      ),
     );
   }
+  return plan;
 }
 
 function selectedTargets(value) {
@@ -189,24 +295,100 @@ async function assertAbsent(filename) {
   throw stagingError();
 }
 
-async function checkedCopy(source, destination, destinationMode) {
-  const before = await regularSource(source);
-  await copyFile(source, destination, constants.COPYFILE_EXCL);
-  const sourceAfter = await lstat(source, { bigint: true });
-  if (!sameFile(before, sourceAfter) || sourceAfter.isSymbolicLink()) {
+async function validateBinaryTree(binaryRoot, targets) {
+  const plan = { directories: new Map(), files: new Map() };
+  for (const target of targets) {
+    const directory = path.join(binaryRoot, target.stagingDirectory);
+    plan.directories.set(directory, await regularDirectory(directory));
+    const filename = path.join(directory, target.executable);
+    plan.files.set(
+      filename,
+      await validatedRegularSource(filename, { nonempty: true }),
+    );
+  }
+  return plan;
+}
+
+async function assertPlanStable(plan) {
+  for (const [directory, expected] of plan.directories) {
+    const current = await lstat(directory, { bigint: true });
+    if (
+      !sameDirectory(expected, current) ||
+      current.isSymbolicLink() ||
+      !ownedByCurrentUser(current)
+    ) {
+      throw stagingError();
+    }
+  }
+  for (const [filename, expected] of plan.files) {
+    const current = await lstat(filename, { bigint: true });
+    if (
+      !sameFile(expected.metadata, current) ||
+      current.isSymbolicLink() ||
+      current.nlink !== 1n ||
+      !ownedByCurrentUser(current)
+    ) {
+      throw stagingError();
+    }
+  }
+}
+
+async function assertPlanPathStable(plan, filename) {
+  const source = plan.files.get(filename);
+  if (source === undefined) {
     throw stagingError();
   }
+  const current = await lstat(filename, { bigint: true });
+  if (
+    !sameFile(source.metadata, current) ||
+    current.isSymbolicLink() ||
+    current.nlink !== 1n ||
+    !ownedByCurrentUser(current)
+  ) {
+    throw stagingError();
+  }
+  for (const [directory, expected] of plan.directories) {
+    if (filename !== directory && !filename.startsWith(`${directory}${path.sep}`)) {
+      continue;
+    }
+    const directoryAfter = await lstat(directory, { bigint: true });
+    if (
+      !sameDirectory(expected, directoryAfter) ||
+      directoryAfter.isSymbolicLink() ||
+      !ownedByCurrentUser(directoryAfter)
+    ) {
+      throw stagingError();
+    }
+  }
+  return source;
+}
+
+async function checkedCopy(plan, source, destination, destinationMode) {
+  const expected = await assertPlanPathStable(plan, source);
+  await copyFile(source, destination, constants.COPYFILE_EXCL);
+  await assertPlanPathStable(plan, source);
 
   await chmod(destination, destinationMode);
   const copied = await lstat(destination, { bigint: true });
   if (
     copied.isSymbolicLink() ||
     !copied.isFile() ||
-    copied.size !== before.size ||
+    copied.nlink !== 1n ||
+    copied.size !== expected.metadata.size ||
+    !ownedByCurrentUser(copied) ||
     (process.platform !== "win32" &&
       Number(copied.mode & 0o777n) !== destinationMode)
   ) {
     throw stagingError();
+  }
+  if (
+    source.endsWith(path.join("launcher", "bin", "ai-cli-gateway.js")) ||
+    source.endsWith(path.join("launcher", "lib", "launcher.js"))
+  ) {
+    const copiedContent = await validatedRead(destination);
+    if (!copiedContent.content.equals(expected.content)) {
+      throw stagingError();
+    }
   }
 }
 
@@ -225,47 +407,124 @@ async function createPrivateDirectory(directory) {
   return metadata;
 }
 
-async function stageNative(repositoryRoot, binaryRoot, temporaryRoot, target) {
+async function stageNative(
+  repositoryRoot,
+  binaryRoot,
+  temporaryRoot,
+  target,
+  sourcePlan,
+  binaryPlan,
+) {
   const sourceRoot = path.join(repositoryRoot, "npm", "platforms", target.key);
   const binaryDirectory = path.join(binaryRoot, target.stagingDirectory);
-  const binaryDirectoryIdentity = await regularDirectory(binaryDirectory);
   const packageRoot = path.join(temporaryRoot, target.key);
   const binRoot = path.join(packageRoot, "bin");
-  await createPrivateDirectory(packageRoot);
+  const packageIdentity = await createPrivateDirectory(packageRoot);
   await createPrivateDirectory(binRoot);
 
-  await checkedCopy(path.join(repositoryRoot, "LICENSE"), path.join(packageRoot, "LICENSE"), 0o644);
-  await checkedCopy(path.join(sourceRoot, "README.md"), path.join(packageRoot, "README.md"), 0o644);
-  await checkedCopy(path.join(sourceRoot, "package.json"), path.join(packageRoot, "package.json"), 0o644);
   await checkedCopy(
+    sourcePlan,
+    path.join(repositoryRoot, "LICENSE"),
+    path.join(packageRoot, "LICENSE"),
+    0o644,
+  );
+  await checkedCopy(
+    sourcePlan,
+    path.join(sourceRoot, "README.md"),
+    path.join(packageRoot, "README.md"),
+    0o644,
+  );
+  await checkedCopy(
+    sourcePlan,
+    path.join(sourceRoot, "package.json"),
+    path.join(packageRoot, "package.json"),
+    0o644,
+  );
+  await checkedCopy(
+    binaryPlan,
     path.join(binaryDirectory, target.executable),
     path.join(binRoot, target.executable),
     target.platform === "win32" ? 0o644 : 0o755,
   );
-  const binaryDirectoryAfter = await lstat(binaryDirectory, { bigint: true });
-  if (!sameNode(binaryDirectoryIdentity, binaryDirectoryAfter)) {
+  await assertPlanStable(sourcePlan);
+  await assertPlanStable(binaryPlan);
+  const [packageAfter, packageEntries, binEntries] = await Promise.all([
+    lstat(packageRoot, { bigint: true }),
+    readdir(packageRoot),
+    readdir(binRoot),
+  ]);
+  if (
+    !sameNode(packageIdentity, packageAfter) ||
+    !packageAfter.isDirectory() ||
+    packageAfter.isSymbolicLink() ||
+    packageEntries.sort().join("\0") !== ["LICENSE", "README.md", "bin", "package.json"].sort().join("\0") ||
+    binEntries.length !== 1 ||
+    binEntries[0] !== target.executable
+  ) {
     throw stagingError();
   }
+  return { identity: packageAfter, name: target.key, root: packageRoot };
 }
 
-async function stageLauncher(repositoryRoot, temporaryRoot) {
+async function stageLauncher(repositoryRoot, temporaryRoot, sourcePlan) {
   const sourceRoot = path.join(repositoryRoot, "npm", "launcher");
   const packageRoot = path.join(temporaryRoot, "launcher");
   const binRoot = path.join(packageRoot, "bin");
   const libRoot = path.join(packageRoot, "lib");
-  await createPrivateDirectory(packageRoot);
+  const packageIdentity = await createPrivateDirectory(packageRoot);
   await createPrivateDirectory(binRoot);
   await createPrivateDirectory(libRoot);
 
-  await checkedCopy(path.join(repositoryRoot, "LICENSE"), path.join(packageRoot, "LICENSE"), 0o644);
-  await checkedCopy(path.join(sourceRoot, "README.md"), path.join(packageRoot, "README.md"), 0o644);
-  await checkedCopy(path.join(sourceRoot, "package.json"), path.join(packageRoot, "package.json"), 0o644);
-  await checkedCopy(path.join(sourceRoot, "lib", "launcher.js"), path.join(libRoot, "launcher.js"), 0o644);
   await checkedCopy(
+    sourcePlan,
+    path.join(repositoryRoot, "LICENSE"),
+    path.join(packageRoot, "LICENSE"),
+    0o644,
+  );
+  await checkedCopy(
+    sourcePlan,
+    path.join(sourceRoot, "README.md"),
+    path.join(packageRoot, "README.md"),
+    0o644,
+  );
+  await checkedCopy(
+    sourcePlan,
+    path.join(sourceRoot, "package.json"),
+    path.join(packageRoot, "package.json"),
+    0o644,
+  );
+  await checkedCopy(
+    sourcePlan,
+    path.join(sourceRoot, "lib", "launcher.js"),
+    path.join(libRoot, "launcher.js"),
+    0o644,
+  );
+  await checkedCopy(
+    sourcePlan,
     path.join(sourceRoot, "bin", "ai-cli-gateway.js"),
     path.join(binRoot, "ai-cli-gateway.js"),
     0o755,
   );
+  await assertPlanStable(sourcePlan);
+  const [packageAfter, packageEntries, binEntries, libEntries] = await Promise.all([
+    lstat(packageRoot, { bigint: true }),
+    readdir(packageRoot),
+    readdir(binRoot),
+    readdir(libRoot),
+  ]);
+  if (
+    !sameNode(packageIdentity, packageAfter) ||
+    !packageAfter.isDirectory() ||
+    packageAfter.isSymbolicLink() ||
+    packageEntries.sort().join("\0") !== ["LICENSE", "README.md", "bin", "lib", "package.json"].sort().join("\0") ||
+    binEntries.length !== 1 ||
+    binEntries[0] !== "ai-cli-gateway.js" ||
+    libEntries.length !== 1 ||
+    libEntries[0] !== "launcher.js"
+  ) {
+    throw stagingError();
+  }
+  return { identity: packageAfter, name: "launcher", root: packageRoot };
 }
 
 async function removeIfOwned(ownedPath, ownedIdentity) {
@@ -284,9 +543,131 @@ async function removeIfOwned(ownedPath, ownedIdentity) {
   }
 }
 
+function isUnsupportedDirectorySync(error) {
+  return ["EBADF", "EINVAL", "EISDIR", "ENOSYS", "ENOTSUP", "EPERM"].includes(
+    error?.code,
+  );
+}
+
+async function syncDirectory(directory) {
+  let handle;
+  try {
+    handle = await open(directory, constants.O_RDONLY);
+    await handle.sync();
+  } catch (error) {
+    if (!isUnsupportedDirectorySync(error)) {
+      throw error;
+    }
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function exactEntries(directory, expectedEntries) {
+  const actual = (await readdir(directory)).sort();
+  const expected = [...expectedEntries].sort();
+  if (
+    actual.length !== expected.length ||
+    actual.some((entry, index) => entry !== expected[index])
+  ) {
+    throw stagingError();
+  }
+}
+
+async function assertOwnedRoot(root, identity) {
+  const current = await lstat(root, { bigint: true });
+  if (
+    !sameNode(identity, current) ||
+    current.isSymbolicLink() ||
+    !current.isDirectory() ||
+    !ownedByCurrentUser(current)
+  ) {
+    throw stagingError();
+  }
+  return current;
+}
+
+async function moveCompletePackage(packageRecord, outputRoot, outputIdentity) {
+  const before = await lstat(packageRecord.root, { bigint: true });
+  if (
+    !sameNode(packageRecord.identity, before) ||
+    before.isSymbolicLink() ||
+    !before.isDirectory()
+  ) {
+    throw stagingError();
+  }
+  await assertOwnedRoot(outputRoot, outputIdentity);
+  const destination = path.join(outputRoot, packageRecord.name);
+  await assertAbsent(destination);
+  await rename(packageRecord.root, destination);
+  const after = await lstat(destination, { bigint: true });
+  if (
+    !sameNode(packageRecord.identity, after) ||
+    after.isSymbolicLink() ||
+    !after.isDirectory() ||
+    (await realpath(destination)) !== destination
+  ) {
+    throw stagingError();
+  }
+  await assertOwnedRoot(outputRoot, outputIdentity);
+  return { ...packageRecord, root: destination, identity: after };
+}
+
+async function createCompletionMarker(outputRoot) {
+  const marker = path.join(outputRoot, ".complete");
+  const handle = await open(
+    marker,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+    0o600,
+  );
+  let opened;
+  try {
+    opened = await handle.stat({ bigint: true });
+    if (
+      opened.isSymbolicLink() ||
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      !ownedByCurrentUser(opened)
+    ) {
+      throw stagingError();
+    }
+    await handle.writeFile(COMPLETION_MARKER_CONTENT);
+    await handle.chmod(0o644);
+    await handle.sync();
+    const completed = await handle.stat({ bigint: true });
+    if (!sameNode(opened, completed) || completed.nlink !== 1n) {
+      throw stagingError();
+    }
+    opened = completed;
+  } finally {
+    await handle.close();
+  }
+  const content = await validatedRead(marker);
+  if (
+    !sameFile(opened, content.metadata) ||
+    !content.content.equals(COMPLETION_MARKER_CONTENT) ||
+    (process.platform !== "win32" &&
+      Number(content.metadata.mode & 0o777n) !== 0o644)
+  ) {
+    throw stagingError();
+  }
+  return { identity: content.metadata, path: marker };
+}
+
+async function assertCompletionMarker(markerRecord) {
+  const content = await validatedRead(markerRecord.path);
+  if (
+    !sameFile(markerRecord.identity, content.metadata) ||
+    !content.content.equals(COMPLETION_MARKER_CONTENT)
+  ) {
+    throw stagingError();
+  }
+}
+
 export async function stagePackages(options) {
-  let ownedPath;
-  let ownedIdentity;
+  let ownedTemporaryPath;
+  let ownedTemporaryIdentity;
+  let ownedOutputIdentity;
   try {
     if (
       options === null ||
@@ -321,66 +702,140 @@ export async function stagePackages(options) {
       throw stagingError();
     }
     await assertAbsent(options.outputRoot);
-    await validateSourceTree(options.repositoryRoot, options.version);
+    const sourcePlan = await validateSourceTree(
+      options.repositoryRoot,
+      options.version,
+    );
+    const binaryPlan = await validateBinaryTree(options.binaryRoot, targets);
+    await assertPlanStable(sourcePlan);
+    await assertPlanStable(binaryPlan);
 
-    ownedPath = await mkdtemp(
+    ownedTemporaryPath = await mkdtemp(
       path.join(outputParent, `.${path.basename(options.outputRoot)}-`),
     );
-    await chmod(ownedPath, 0o700);
-    ownedIdentity = await lstat(ownedPath, { bigint: true });
+    await chmod(ownedTemporaryPath, 0o700);
+    ownedTemporaryIdentity = await lstat(ownedTemporaryPath, { bigint: true });
     if (
-      ownedIdentity.isSymbolicLink() ||
-      !ownedIdentity.isDirectory() ||
+      ownedTemporaryIdentity.isSymbolicLink() ||
+      !ownedTemporaryIdentity.isDirectory() ||
       (process.platform !== "win32" &&
-        Number(ownedIdentity.mode & 0o777n) !== 0o700) ||
-      !ownedByCurrentUser(ownedIdentity)
+        Number(ownedTemporaryIdentity.mode & 0o777n) !== 0o700) ||
+      !ownedByCurrentUser(ownedTemporaryIdentity)
     ) {
       throw stagingError();
     }
 
+    const completedPackages = [];
     for (const target of targets) {
-      await stageNative(options.repositoryRoot, options.binaryRoot, ownedPath, target);
+      completedPackages.push(
+        await stageNative(
+          options.repositoryRoot,
+          options.binaryRoot,
+          ownedTemporaryPath,
+          target,
+          sourcePlan,
+          binaryPlan,
+        ),
+      );
     }
-    await stageLauncher(options.repositoryRoot, ownedPath);
+    completedPackages.push(
+      await stageLauncher(options.repositoryRoot, ownedTemporaryPath, sourcePlan),
+    );
 
     const [repositoryAfter, binaryAfter, outputParentAfter, completedRoot] =
       await Promise.all([
         lstat(options.repositoryRoot, { bigint: true }),
         lstat(options.binaryRoot, { bigint: true }),
         lstat(outputParent, { bigint: true }),
-        lstat(ownedPath, { bigint: true }),
+        lstat(ownedTemporaryPath, { bigint: true }),
       ]);
     if (
       !sameNode(repositoryIdentity, repositoryAfter) ||
       !sameNode(binaryIdentity, binaryAfter) ||
       !sameNode(outputParentIdentity, outputParentAfter) ||
-      !sameNode(ownedIdentity, completedRoot) ||
+      !sameNode(ownedTemporaryIdentity, completedRoot) ||
       completedRoot.isSymbolicLink() ||
       !completedRoot.isDirectory()
     ) {
       throw stagingError();
     }
+    await assertPlanStable(sourcePlan);
+    await assertPlanStable(binaryPlan);
+    await exactEntries(
+      ownedTemporaryPath,
+      completedPackages.map(({ name }) => name),
+    );
 
-    await assertAbsent(options.outputRoot);
-    await rename(ownedPath, options.outputRoot);
-    ownedPath = options.outputRoot;
-    ownedIdentity = completedRoot;
-
-    const finalBefore = await lstat(options.outputRoot, { bigint: true });
-    if ((await realpath(options.outputRoot)) !== options.outputRoot) {
+    await mkdir(options.outputRoot, { mode: 0o700 });
+    await chmod(options.outputRoot, 0o700);
+    ownedOutputIdentity = await lstat(options.outputRoot, { bigint: true });
+    if (
+      ownedOutputIdentity.isSymbolicLink() ||
+      !ownedOutputIdentity.isDirectory() ||
+      !ownedByCurrentUser(ownedOutputIdentity) ||
+      (process.platform !== "win32" &&
+        Number(ownedOutputIdentity.mode & 0o777n) !== 0o700) ||
+      (await realpath(options.outputRoot)) !== options.outputRoot
+    ) {
       throw stagingError();
     }
-    const [finalAfter, finalParent] = await Promise.all([
+
+    const publishedPackages = [];
+    for (const packageRecord of completedPackages) {
+      publishedPackages.push(
+        await moveCompletePackage(
+          packageRecord,
+          options.outputRoot,
+          ownedOutputIdentity,
+        ),
+      );
+    }
+    await removeIfOwned(ownedTemporaryPath, ownedTemporaryIdentity);
+    ownedTemporaryPath = undefined;
+    ownedTemporaryIdentity = undefined;
+
+    await assertOwnedRoot(options.outputRoot, ownedOutputIdentity);
+    await exactEntries(
+      options.outputRoot,
+      publishedPackages.map(({ name }) => name),
+    );
+    for (const packageRecord of publishedPackages) {
+      const current = await lstat(packageRecord.root, { bigint: true });
+      if (!sameNode(packageRecord.identity, current) || !current.isDirectory()) {
+        throw stagingError();
+      }
+    }
+    await syncDirectory(options.outputRoot);
+    const completionMarker = await createCompletionMarker(options.outputRoot);
+    await syncDirectory(options.outputRoot);
+    await syncDirectory(outputParent);
+
+    await exactEntries(options.outputRoot, [
+      ".complete",
+      ...publishedPackages.map(({ name }) => name),
+    ]);
+    await assertCompletionMarker(completionMarker);
+    const [finalRoot, finalParent] = await Promise.all([
       lstat(options.outputRoot, { bigint: true }),
       lstat(outputParent, { bigint: true }),
     ]);
     if (
-      !sameCompletedRoot(completedRoot, finalBefore) ||
-      !sameCompletedRoot(completedRoot, finalAfter) ||
-      !sameNode(outputParentIdentity, finalParent)
+      !sameNode(ownedOutputIdentity, finalRoot) ||
+      finalRoot.isSymbolicLink() ||
+      !finalRoot.isDirectory() ||
+      !sameNode(outputParentIdentity, finalParent) ||
+      finalParent.isSymbolicLink()
     ) {
       throw stagingError();
     }
+    for (const packageRecord of publishedPackages) {
+      const current = await lstat(packageRecord.root, { bigint: true });
+      if (!sameNode(packageRecord.identity, current) || !current.isDirectory()) {
+        throw stagingError();
+      }
+    }
+    await assertPlanStable(sourcePlan);
+    await assertPlanStable(binaryPlan);
 
     const staged = [
       ...targets.map((target) => ({
@@ -394,12 +849,16 @@ export async function stagePackages(options) {
         root: path.join(options.outputRoot, "launcher"),
       },
     ];
-    ownedPath = undefined;
-    ownedIdentity = undefined;
+    ownedOutputIdentity = undefined;
     return staged;
   } catch {
     try {
-      await removeIfOwned(ownedPath, ownedIdentity);
+      await removeIfOwned(options?.outputRoot, ownedOutputIdentity);
+    } catch {
+      // Cleanup failures do not disclose a path or change the public failure.
+    }
+    try {
+      await removeIfOwned(ownedTemporaryPath, ownedTemporaryIdentity);
     } catch {
       // Cleanup failures do not disclose a path or change the public failure.
     }

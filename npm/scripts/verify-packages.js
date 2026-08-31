@@ -3,15 +3,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   mkdtemp,
   open,
-  readFile,
   readdir,
   realpath,
-  rename,
   rm,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
@@ -29,7 +29,27 @@ const VERIFICATION_FAILURE = "npm package verification failed";
 const FILE_TYPE_MASK = 0o170000n;
 const MAX_NPM_OUTPUT = 1024 * 1024;
 const NPM_TIMEOUT_MS = 60_000;
+const MIN_NPM_TIMEOUT_MS = 10;
+const COMPLETION_MARKER_CONTENT = Buffer.from(
+  "ai-cli-gateway npm staging complete\n",
+  "utf8",
+);
+const LAUNCHER_ENTRY_CONTENT = Buffer.from(
+  '#!/usr/bin/env node\nimport { main } from "../lib/launcher.js";\n\nawait main(process.argv.slice(2));\n',
+  "utf8",
+);
+const LAUNCHER_IMPLEMENTATION_SHA512 =
+  "a547259ed0358f3fe873eaac1144feb499217b068ee4b969dbe0a2e47e6fec1c1185f073001cd4f5af7ef28b531da9c86ff965efd4dbc5f2a8bdc5c54bca1990";
 const PACK_OPTION_KEYS = new Set([
+  "stagingRoot",
+  "tarballRoot",
+  "descriptor",
+  "version",
+  "npmExecutable",
+  "npmArguments",
+  "npmTimeoutMs",
+]);
+const REQUIRED_PACK_OPTION_KEYS = new Set([
   "stagingRoot",
   "tarballRoot",
   "descriptor",
@@ -61,7 +81,22 @@ function sameNode(left, right) {
 }
 
 function sameFile(left, right) {
-  return left.size === right.size && left.isFile() && right.isFile() && sameNode(left, right);
+  return (
+    left.size === right.size &&
+    left.nlink === right.nlink &&
+    left.isFile() &&
+    right.isFile() &&
+    sameNode(left, right)
+  );
+}
+
+function sameDirectory(left, right) {
+  return (
+    left.nlink === right.nlink &&
+    left.isDirectory() &&
+    right.isDirectory() &&
+    sameNode(left, right)
+  );
 }
 
 function ownedByCurrentUser(metadata) {
@@ -119,6 +154,30 @@ async function canonicalExecutable(filename) {
   return { filename, identity: after };
 }
 
+async function canonicalRegularFile(filename) {
+  if (
+    typeof filename !== "string" ||
+    !path.isAbsolute(filename) ||
+    path.resolve(filename) !== filename
+  ) {
+    throw verificationError();
+  }
+  const before = await lstat(filename, { bigint: true });
+  if (
+    before.isSymbolicLink() ||
+    !before.isFile() ||
+    before.nlink !== 1n ||
+    (await realpath(filename)) !== filename
+  ) {
+    throw verificationError();
+  }
+  const after = await lstat(filename, { bigint: true });
+  if (!sameFile(before, after) || after.isSymbolicLink()) {
+    throw verificationError();
+  }
+  return { filename, identity: after };
+}
+
 async function assertAbsent(filename) {
   try {
     await lstat(filename);
@@ -149,34 +208,64 @@ function expectedDirectories(files) {
 
 async function exactTree(root, expectedFiles) {
   const rootBefore = await lstat(root, { bigint: true });
-  if (rootBefore.isSymbolicLink() || !rootBefore.isDirectory()) {
+  if (
+    rootBefore.isSymbolicLink() ||
+    !rootBefore.isDirectory() ||
+    !ownedByCurrentUser(rootBefore) ||
+    (await realpath(root)) !== root
+  ) {
     throw verificationError();
   }
   const files = [];
   const directories = [];
+  const directoryMetadata = new Map();
   async function visit(directory, prefix = "") {
+    const before = await lstat(directory, { bigint: true });
+    if (
+      before.isSymbolicLink() ||
+      !before.isDirectory() ||
+      !ownedByCurrentUser(before)
+    ) {
+      throw verificationError();
+    }
     const entries = await readdir(directory);
     codePointSort(entries);
     for (const entry of entries) {
       const relative = prefix === "" ? entry : `${prefix}/${entry}`;
       const filename = path.join(directory, entry);
       const metadata = await lstat(filename, { bigint: true });
-      if (metadata.isSymbolicLink()) {
+      if (metadata.isSymbolicLink() || !ownedByCurrentUser(metadata)) {
         throw verificationError();
       }
       if (metadata.isDirectory()) {
         directories.push(relative);
         await visit(filename, relative);
       } else if (metadata.isFile()) {
+        if (metadata.nlink !== 1n) {
+          throw verificationError();
+        }
         files.push({ path: relative, metadata });
       } else {
         throw verificationError();
       }
     }
+    const after = await lstat(directory, { bigint: true });
+    if (
+      !sameDirectory(before, after) ||
+      after.isSymbolicLink() ||
+      !ownedByCurrentUser(after)
+    ) {
+      throw verificationError();
+    }
+    directoryMetadata.set(prefix, after);
   }
   await visit(root);
   const rootAfter = await lstat(root, { bigint: true });
-  if (!sameNode(rootBefore, rootAfter) || rootAfter.isSymbolicLink()) {
+  if (
+    !sameDirectory(rootBefore, rootAfter) ||
+    rootAfter.isSymbolicLink() ||
+    !ownedByCurrentUser(rootAfter)
+  ) {
     throw verificationError();
   }
   if (
@@ -185,20 +274,50 @@ async function exactTree(root, expectedFiles) {
   ) {
     throw verificationError();
   }
-  return new Map(files.map(({ path: filename, metadata }) => [filename, metadata]));
+  return {
+    directories: directoryMetadata,
+    files: new Map(files.map(({ path: filename, metadata }) => [filename, metadata])),
+  };
 }
 
-async function stableRead(filename) {
+async function stableRead(filename, expectedMetadata) {
   const before = await lstat(filename, { bigint: true });
-  if (before.isSymbolicLink() || !before.isFile()) {
+  if (
+    before.isSymbolicLink() ||
+    !before.isFile() ||
+    before.nlink !== 1n ||
+    !ownedByCurrentUser(before) ||
+    (expectedMetadata !== undefined && !sameFile(expectedMetadata, before))
+  ) {
     throw verificationError();
   }
-  const content = await readFile(filename);
-  const after = await lstat(filename, { bigint: true });
-  if (!sameFile(before, after) || after.isSymbolicLink()) {
-    throw verificationError();
+  const handle = await open(
+    filename,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!sameFile(before, opened)) {
+      throw verificationError();
+    }
+    const content = await handle.readFile();
+    const [openedAfter, pathAfter] = await Promise.all([
+      handle.stat({ bigint: true }),
+      lstat(filename, { bigint: true }),
+    ]);
+    if (
+      !sameFile(opened, openedAfter) ||
+      !sameFile(opened, pathAfter) ||
+      pathAfter.isSymbolicLink() ||
+      pathAfter.nlink !== 1n ||
+      !ownedByCurrentUser(pathAfter)
+    ) {
+      throw verificationError();
+    }
+    return { content, metadata: pathAfter };
+  } finally {
+    await handle.close();
   }
-  return { content, metadata: after };
 }
 
 function expectedLauncherManifest(version) {
@@ -265,8 +384,8 @@ This package contains the native AI CLI Gateway binary for the \`${target.key}\`
 `;
 }
 
-async function parsedManifest(filename, expected) {
-  const { content } = await stableRead(filename);
+async function parsedManifest(filename, expected, expectedMetadata) {
+  const { content } = await stableRead(filename, expectedMetadata);
   const manifest = JSON.parse(content.toString("utf8"));
   if (!isDeepStrictEqual(manifest, expected)) {
     throw verificationError();
@@ -305,7 +424,7 @@ async function validatePackageRoot(packageRoot, target, version) {
   const files = packageFiles(target);
   const metadata = await exactTree(packageRoot, files);
   for (const [filename, expectedMode] of packageModes(target)) {
-    requireMode(metadata.get(filename), expectedMode);
+    requireMode(metadata.files.get(filename), expectedMode);
   }
 
   await parsedManifest(
@@ -313,32 +432,45 @@ async function validatePackageRoot(packageRoot, target, version) {
     target === undefined
       ? expectedLauncherManifest(version)
       : expectedNativeManifest(target, version),
+    metadata.files.get("package.json"),
   );
-  const readme = await stableRead(path.join(packageRoot, "README.md"));
+  const readme = await stableRead(
+    path.join(packageRoot, "README.md"),
+    metadata.files.get("README.md"),
+  );
   if (
     readme.content.toString("utf8") !==
     (target === undefined ? launcherReadme() : nativeReadme(target))
   ) {
     throw verificationError();
   }
-  const license = await stableRead(path.join(packageRoot, "LICENSE"));
+  const license = await stableRead(
+    path.join(packageRoot, "LICENSE"),
+    metadata.files.get("LICENSE"),
+  );
   if (license.content.length === 0) {
     throw verificationError();
   }
   if (target === undefined) {
-    const entry = await stableRead(path.join(packageRoot, "bin", "ai-cli-gateway.js"));
+    const entry = await stableRead(
+      path.join(packageRoot, "bin", "ai-cli-gateway.js"),
+      metadata.files.get("bin/ai-cli-gateway.js"),
+    );
+    if (!entry.content.equals(LAUNCHER_ENTRY_CONTENT)) {
+      throw verificationError();
+    }
+    const implementation = await stableRead(
+      path.join(packageRoot, "lib", "launcher.js"),
+      metadata.files.get("lib/launcher.js"),
+    );
     if (
-      entry.content.toString("utf8") !==
-      '#!/usr/bin/env node\nimport { main } from "../lib/launcher.js";\n\nawait main(process.argv.slice(2));\n'
+      createHash("sha512").update(implementation.content).digest("hex") !==
+      LAUNCHER_IMPLEMENTATION_SHA512
     ) {
       throw verificationError();
     }
-    const implementation = await stableRead(path.join(packageRoot, "lib", "launcher.js"));
-    if (implementation.content.length === 0) {
-      throw verificationError();
-    }
   } else {
-    const binary = metadata.get(`bin/${target.executable}`);
+    const binary = metadata.files.get(`bin/${target.executable}`);
     if (binary.size === 0n) {
       throw verificationError();
     }
@@ -359,7 +491,7 @@ async function validateSourcePackageRoot(packageRoot, target, version) {
   const metadata = await exactTree(packageRoot, files);
   for (const file of files) {
     requireMode(
-      metadata.get(file),
+      metadata.files.get(file),
       target === undefined && file === "bin/ai-cli-gateway.js" ? 0o755 : 0o644,
     );
   }
@@ -368,8 +500,12 @@ async function validateSourcePackageRoot(packageRoot, target, version) {
     target === undefined
       ? expectedLauncherManifest(version)
       : expectedNativeManifest(target, version),
+    metadata.files.get("package.json"),
   );
-  const readme = await stableRead(path.join(packageRoot, "README.md"));
+  const readme = await stableRead(
+    path.join(packageRoot, "README.md"),
+    metadata.files.get("README.md"),
+  );
   if (
     readme.content.toString("utf8") !==
     (target === undefined ? launcherReadme() : nativeReadme(target))
@@ -377,17 +513,52 @@ async function validateSourcePackageRoot(packageRoot, target, version) {
     throw verificationError();
   }
   if (target === undefined) {
-    const entry = await stableRead(path.join(packageRoot, "bin", "ai-cli-gateway.js"));
+    const entry = await stableRead(
+      path.join(packageRoot, "bin", "ai-cli-gateway.js"),
+      metadata.files.get("bin/ai-cli-gateway.js"),
+    );
+    if (!entry.content.equals(LAUNCHER_ENTRY_CONTENT)) {
+      throw verificationError();
+    }
+    const implementation = await stableRead(
+      path.join(packageRoot, "lib", "launcher.js"),
+      metadata.files.get("lib/launcher.js"),
+    );
     if (
-      entry.content.toString("utf8") !==
-      '#!/usr/bin/env node\nimport { main } from "../lib/launcher.js";\n\nawait main(process.argv.slice(2));\n'
+      createHash("sha512").update(implementation.content).digest("hex") !==
+      LAUNCHER_IMPLEMENTATION_SHA512
     ) {
       throw verificationError();
     }
-    const implementation = await stableRead(path.join(packageRoot, "lib", "launcher.js"));
-    if (implementation.content.length === 0) {
-      throw verificationError();
-    }
+  }
+  return metadata;
+}
+
+async function stableOwnedDirectory(directory) {
+  const before = await lstat(directory, { bigint: true });
+  if (
+    before.isSymbolicLink() ||
+    !before.isDirectory() ||
+    !ownedByCurrentUser(before) ||
+    (await realpath(directory)) !== directory
+  ) {
+    throw verificationError();
+  }
+  const after = await lstat(directory, { bigint: true });
+  if (!sameDirectory(before, after) || !ownedByCurrentUser(after)) {
+    throw verificationError();
+  }
+  return after;
+}
+
+async function assertDirectoryStable(directory, expected) {
+  const current = await lstat(directory, { bigint: true });
+  if (
+    !sameDirectory(expected, current) ||
+    current.isSymbolicLink() ||
+    !ownedByCurrentUser(current)
+  ) {
+    throw verificationError();
   }
 }
 
@@ -396,11 +567,9 @@ async function validateSource(repositoryRoot, version) {
   const npmDirectory = path.join(repositoryRoot, "npm");
   const launcherRoot = path.join(npmDirectory, "launcher");
   const platformsRoot = path.join(npmDirectory, "platforms");
+  const directorySnapshots = new Map();
   for (const directory of [npmDirectory, launcherRoot, platformsRoot]) {
-    const metadata = await lstat(directory, { bigint: true });
-    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-      throw verificationError();
-    }
+    directorySnapshots.set(directory, await stableOwnedDirectory(directory));
   }
 
   const platformEntries = await readdir(platformsRoot);
@@ -412,19 +581,45 @@ async function validateSource(repositoryRoot, version) {
   ) {
     throw verificationError();
   }
-  await validateSourcePackageRoot(launcherRoot, undefined, version);
+  await assertDirectoryStable(platformsRoot, directorySnapshots.get(platformsRoot));
+  const packageSnapshots = [
+    {
+      files: [
+        "README.md",
+        "bin/ai-cli-gateway.js",
+        "lib/launcher.js",
+        "package.json",
+      ],
+      metadata: await validateSourcePackageRoot(launcherRoot, undefined, version),
+      root: launcherRoot,
+    },
+  ];
   for (const target of TARGETS) {
-    await validateSourcePackageRoot(
-      path.join(platformsRoot, target.key),
-      target,
-      version,
-    );
+    const packageRoot = path.join(platformsRoot, target.key);
+    packageSnapshots.push({
+      files: ["README.md", "package.json"],
+      metadata: await validateSourcePackageRoot(packageRoot, target, version),
+      root: packageRoot,
+    });
   }
 
   const sourceLicense = await stableRead(path.join(repositoryRoot, "LICENSE"));
   requireMode(sourceLicense.metadata, 0o644);
   if (sourceLicense.content.length === 0) {
     throw verificationError();
+  }
+  await stableRead(
+    path.join(repositoryRoot, "LICENSE"),
+    sourceLicense.metadata,
+  );
+  for (const [directory, expected] of directorySnapshots) {
+    await assertDirectoryStable(directory, expected);
+  }
+  for (const snapshot of packageSnapshots) {
+    const current = await exactTree(snapshot.root, snapshot.files);
+    if (!samePackageMetadata(snapshot.metadata, current)) {
+      throw verificationError();
+    }
   }
   const rootAfter = await lstat(repositoryRoot, { bigint: true });
   if (!sameNode(rootIdentity, rootAfter) || rootAfter.isSymbolicLink()) {
@@ -453,21 +648,36 @@ export async function sourceCheck(options) {
 async function selectedStagedTargets(stagingRoot) {
   const entries = await readdir(stagingRoot);
   codePointSort(entries);
-  if (!entries.includes("launcher")) {
+  if (!entries.includes("launcher") || !entries.includes(".complete")) {
     throw verificationError();
   }
-  const nativeEntries = entries.filter((entry) => entry !== "launcher");
+  const nativeEntries = entries.filter(
+    (entry) => entry !== "launcher" && entry !== ".complete",
+  );
   if (nativeEntries.length !== 1 && nativeEntries.length !== TARGETS.length) {
     throw verificationError();
   }
   const selected = TARGETS.filter(({ key }) => nativeEntries.includes(key));
   if (
     selected.length !== nativeEntries.length ||
-    entries.length !== nativeEntries.length + 1
+    entries.length !== nativeEntries.length + 2
   ) {
     throw verificationError();
   }
   return selected;
+}
+
+async function validateCompletionMarker(stagingRoot, expectedIdentity) {
+  const marker = path.join(stagingRoot, ".complete");
+  const value = await stableRead(marker, expectedIdentity);
+  if (
+    !value.content.equals(COMPLETION_MARKER_CONTENT) ||
+    (process.platform !== "win32" &&
+      Number(value.metadata.mode & 0o777n) !== 0o644)
+  ) {
+    throw verificationError();
+  }
+  return value.metadata;
 }
 
 async function defaultNpmInvocation() {
@@ -475,7 +685,7 @@ async function defaultNpmInvocation() {
   if (process.platform === "win32") {
     const node = await canonicalExecutable(process.execPath);
     const npmCli = path.join(nodeDirectory, "node_modules", "npm", "bin", "npm-cli.js");
-    const cli = await canonicalExecutable(npmCli);
+    const cli = await canonicalRegularFile(npmCli);
     return { command: node, prefixArguments: [cli.filename], auxiliaries: [cli] };
   }
 
@@ -485,9 +695,20 @@ async function defaultNpmInvocation() {
   return { command: npm, prefixArguments: [], auxiliaries: [] };
 }
 
-async function programmaticNpmInvocation(npmExecutable) {
+async function programmaticNpmInvocation(npmExecutable, npmArguments) {
   const npm = await canonicalExecutable(npmExecutable);
-  return { command: npm, prefixArguments: [], auxiliaries: [] };
+  if (npmArguments === undefined) {
+    return { command: npm, prefixArguments: [], auxiliaries: [] };
+  }
+  if (!Array.isArray(npmArguments) || npmArguments.length !== 1) {
+    throw verificationError();
+  }
+  const fixedScript = await canonicalRegularFile(npmArguments[0]);
+  return {
+    command: npm,
+    prefixArguments: [fixedScript.filename],
+    auxiliaries: [fixedScript],
+  };
 }
 
 async function createNpmHome(tarballRoot) {
@@ -575,7 +796,7 @@ async function removeOwnedDirectory(root, identity) {
   }
 }
 
-function collectChild(child) {
+function collectChild(child, timeoutMs) {
   return new Promise((resolve, reject) => {
     const stdout = [];
     const stderr = [];
@@ -585,7 +806,7 @@ function collectChild(child) {
     const timeout = setTimeout(() => {
       exceeded = true;
       child.kill("SIGKILL");
-    }, NPM_TIMEOUT_MS);
+    }, timeoutMs);
 
     const collect = (chunks, chunk, currentSize) => {
       if (currentSize + chunk.length > MAX_NPM_OUTPUT) {
@@ -635,7 +856,13 @@ async function assertInvocationStable(invocation) {
   }
 }
 
-async function executeNpmPack(invocation, packageRoot, tarballRoot, home) {
+async function executeNpmPack(
+  invocation,
+  packageRoot,
+  tarballRoot,
+  home,
+  timeoutMs,
+) {
   const argumentsAfterPrefix = [
     "pack",
     "--ignore-scripts",
@@ -655,7 +882,7 @@ async function executeNpmPack(invocation, packageRoot, tarballRoot, home) {
       windowsHide: true,
     },
   );
-  const result = await collectChild(child);
+  const result = await collectChild(child, timeoutMs);
   await assertInvocationStable(invocation);
   if (
     result.code !== 0 ||
@@ -681,6 +908,7 @@ async function hashRegularTarball(filename) {
   if (
     pathBefore.isSymbolicLink() ||
     !pathBefore.isFile() ||
+    pathBefore.nlink !== 1n ||
     pathBefore.size <= 0n ||
     pathBefore.size > BigInt(Number.MAX_SAFE_INTEGER) ||
     (await realpath(filename)) !== filename
@@ -692,7 +920,7 @@ async function hashRegularTarball(filename) {
   const handle = await open(filename, flags);
   try {
     const opened = await handle.stat({ bigint: true });
-    if (!sameFile(pathBefore, opened)) {
+    if (!sameFile(pathBefore, opened) || opened.nlink !== 1n) {
       throw verificationError();
     }
     const sha1 = createHash("sha1");
@@ -716,11 +944,18 @@ async function hashRegularTarball(filename) {
     }
     const openedAfter = await handle.stat({ bigint: true });
     const pathAfter = await lstat(filename, { bigint: true });
-    if (!sameFile(opened, openedAfter) || !sameFile(opened, pathAfter)) {
+    if (
+      !sameFile(opened, openedAfter) ||
+      !sameFile(opened, pathAfter) ||
+      openedAfter.nlink !== 1n ||
+      pathAfter.nlink !== 1n ||
+      pathAfter.isSymbolicLink()
+    ) {
       throw verificationError();
     }
     return {
       integrity: `sha512-${sha512.digest("base64")}`,
+      identity: pathAfter,
       shasum: sha1.digest("hex"),
       size: Number(opened.size),
     };
@@ -751,8 +986,8 @@ function validatePackFiles(value, target, stagedMetadata) {
       file.size < 0 ||
       !modes.has(file.path) ||
       file.mode !== modes.get(file.path) ||
-      stagedMetadata.get(file.path)?.size > BigInt(Number.MAX_SAFE_INTEGER) ||
-      file.size !== Number(stagedMetadata.get(file.path)?.size) ||
+      stagedMetadata.files.get(file.path)?.size > BigInt(Number.MAX_SAFE_INTEGER) ||
+      file.size !== Number(stagedMetadata.files.get(file.path)?.size) ||
       seen.has(file.path)
     ) {
       throw verificationError();
@@ -802,23 +1037,38 @@ async function descriptorForRecord(
     throw verificationError();
   }
   return {
-    name,
-    version,
-    filename,
-    integrity: hashes.integrity,
-    shasum: hashes.shasum,
-    size: hashes.size,
-    files,
+    descriptor: {
+      name,
+      version,
+      filename,
+      integrity: hashes.integrity,
+      shasum: hashes.shasum,
+      size: hashes.size,
+      files,
+    },
+    tarballIdentity: hashes.identity,
   };
 }
 
 function samePackageMetadata(before, after) {
-  if (before.size !== after.size) {
+  if (
+    before.files.size !== after.files.size ||
+    before.directories.size !== after.directories.size
+  ) {
     return false;
   }
-  for (const [filename, beforeFile] of before) {
-    const afterFile = after.get(filename);
+  for (const [filename, beforeFile] of before.files) {
+    const afterFile = after.files.get(filename);
     if (afterFile === undefined || !sameFile(beforeFile, afterFile)) {
+      return false;
+    }
+  }
+  for (const [directory, beforeDirectory] of before.directories) {
+    const afterDirectory = after.directories.get(directory);
+    if (
+      afterDirectory === undefined ||
+      !sameDirectory(beforeDirectory, afterDirectory)
+    ) {
       return false;
     }
   }
@@ -832,11 +1082,49 @@ async function exactTarballEntries(tarballRoot, filenames) {
   }
 }
 
+function isUnsupportedDirectorySync(error) {
+  return ["EBADF", "EINVAL", "EISDIR", "ENOSYS", "ENOTSUP", "EPERM"].includes(
+    error?.code,
+  );
+}
+
+async function syncDirectory(directory) {
+  let handle;
+  try {
+    handle = await open(directory, constants.O_RDONLY);
+    await handle.sync();
+  } catch (error) {
+    if (!isUnsupportedDirectorySync(error)) {
+      throw error;
+    }
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function removeOwnedFile(filename, identity) {
+  if (filename === undefined || identity === undefined) {
+    return;
+  }
+  try {
+    const current = await lstat(filename, { bigint: true });
+    if (sameNode(identity, current) && current.isFile() && !current.isSymbolicLink()) {
+      await unlink(filename);
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
 async function writeCanonicalDescriptor(descriptor, descriptors) {
   await assertAbsent(descriptor);
   const directory = path.dirname(descriptor);
-  let ownedPath;
-  let ownedIdentity;
+  const serialized = Buffer.from(`${JSON.stringify(descriptors, null, 2)}\n`, "utf8");
+  let temporaryPath;
+  let temporaryIdentity;
+  let descriptorIdentity;
   try {
     let handle;
     for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -850,7 +1138,7 @@ async function writeCanonicalDescriptor(descriptor, descriptors) {
           constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
           0o600,
         );
-        ownedPath = candidate;
+        temporaryPath = candidate;
         break;
       } catch (error) {
         if (error?.code !== "EEXIST") {
@@ -858,70 +1146,147 @@ async function writeCanonicalDescriptor(descriptor, descriptors) {
         }
       }
     }
-    if (ownedPath === undefined || handle === undefined) {
+    if (temporaryPath === undefined || handle === undefined) {
       throw verificationError();
     }
     try {
-      ownedIdentity = await handle.stat({ bigint: true });
-      if (ownedIdentity.isSymbolicLink() || !ownedIdentity.isFile()) {
+      temporaryIdentity = await handle.stat({ bigint: true });
+      if (
+        temporaryIdentity.isSymbolicLink() ||
+        !temporaryIdentity.isFile() ||
+        temporaryIdentity.nlink !== 1n ||
+        !ownedByCurrentUser(temporaryIdentity)
+      ) {
         throw verificationError();
       }
-      await handle.writeFile(`${JSON.stringify(descriptors, null, 2)}\n`, "utf8");
+      await handle.writeFile(serialized);
       await handle.chmod(0o644);
       await handle.sync();
+      const completed = await handle.stat({ bigint: true });
+      if (!sameNode(temporaryIdentity, completed) || completed.nlink !== 1n) {
+        throw verificationError();
+      }
+      temporaryIdentity = completed;
     } finally {
       await handle.close();
     }
-    const completedIdentity = await lstat(ownedPath, { bigint: true });
+    const completedIdentity = await lstat(temporaryPath, { bigint: true });
     if (
-      !sameNode(ownedIdentity, completedIdentity) ||
+      !sameFile(temporaryIdentity, completedIdentity) ||
       completedIdentity.isSymbolicLink() ||
       !completedIdentity.isFile() ||
+      completedIdentity.nlink !== 1n ||
+      !ownedByCurrentUser(completedIdentity) ||
       (process.platform !== "win32" &&
         Number(completedIdentity.mode & 0o777n) !== 0o644)
     ) {
       throw verificationError();
     }
-    ownedIdentity = completedIdentity;
-    await assertAbsent(descriptor);
-    await rename(ownedPath, descriptor);
-    ownedPath = descriptor;
-    const finalIdentity = await lstat(descriptor, { bigint: true });
-    if (!sameFile(ownedIdentity, finalIdentity) || (await realpath(descriptor)) !== descriptor) {
+    temporaryIdentity = completedIdentity;
+    await link(temporaryPath, descriptor);
+    descriptorIdentity = await lstat(descriptor, { bigint: true });
+    const linkedTemporary = await lstat(temporaryPath, { bigint: true });
+    if (
+      !sameNode(temporaryIdentity, descriptorIdentity) ||
+      !sameNode(temporaryIdentity, linkedTemporary) ||
+      descriptorIdentity.size !== temporaryIdentity.size ||
+      descriptorIdentity.nlink !== 2n ||
+      linkedTemporary.nlink !== 2n ||
+      descriptorIdentity.isSymbolicLink() ||
+      !descriptorIdentity.isFile()
+    ) {
       throw verificationError();
     }
-    ownedPath = undefined;
-    ownedIdentity = undefined;
+    await unlink(temporaryPath);
+    temporaryPath = undefined;
+    temporaryIdentity = undefined;
+    const finalIdentity = await lstat(descriptor, { bigint: true });
+    if (
+      !sameNode(descriptorIdentity, finalIdentity) ||
+      finalIdentity.size !== descriptorIdentity.size ||
+      finalIdentity.nlink !== 1n ||
+      finalIdentity.isSymbolicLink() ||
+      !finalIdentity.isFile() ||
+      (await realpath(descriptor)) !== descriptor
+    ) {
+      throw verificationError();
+    }
+    descriptorIdentity = finalIdentity;
+    const finalContent = await stableRead(descriptor, finalIdentity);
+    if (!finalContent.content.equals(serialized)) {
+      throw verificationError();
+    }
+    await syncDirectory(directory);
+    return descriptorIdentity;
   } catch {
-    if (ownedPath !== undefined && ownedIdentity !== undefined) {
-      try {
-        const current = await lstat(ownedPath, { bigint: true });
-        if (sameNode(ownedIdentity, current) && current.isFile() && !current.isSymbolicLink()) {
-          await rm(ownedPath, { force: true });
-        }
-      } catch {
-        // Cleanup failures do not disclose paths or alter the fixed failure.
-      }
+    try {
+      await removeOwnedFile(descriptor, descriptorIdentity);
+    } catch {
+      // Cleanup failures do not disclose paths or alter the fixed failure.
+    }
+    try {
+      await removeOwnedFile(temporaryPath, temporaryIdentity);
+    } catch {
+      // Cleanup failures do not disclose paths or alter the fixed failure.
     }
     throw verificationError();
   }
 }
 
+async function revalidateTarballs(tarballRoot, tarballs) {
+  for (const tarball of tarballs) {
+    const hashes = await hashRegularTarball(
+      path.join(tarballRoot, tarball.descriptor.filename),
+    );
+    if (
+      !sameFile(tarball.identity, hashes.identity) ||
+      hashes.integrity !== tarball.descriptor.integrity ||
+      hashes.shasum !== tarball.descriptor.shasum ||
+      hashes.size !== tarball.descriptor.size
+    ) {
+      throw verificationError();
+    }
+  }
+}
+
+async function revalidatePackages(packages, version) {
+  for (const packageRecord of packages) {
+    const current = await validatePackageRoot(
+      packageRecord.root,
+      packageRecord.target,
+      version,
+    );
+    if (!samePackageMetadata(packageRecord.metadata, current)) {
+      throw verificationError();
+    }
+  }
+}
+
 async function packAndVerifyWithInvocation(options, suppliedInvocation) {
   let home;
+  let descriptorIdentity;
   try {
+    const optionKeys =
+      options !== null && typeof options === "object" && !Array.isArray(options)
+        ? Object.keys(options)
+        : [];
     if (
       options === null ||
       typeof options !== "object" ||
       Array.isArray(options) ||
-      !Object.keys(options).every((key) => PACK_OPTION_KEYS.has(key)) ||
-      Object.keys(options).length !== PACK_OPTION_KEYS.size ||
+      !optionKeys.every((key) => PACK_OPTION_KEYS.has(key)) ||
+      ![...REQUIRED_PACK_OPTION_KEYS].every((key) => optionKeys.includes(key)) ||
       options.version !== PACKAGE_VERSION ||
       typeof options.descriptor !== "string" ||
-      options.descriptor !== path.join(options.tarballRoot, "packages.json")
+      options.descriptor !== path.join(options.tarballRoot, "packages.json") ||
+      (options.npmTimeoutMs !== undefined &&
+        (!Number.isSafeInteger(options.npmTimeoutMs) ||
+          options.npmTimeoutMs < MIN_NPM_TIMEOUT_MS ||
+          options.npmTimeoutMs > NPM_TIMEOUT_MS))
     ) {
       throw verificationError();
     }
+    const timeoutMs = options.npmTimeoutMs ?? NPM_TIMEOUT_MS;
 
     const stagingIdentity = await canonicalDirectory(options.stagingRoot, {
       privateRoot: true,
@@ -932,7 +1297,12 @@ async function packAndVerifyWithInvocation(options, suppliedInvocation) {
     await assertAbsent(options.descriptor);
     await exactTarballEntries(options.tarballRoot, []);
     const invocation =
-      suppliedInvocation ?? (await programmaticNpmInvocation(options.npmExecutable));
+      suppliedInvocation ??
+      (await programmaticNpmInvocation(
+        options.npmExecutable,
+        options.npmArguments,
+      ));
+    const completionIdentity = await validateCompletionMarker(options.stagingRoot);
     const targets = await selectedStagedTargets(options.stagingRoot);
 
     const packages = [
@@ -952,6 +1322,7 @@ async function packAndVerifyWithInvocation(options, suppliedInvocation) {
 
     home = await createNpmHome(options.tarballRoot);
     const descriptors = [];
+    const tarballs = [];
     for (const packageRecord of packages) {
       const name = packageRecord.target?.packageName ?? LAUNCHER_NAME;
       const filename = expectedFilename(name, options.version);
@@ -961,16 +1332,20 @@ async function packAndVerifyWithInvocation(options, suppliedInvocation) {
         packageRecord.root,
         options.tarballRoot,
         home,
+        timeoutMs,
       );
-      descriptors.push(
-        await descriptorForRecord(
-          record,
-          packageRecord.target,
-          options.version,
-          options.tarballRoot,
-          packageRecord.metadata,
-        ),
+      const verified = await descriptorForRecord(
+        record,
+        packageRecord.target,
+        options.version,
+        options.tarballRoot,
+        packageRecord.metadata,
       );
+      descriptors.push(verified.descriptor);
+      tarballs.push({
+        descriptor: verified.descriptor,
+        identity: verified.tarballIdentity,
+      });
       await exactTarballEntries(
         options.tarballRoot,
         descriptors.map(({ filename: packedFilename }) => packedFilename),
@@ -984,6 +1359,10 @@ async function packAndVerifyWithInvocation(options, suppliedInvocation) {
         throw verificationError();
       }
     }
+
+    await revalidateTarballs(options.tarballRoot, tarballs);
+    await revalidatePackages(packages, options.version);
+    await validateCompletionMarker(options.stagingRoot, completionIdentity);
 
     const [stagingAfter, tarballAfter] = await Promise.all([
       lstat(options.stagingRoot, { bigint: true }),
@@ -1000,11 +1379,28 @@ async function packAndVerifyWithInvocation(options, suppliedInvocation) {
 
     await removeOwnedDirectory(home.root, home.identity);
     home = undefined;
-    await writeCanonicalDescriptor(options.descriptor, descriptors);
+    await revalidateTarballs(options.tarballRoot, tarballs);
+    descriptorIdentity = await writeCanonicalDescriptor(
+      options.descriptor,
+      descriptors,
+    );
     await exactTarballEntries(options.tarballRoot, [
       ...descriptors.map(({ filename }) => filename),
       "packages.json",
     ]);
+    await revalidateTarballs(options.tarballRoot, tarballs);
+    await revalidatePackages(packages, options.version);
+    await validateCompletionMarker(options.stagingRoot, completionIdentity);
+    const finalDescriptor = await stableRead(
+      options.descriptor,
+      descriptorIdentity,
+    );
+    if (
+      finalDescriptor.content.toString("utf8") !==
+      `${JSON.stringify(descriptors, null, 2)}\n`
+    ) {
+      throw verificationError();
+    }
     const [finalStaging, finalTarball] = await Promise.all([
       lstat(options.stagingRoot, { bigint: true }),
       lstat(options.tarballRoot, { bigint: true }),
@@ -1017,11 +1413,19 @@ async function packAndVerifyWithInvocation(options, suppliedInvocation) {
     ) {
       throw verificationError();
     }
+    descriptorIdentity = undefined;
     return descriptors;
   } catch {
     if (home !== undefined) {
       try {
         await removeOwnedDirectory(home.root, home.identity);
+      } catch {
+        // Cleanup failures do not disclose paths or alter the fixed failure.
+      }
+    }
+    if (descriptorIdentity !== undefined) {
+      try {
+        await removeOwnedFile(options?.descriptor, descriptorIdentity);
       } catch {
         // Cleanup failures do not disclose paths or alter the fixed failure.
       }
