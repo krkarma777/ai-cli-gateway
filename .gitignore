@@ -29,3 +29,8 @@ auth.json
 credentials.json
 oauth_creds.json
 google_accounts.json
+
+# npm dependency and package output
+/npm/node_modules/
+/npm/**/*.tgz
+/npm/.staging/

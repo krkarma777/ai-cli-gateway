@@ -1,0 +1,12 @@
+{
+  "name": "ai-cli-gateway-npm-contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 ./test/*.test.js"
+  }
+}
