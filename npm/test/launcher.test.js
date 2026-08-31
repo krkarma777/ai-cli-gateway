@@ -214,6 +214,39 @@ test("resolves a valid installed native executable", async () => {
   });
 });
 
+test("returns the canonical executable when Node preserves package symlinks", async () => {
+  const fixture = await installedFixture();
+  const linkedLauncherRoot = path.join(fixture.fixtureRoot, "linked-launcher");
+  await symlink(
+    fixture.launcherRoot,
+    linkedLauncherRoot,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+
+  const launcherModule = new URL("../launcher/lib/launcher.js", import.meta.url).href;
+  const source = `
+    import { resolveNative } from ${JSON.stringify(launcherModule)};
+    const resolved = await resolveNative(${JSON.stringify({
+      launcherRoot: linkedLauncherRoot,
+      platform: process.platform,
+      arch: process.arch,
+    })});
+    process.stdout.write(JSON.stringify(resolved));
+  `;
+  const result = spawnSync(
+    process.execPath,
+    ["--preserve-symlinks", "--input-type=module", "--eval", source],
+    { encoding: "utf8", shell: false },
+  );
+
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), {
+    binary: await realpath(fixture.binary),
+    version: launcherVersion,
+  });
+});
+
 test("rejects an invalid launcher package name", async () => {
   const fixture = await installedFixture({ launcherName: "not-ai-cli-gateway" });
   await assert.rejects(
@@ -292,6 +325,19 @@ test("reports a missing optional package with the exact reinstall guidance", asy
       message: `ai-cli-gateway: native package ${fixture.target.packageName}@${launcherVersion} is missing; reinstall with "npm install --global ai-cli-gateway@${launcherVersion}" without --omit=optional`,
     },
   );
+});
+
+test("does not treat a containing missing export path as the expected package", async () => {
+  const fixture = await installedFixture();
+  await writeJson(path.join(fixture.nativeRoot, "package.json"), {
+    name: fixture.target.packageName,
+    version: launcherVersion,
+    exports: {
+      "./package.json": `./missing/${fixture.target.packageName}/package.json`,
+    },
+  });
+
+  await assertInvalidNative(fixture);
 });
 
 test("rejects a native package with the wrong name", async () => {

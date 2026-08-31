@@ -115,9 +115,9 @@ function isExpectedModuleNotFound(error, request) {
   return (
     error !== null &&
     typeof error === "object" &&
-    (error.code === "MODULE_NOT_FOUND" || error.code === "ERR_MODULE_NOT_FOUND") &&
+    error.code === "MODULE_NOT_FOUND" &&
     typeof error.message === "string" &&
-    error.message.includes(request)
+    error.message.split(/\r?\n/u, 1)[0] === `Cannot find module '${request}'`
   );
 }
 
@@ -171,7 +171,7 @@ async function validatedNative(manifestPath, target, launcherVersion) {
     throw launcherError("INVALID_NATIVE");
   }
 
-  return { binary, version: launcherVersion };
+  return { binary: realBinary, version: launcherVersion };
 }
 
 export async function resolveNative({ launcherRoot, platform, arch }) {
