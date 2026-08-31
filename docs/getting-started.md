@@ -23,7 +23,7 @@ ai-cli-gateway version
 
 The public packages have no lifecycle scripts. npm resolves the matching optional package from the registry; installation does not download an executable through a lifecycle hook, and the launcher performs no application-owned network download on first execution. The native executable in each npm package is byte-for-byte identical to the executable in its matching GitHub Release archive. The packages carry npm provenance, while the archives, SPDX SBOM, and checksum manifest carry GitHub build-provenance attestations.
 
-For a project lockfile that includes the package, use `npm audit signatures` to verify supported registry signatures:
+`npm audit signatures` verifies downloaded packages' registry signatures and provenance attestations. Run it from a project lockfile that includes the package:
 
 ```console
 npm audit signatures

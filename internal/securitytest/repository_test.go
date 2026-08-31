@@ -1533,18 +1533,11 @@ func TestGettingStartedNPMInstallV021Contract(t *testing.T) {
 		"Node.js `>=22.14.0`",
 		"no lifecycle scripts", "does not download an executable",
 		"byte-for-byte identical", "npm provenance", "GitHub build-provenance",
-		"`npm audit signatures`", "Update", "Uninstall", "Optional-dependency recovery",
+		"`npm audit signatures` verifies downloaded packages' registry signatures and provenance attestations.",
+		"Update", "Uninstall", "Optional-dependency recovery",
 	)
-	for _, row := range []string{
-		"| macOS Intel | `darwin-x64` | `ai-cli-gateway-darwin-x64` |",
-		"| macOS Apple silicon | `darwin-arm64` | `ai-cli-gateway-darwin-arm64` |",
-		"| Linux x86-64 | `linux-x64` | `ai-cli-gateway-linux-x64` |",
-		"| Linux ARM64 | `linux-arm64` | `ai-cli-gateway-linux-arm64` |",
-		"| Windows x86-64 | `win32-x64` | `ai-cli-gateway-win32-x64` |",
-	} {
-		if !strings.Contains(installation, row) {
-			t.Fatalf("Getting Started npm target table is missing exact row %q", row)
-		}
+	if err := validateExactDocumentationTable(document, "Install with npm", gettingStartedNPMTargetTable()); err != nil {
+		t.Fatalf("Getting Started npm target table: %v", err)
 	}
 	for _, command := range []string{
 		"npm install --global ai-cli-gateway@0.2.1",
@@ -1583,16 +1576,8 @@ func TestReleaseNotesV021Contract(t *testing.T) {
 		"byte-for-byte identical", "npm provenance", "GitHub build-provenance attestations",
 		"five platform archives", "SPDX SBOM", "SHA256SUMS",
 	)
-	for _, row := range []string{
-		"| `darwin-x64` | `ai-cli-gateway-darwin-x64` | `darwin` / `x64` |",
-		"| `darwin-arm64` | `ai-cli-gateway-darwin-arm64` | `darwin` / `arm64` |",
-		"| `linux-x64` | `ai-cli-gateway-linux-x64` | `linux` / `x64` |",
-		"| `linux-arm64` | `ai-cli-gateway-linux-arm64` | `linux` / `arm64` |",
-		"| `win32-x64` | `ai-cli-gateway-win32-x64` | `win32` / `x64` |",
-	} {
-		if !strings.Contains(notes, row) {
-			t.Fatalf("docs/releases/v0.2.1.md is missing exact target row %q", row)
-		}
+	if err := validateExactDocumentationTable(notes, "Supported targets", releaseNotesNPMTargetTable()); err != nil {
+		t.Fatalf("docs/releases/v0.2.1.md target table: %v", err)
 	}
 	wantAssets := []string{
 		"ai-cli-gateway_0.2.1_linux_amd64.tar.gz",
@@ -1619,6 +1604,99 @@ func TestReleaseNotesV021Contract(t *testing.T) {
 	markdownLinkPattern := regexp.MustCompile(`\[[^]]+\]\([^)]+\)`)
 	if links := markdownLinkPattern.FindAllString(notes, -1); !reflect.DeepEqual(links, expectedLinks) {
 		t.Fatalf("docs/releases/v0.2.1.md links = %v, want exact tag-pinned links %v", links, expectedLinks)
+	}
+}
+
+func gettingStartedNPMTargetTable() []string {
+	return []string{
+		"| Host | npm target | Native package |",
+		"|---|---|---|",
+		"| macOS Intel | `darwin-x64` | `ai-cli-gateway-darwin-x64` |",
+		"| macOS Apple silicon | `darwin-arm64` | `ai-cli-gateway-darwin-arm64` |",
+		"| Linux x86-64 | `linux-x64` | `ai-cli-gateway-linux-x64` |",
+		"| Linux ARM64 | `linux-arm64` | `ai-cli-gateway-linux-arm64` |",
+		"| Windows x86-64 | `win32-x64` | `ai-cli-gateway-win32-x64` |",
+	}
+}
+
+func releaseNotesNPMTargetTable() []string {
+	return []string{
+		"| npm target | Native package | npm host constraint |",
+		"|---|---|---|",
+		"| `darwin-x64` | `ai-cli-gateway-darwin-x64` | `darwin` / `x64` |",
+		"| `darwin-arm64` | `ai-cli-gateway-darwin-arm64` | `darwin` / `arm64` |",
+		"| `linux-x64` | `ai-cli-gateway-linux-x64` | `linux` / `x64` |",
+		"| `linux-arm64` | `ai-cli-gateway-linux-arm64` | `linux` / `arm64` |",
+		"| `win32-x64` | `ai-cli-gateway-win32-x64` | `win32` / `x64` |",
+	}
+}
+
+func validateExactDocumentationTable(document, heading string, expected []string) error {
+	section, err := extractTopLevelMarkdownSection(document, heading)
+	if err != nil {
+		return err
+	}
+	tables := make([][]string, 0, 1)
+	current := make([]string, 0, len(expected))
+	for _, line := range strings.Split(section, "\n") {
+		if strings.HasPrefix(line, "|") && strings.HasSuffix(line, "|") {
+			current = append(current, line)
+			continue
+		}
+		if len(current) > 0 {
+			tables = append(tables, current)
+			current = make([]string, 0, len(expected))
+		}
+	}
+	if len(current) > 0 {
+		tables = append(tables, current)
+	}
+	if len(tables) != 1 {
+		return fmt.Errorf("section %q contains %d Markdown tables, want exactly one", heading, len(tables))
+	}
+	if !reflect.DeepEqual(tables[0], expected) {
+		return fmt.Errorf("section %q table = %v, want exact %v", heading, tables[0], expected)
+	}
+	return nil
+}
+
+func TestDocumentationNPMTargetTablesRejectExtraRows(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+		extraRow string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+			extraRow: "| FreeBSD x86-64 | `freebsd-x64` | `ai-cli-gateway-freebsd-x64` |",
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+			extraRow: "| `freebsd-x64` | `ai-cli-gateway-freebsd-x64` | `freebsd` / `x64` |",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateExactDocumentationTable(test.document, test.heading, test.expected); err != nil {
+				t.Fatalf("baseline exact target table: %v", err)
+			}
+			lastRow := test.expected[len(test.expected)-1]
+			if strings.Count(test.document, lastRow) != 1 {
+				t.Fatalf("last target row %q is not unique", lastRow)
+			}
+			mutated := strings.Replace(test.document, lastRow, lastRow+"\n"+test.extraRow, 1)
+			if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+				t.Fatal("exact target-table contract accepted an extra unsupported row")
+			}
+		})
 	}
 }
 
