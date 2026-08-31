@@ -28,7 +28,11 @@ import {
   stagedFileOpenFlags,
   stagePackages,
 } from "../scripts/stage-packages.js";
-import { packAndVerify, sourceCheck } from "../scripts/verify-packages.js";
+import {
+  chmodNpmDirectory,
+  packAndVerify,
+  sourceCheck,
+} from "../scripts/verify-packages.js";
 
 const npmRoot = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const sourceRepositoryRoot = path.dirname(npmRoot);
@@ -207,6 +211,23 @@ test("uses a writable staged-file handle only on Windows", () => {
     stagedFileOpenFlags("darwin"),
     constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
   );
+});
+
+test("uses the supported npm-directory chmod route on each platform", async () => {
+  const calls = [];
+  const handle = {
+    chmod: async (mode) => calls.push(["handle", mode]),
+  };
+  const chmodPath = async (directory, mode) => {
+    calls.push(["path", directory, mode]);
+  };
+
+  await chmodNpmDirectory("C:\\npm-home", handle, "win32", chmodPath);
+  assert.deepEqual(calls, [["path", "C:\\npm-home", 0o700]]);
+
+  calls.length = 0;
+  await chmodNpmDirectory("/npm-home", handle, "linux", chmodPath);
+  assert.deepEqual(calls, [["handle", 0o700]]);
 });
 
 test("stages all native packages followed by the launcher", async () => {

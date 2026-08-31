@@ -10,6 +10,7 @@ import {
   readdirSync,
 } from "node:fs";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -798,6 +799,19 @@ async function createNpmHome(tarballRoot) {
   }
 }
 
+export async function chmodNpmDirectory(
+  directory,
+  handle,
+  platform = process.platform,
+  pathChmod = chmod,
+) {
+  if (platform === "win32") {
+    await pathChmod(directory, 0o700);
+    return;
+  }
+  await handle.chmod(0o700);
+}
+
 async function secureNpmDirectory(directory) {
   const acquired = await lstat(directory, { bigint: true });
   const handle = await open(
@@ -814,7 +828,7 @@ async function secureNpmDirectory(directory) {
     ) {
       throw verificationError();
     }
-    await handle.chmod(0o700);
+    await chmodNpmDirectory(directory, handle);
     const secured = await handle.stat({ bigint: true });
     const pathAfter = await lstat(directory, { bigint: true });
     if (
