@@ -4181,14 +4181,14 @@ func validateCIActionlintStep(workflow, lintJob string) error {
 	if actionlintStep == "" {
 		return errors.New("missing parsed Validate workflow syntax step")
 	}
-	if err := requireExactTextSHA256("parsed actionlint step metadata", actionlintStep, "a931acb732b7b1ff34549eb83f61795e502e014023bd6c7b7f4f962af0d84597"); err != nil {
+	if err := requireExactTextSHA256("parsed actionlint step metadata", actionlintStep, "dcd20e9e5820d344dd5098e7dee083de34fefa4782afb32db783f03f568201e3"); err != nil {
 		return err
 	}
 	actionlintRun, err := decodedWorkflowStepRun([]byte(workflow), "lint", "Validate workflow syntax")
 	if err != nil {
 		return fmt.Errorf("decode actionlint run: %w", err)
 	}
-	if err := requireExactTextSHA256("decoded actionlint run", actionlintRun, "fb19e602eee29370c9ca45392e5178b91ee76c181e05c2368984ae8de95cf5d3"); err != nil {
+	if err := requireExactTextSHA256("decoded actionlint run", actionlintRun, "3a4691e1ffa2261b6bc82b6a1afb7c6cbb7c903441191504c32c3ae37a2b9285"); err != nil {
 		return err
 	}
 	for _, required := range []string{
@@ -4219,7 +4219,7 @@ func validateCIActionlintStep(workflow, lintJob string) error {
 		`run_clean_actionlint -version`,
 		`run_clean_actionlint -help`,
 		`-config-file "${ACTIONLINT_ROOT}/config/actionlint.yaml"`,
-		`.github/workflows/ci.yml .github/workflows/release.yml`,
+		`.github/workflows/ci.yml .github/workflows/release.yml .github/workflows/npm-release.yml`,
 	} {
 		if !strings.Contains(actionlintStep, required) {
 			return fmt.Errorf("parsed actionlint step is missing %q", required)
@@ -4246,7 +4246,7 @@ func validateCIActionlintStep(workflow, lintJob string) error {
 		`run_clean_actionlint \`,
 		`-config-file "${ACTIONLINT_ROOT}/config/actionlint.yaml" \`,
 		`-shellcheck= -pyflakes= -no-color \`,
-		`.github/workflows/ci.yml .github/workflows/release.yml`,
+		`.github/workflows/ci.yml .github/workflows/release.yml .github/workflows/npm-release.yml`,
 	}
 	if shellLineSequenceCount(lines, wantLint) != 1 || shellLinePrefixCount(lines, "run_clean_actionlint ") != 1 ||
 		shellLineCount(lines, `test "$(run_clean_actionlint -version | sed -n '1p')" = v1.7.12`) != 1 ||
@@ -4367,8 +4367,8 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		{
 			name: "actionlint targets hidden in dead string",
 			mutate: replaceCIOnce(
-				"          run_clean_actionlint \\\n            -config-file \"${ACTIONLINT_ROOT}/config/actionlint.yaml\" \\\n            -shellcheck= -pyflakes= -no-color \\\n            .github/workflows/ci.yml .github/workflows/release.yml\n",
-				"          : '-config-file \"${ACTIONLINT_ROOT}/config/actionlint.yaml\" .github/workflows/ci.yml .github/workflows/release.yml'\n          run_clean_actionlint /dev/null\n",
+				"          run_clean_actionlint \\\n            -config-file \"${ACTIONLINT_ROOT}/config/actionlint.yaml\" \\\n            -shellcheck= -pyflakes= -no-color \\\n            .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/npm-release.yml\n",
+				"          : '-config-file \"${ACTIONLINT_ROOT}/config/actionlint.yaml\" .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/npm-release.yml'\n          run_clean_actionlint /dev/null\n",
 			),
 		},
 		{name: "missing workflow_call trigger", mutate: replaceCIOnce("  workflow_call:\n", "")},
@@ -5818,6 +5818,558 @@ type releaseWorkflowDocument struct {
 	Jobs map[string]releaseWorkflowJob
 }
 
+type npmReleaseWorkflowDocument struct {
+	Root *yaml.Node
+	Jobs map[string]releaseWorkflowJob
+}
+
+func TestNPMReleaseWorkflowContract(t *testing.T) {
+	document := readRepositoryFile(t, ".github/workflows/npm-release.yml")
+	workflow, err := parseClosedNPMReleaseWorkflow(document)
+	if err != nil {
+		t.Fatalf("parse closed npm release workflow: %v", err)
+	}
+	if err := validateNPMReleaseWorkflowContract(workflow); err != nil {
+		t.Fatalf("npm release workflow contract: %v", err)
+	}
+}
+
+func TestNPMReleaseWorkflowBashSyntax(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("decoded npm release shell syntax requires Bash")
+	}
+	workflow, err := parseClosedNPMReleaseWorkflow(readRepositoryFile(t, ".github/workflows/npm-release.yml"))
+	if err != nil {
+		t.Fatalf("parse closed npm release workflow: %v", err)
+	}
+	count := 0
+	for jobName, job := range workflow.Jobs {
+		for _, step := range job.Steps {
+			if step.Run == "" {
+				continue
+			}
+			assertBashSyntax(t, jobName+"/"+step.Name, step.Run)
+			count++
+		}
+	}
+	if count != 10 {
+		t.Fatalf("npm release Bash step count = %d, want 10", count)
+	}
+}
+
+func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
+	document := string(readRepositoryFile(t, ".github/workflows/npm-release.yml"))
+	tests := []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{name: "duplicate mapping key", mutate: replaceNPMReleaseOnce("name: npm Release\n", "name: npm Release\nname: Shadow\n")},
+		{name: "anchor", mutate: replaceNPMReleaseOnce("name: npm Release\n", "name: &release npm Release\n")},
+		{name: "alias", mutate: replaceNPMReleaseOnce("name: npm Release\n", "name: &release npm Release\nshadow: *release\n")},
+		{name: "unknown top field", mutate: replaceNPMReleaseOnce("name: npm Release\n", "name: npm Release\nunexpected: true\n")},
+		{name: "unknown job field", mutate: replaceNPMReleaseOnce("  package:\n    runs-on: ubuntu-24.04\n", "  package:\n    runs-on: ubuntu-24.04\n    if: always()\n")},
+		{name: "step continue on error", mutate: replaceNPMReleaseOnce("      - name: Validate immutable release metadata\n", "      - name: Validate immutable release metadata\n        continue-on-error: true\n")},
+		{name: "event widened", mutate: replaceNPMReleaseOnce("      - published\n", "      - published\n      - created\n")},
+		{name: "top permission widened", mutate: replaceNPMReleaseOnce("permissions: {}\n", "permissions:\n  contents: write\n")},
+		{name: "concurrency changed", mutate: replaceNPMReleaseOnce("npm-release-${{ github.repository }}-${{ github.event.release.tag_name }}", "npm-release-${{ github.repository }}")},
+		{name: "cancellation enabled", mutate: replaceNPMReleaseOnce("  cancel-in-progress: false\n", "  cancel-in-progress: true\n")},
+		{name: "package runner changed", mutate: replaceNPMReleaseOnce("  package:\n    runs-on: ubuntu-24.04\n", "  package:\n    runs-on: ubuntu-latest\n")},
+		{name: "package timeout changed", mutate: replaceNPMReleaseOnce("    timeout-minutes: 25\n", "    timeout-minutes: 26\n")},
+		{name: "package permission widened", mutate: replaceNPMReleaseOnce("    permissions:\n      contents: read\n", "    permissions:\n      contents: read\n      id-token: write\n")},
+		{name: "publish dependency changed", mutate: replaceNPMReleaseOnce("    needs: package\n", "    needs: unexpected\n")},
+		{name: "publish permission removed", mutate: replaceNPMReleaseOnce("      id-token: write\n", "      id-token: read\n")},
+		{name: "moving checkout", mutate: replaceNPMReleaseOnce(checkoutAction, "actions/checkout@v7")},
+		{name: "moving setup go", mutate: replaceNPMReleaseOnce(setupGoAction, "actions/setup-go@v7")},
+		{name: "moving setup node", mutate: replaceNPMReleaseOnce(setupNodeAction, "actions/setup-node@v7")},
+		{name: "moving upload", mutate: replaceNPMReleaseOnce(uploadArtifactAction, "actions/upload-artifact@v7")},
+		{name: "moving download", mutate: replaceNPMReleaseOnce(downloadArtifactAction, "actions/download-artifact@v8")},
+		{name: "checkout persists credentials", mutate: replaceNPMReleaseOnce("          persist-credentials: false\n", "          persist-credentials: true\n")},
+		{name: "wrong go version", mutate: replaceNPMReleaseOnce("          go-version: 1.26.5\n", "          go-version: latest\n")},
+		{name: "wrong node version", mutate: replaceNPMReleaseOnce("          node-version: \"24.13.0\"\n", "          node-version: latest\n")},
+		{name: "immutable guard removed", mutate: replaceNPMReleaseOnce("            (.immutable == true) and\n", "")},
+		{name: "repository authority changed", mutate: replaceNPMReleaseOnce("readonly repository=krkarma777/ai-cli-gateway", "readonly repository=attacker/ai-cli-gateway")},
+		{name: "canonical tag widened", mutate: replaceNPMReleaseOnce("test \"${EVENT_TAG}\" = v0.2.1", "[[ \"${EVENT_TAG}\" = v* ]]")},
+		{name: "asset allowlist weakened", mutate: replaceNPMReleaseOnce("          ai-cli-gateway_0.2.1_linux_arm64.tar.gz\n", "")},
+		{name: "asset digest weakened", mutate: replaceNPMReleaseOnce("^sha256:[0-9a-f]{64}$", "^sha256:")},
+		{name: "strict checksums removed", mutate: replaceNPMReleaseOnce("sha256sum --check --strict SHA256SUMS", "sha256sum --check SHA256SUMS")},
+		{name: "attestation predicate removed", mutate: replaceNPMReleaseOnce("              --predicate-type https://slsa.dev/provenance/v1 \\\n", "")},
+		{name: "attestation workflow changed", mutate: replaceNPMReleaseOnce("github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml", "github.com/attacker/workflow.yml")},
+		{name: "deterministic build flag removed", mutate: replaceNPMReleaseOnce("-trimpath -buildvcs=false -mod=readonly -ldflags", "-mod=readonly -ldflags")},
+		{name: "archive comparison removed", mutate: replaceNPMReleaseOnce("          test \"${actual_digest}\" = \"${expected_digest}\"\n", "")},
+		{name: "npm verifier removed", mutate: replaceNPMReleaseOnce("          node npm/scripts/verify-packages.js \\\n", "          true # node npm/scripts/verify-packages.js \\\n")},
+		{name: "linux execution removed", mutate: replaceNPMReleaseOnce("          test \"${version_output}\" = \"ai-cli-gateway ${TAG} (${TAG_COMMIT}, ${SOURCE_DATE})\"\n", "")},
+		{name: "artifact overwrite enabled", mutate: replaceNPMReleaseOnce("          overwrite: false\n", "          overwrite: true\n")},
+		{name: "artifact retention widened", mutate: replaceNPMReleaseOnce("          retention-days: 1\n", "          retention-days: 30\n")},
+		{name: "name based artifact download", mutate: replaceNPMReleaseOnce("          artifact-ids: ${{ needs.package.outputs.artifact_id }}\n", "          name: npm-packages-v0.2.1\n")},
+		{name: "artifact digest mismatch ignored", mutate: replaceNPMReleaseOnce("          digest-mismatch: error\n", "          digest-mismatch: ignore\n")},
+		{name: "raw artifact download decompressed", mutate: replaceNPMReleaseOnce("          skip-decompress: true\n", "          skip-decompress: false\n")},
+		{name: "raw artifact digest comparison removed", mutate: replaceNPMReleaseOnce("          test \"${actual_artifact_digest}\" = \"${EXPECTED_ARTIFACT_DIGEST}\"\n", "")},
+		{name: "downloaded descriptor lstat removed", mutate: replaceNPMReleaseOnce("          const descriptorMetadata = lstatSync(descriptorPath);\n", "")},
+		{name: "tarball rehash removed", mutate: replaceNPMReleaseOnce("            test \"${actual_integrity}\" = \"${integrities[${index}]}\"\n", "")},
+		{name: "structured E404 parser removed", mutate: replaceNPMReleaseOnce("          const failure = JSON.parse(readFileSync(process.argv[2], \"utf8\"));\n", "          const failure = { error: { code: \"E404\" } };\n")},
+		{name: "registry absence widened", mutate: replaceNPMReleaseOnce("grep -Fx 'npm error code E404'", "grep -F 'npm error'")},
+		{name: "publish scripts enabled", mutate: replaceNPMReleaseOnce("npm publish \"${tarball}\" --ignore-scripts --access public --provenance", "npm publish \"${tarball}\" --access public --provenance")},
+		{name: "publish provenance removed", mutate: replaceNPMReleaseOnce(" --access public --provenance", " --access public")},
+		{name: "launcher moved first", mutate: replaceNPMReleaseOnce("            ai-cli-gateway-darwin-x64\n", "            ai-cli-gateway\n")},
+		{name: "post publish SRI removed", mutate: replaceNPMReleaseOnce("            test \"${remote_integrity}\" = \"${integrities[${index}]}\"\n", "")},
+		{name: "bootstrap token renamed", mutate: replaceNPMReleaseOnce("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n", "          NODE_AUTH_TOKEN: ${{ secrets.OTHER_TOKEN }}\n")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := test.mutate(document)
+			if mutated == document {
+				t.Fatal("mutation did not change npm release workflow")
+			}
+			workflow, err := parseClosedNPMReleaseWorkflow([]byte(mutated))
+			if err == nil {
+				err = validateNPMReleaseWorkflowContract(workflow)
+			}
+			if err == nil {
+				t.Fatal("closed npm release contract accepted mutation")
+			}
+		})
+	}
+}
+
+func replaceNPMReleaseOnce(old, replacement string) func(string) string {
+	return func(document string) string {
+		return strings.Replace(document, old, replacement, 1)
+	}
+}
+
+func parseClosedNPMReleaseWorkflow(document []byte) (npmReleaseWorkflowDocument, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(document))
+	var root yaml.Node
+	if err := decoder.Decode(&root); err != nil {
+		return npmReleaseWorkflowDocument{}, fmt.Errorf("decode document: %w", err)
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return npmReleaseWorkflowDocument{}, errors.New("multiple YAML documents")
+		}
+		return npmReleaseWorkflowDocument{}, fmt.Errorf("decode trailing document: %w", err)
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) != 1 || root.Content[0].Kind != yaml.MappingNode || root.Content[0].Style&yaml.FlowStyle != 0 {
+		return npmReleaseWorkflowDocument{}, errors.New("npm release workflow must be one block mapping document")
+	}
+	if err := validateClosedNPMReleaseYAMLNode(&root); err != nil {
+		return npmReleaseWorkflowDocument{}, err
+	}
+	top, err := closedYAMLMapping(root.Content[0], "name", "on", "permissions", "concurrency", "jobs")
+	if err != nil {
+		return npmReleaseWorkflowDocument{}, fmt.Errorf("top level: %w", err)
+	}
+	if value, scalarErr := closedYAMLScalar(top["name"]); scalarErr != nil || value != "npm Release" {
+		return npmReleaseWorkflowDocument{}, fmt.Errorf("name must be npm Release: %w", scalarErr)
+	}
+	if err := validateNPMReleaseTrigger(top["on"]); err != nil {
+		return npmReleaseWorkflowDocument{}, err
+	}
+	permissions := top["permissions"]
+	if permissions.Kind != yaml.MappingNode || len(permissions.Content) != 0 || permissions.Style&yaml.FlowStyle == 0 {
+		return npmReleaseWorkflowDocument{}, errors.New("top-level permissions must be the explicit empty mapping")
+	}
+	if err := validateNPMReleaseConcurrency(top["concurrency"]); err != nil {
+		return npmReleaseWorkflowDocument{}, err
+	}
+	jobNodes, err := closedYAMLMapping(top["jobs"], "package", "publish")
+	if err != nil {
+		return npmReleaseWorkflowDocument{}, fmt.Errorf("jobs: %w", err)
+	}
+	jobs := make(map[string]releaseWorkflowJob, len(jobNodes))
+	for name, node := range jobNodes {
+		job, parseErr := parseNPMReleaseWorkflowJob(name, node)
+		if parseErr != nil {
+			return npmReleaseWorkflowDocument{}, fmt.Errorf("job %s: %w", name, parseErr)
+		}
+		jobs[name] = job
+	}
+	return npmReleaseWorkflowDocument{Root: &root, Jobs: jobs}, nil
+}
+
+func validateClosedNPMReleaseYAMLNode(node *yaml.Node) error {
+	if node == nil {
+		return errors.New("nil YAML node")
+	}
+	if node.Anchor != "" || node.Alias != nil || node.Kind == yaml.AliasNode {
+		return errors.New("anchors and aliases are forbidden")
+	}
+	if node.Style&yaml.TaggedStyle != 0 {
+		return errors.New("explicit YAML tags are forbidden")
+	}
+	if node.Kind == yaml.SequenceNode && node.Style&yaml.FlowStyle != 0 {
+		return errors.New("flow-style sequences are forbidden")
+	}
+	if node.Kind == yaml.MappingNode && node.Style&yaml.FlowStyle != 0 && len(node.Content) != 0 {
+		return errors.New("nonempty flow-style mappings are forbidden")
+	}
+	switch node.Kind {
+	case yaml.DocumentNode:
+		if node.ShortTag() != "!!null" && node.Tag != "" {
+			return fmt.Errorf("unsupported document tag %q", node.Tag)
+		}
+	case yaml.MappingNode:
+		if node.ShortTag() != "!!map" || len(node.Content)%2 != 0 {
+			return errors.New("invalid mapping node")
+		}
+		seen := make(map[string]struct{}, len(node.Content)/2)
+		for index := 0; index < len(node.Content); index += 2 {
+			key := node.Content[index]
+			if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" || key.Style&yaml.TaggedStyle != 0 || key.Value == "<<" {
+				return errors.New("mapping key must be an implicitly tagged non-merge string")
+			}
+			if _, duplicate := seen[key.Value]; duplicate {
+				return fmt.Errorf("duplicate mapping key %q", key.Value)
+			}
+			seen[key.Value] = struct{}{}
+		}
+	case yaml.SequenceNode:
+		if node.ShortTag() != "!!seq" {
+			return fmt.Errorf("sequence tag = %q", node.ShortTag())
+		}
+	case yaml.ScalarNode:
+		switch node.ShortTag() {
+		case "!!str", "!!int", "!!bool", "!!null", "!!float":
+		default:
+			return fmt.Errorf("unsupported implicit scalar tag %q", node.ShortTag())
+		}
+	default:
+		return fmt.Errorf("unsupported YAML node kind %d", node.Kind)
+	}
+	for _, child := range node.Content {
+		if err := validateClosedNPMReleaseYAMLNode(child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNPMReleaseTrigger(node *yaml.Node) error {
+	trigger, err := closedYAMLMapping(node, "release")
+	if err != nil {
+		return fmt.Errorf("trigger: %w", err)
+	}
+	release, err := closedYAMLMapping(trigger["release"], "types")
+	if err != nil {
+		return fmt.Errorf("release trigger: %w", err)
+	}
+	types := release["types"]
+	if types.Kind != yaml.SequenceNode || len(types.Content) != 1 {
+		return errors.New("npm release trigger must have one release type")
+	}
+	value, err := closedYAMLScalar(types.Content[0])
+	if err != nil || value != "published" {
+		return errors.New("npm release trigger must be only published")
+	}
+	return nil
+}
+
+func validateNPMReleaseConcurrency(node *yaml.Node) error {
+	concurrency, err := closedYAMLScalarMap(node, "group", "cancel-in-progress")
+	if err != nil {
+		return fmt.Errorf("concurrency: %w", err)
+	}
+	want := map[string]string{
+		"group":              "npm-release-${{ github.repository }}-${{ github.event.release.tag_name }}",
+		"cancel-in-progress": "false",
+	}
+	if !reflect.DeepEqual(concurrency, want) {
+		return fmt.Errorf("npm release concurrency = %v, want %v", concurrency, want)
+	}
+	return nil
+}
+
+func parseNPMReleaseWorkflowJob(name string, node *yaml.Node) (releaseWorkflowJob, error) {
+	allowed := []string{"runs-on", "timeout-minutes", "permissions", "steps"}
+	if name == "package" {
+		allowed = append(allowed, "outputs")
+	} else if name == "publish" {
+		allowed = append(allowed, "needs")
+	} else {
+		return releaseWorkflowJob{}, fmt.Errorf("unexpected job %q", name)
+	}
+	fields, err := closedYAMLMapping(node, allowed...)
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	job := releaseWorkflowJob{}
+	job.RunsOn, err = closedYAMLScalar(fields["runs-on"])
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	job.Timeout, err = closedYAMLScalar(fields["timeout-minutes"])
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	if name == "publish" {
+		job.Needs, err = closedYAMLStringOrSequence(fields["needs"])
+		if err != nil {
+			return releaseWorkflowJob{}, err
+		}
+	}
+	permissionKeys := map[string][]string{
+		"package": {"contents"},
+		"publish": {"contents", "id-token"},
+	}
+	job.Permissions, err = closedYAMLScalarMap(fields["permissions"], permissionKeys[name]...)
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	if name == "package" {
+		job.Outputs, err = closedYAMLScalarMap(fields["outputs"], "artifact_id", "artifact_digest")
+		if err != nil {
+			return releaseWorkflowJob{}, err
+		}
+	}
+	job.Steps, err = parseReleaseWorkflowSteps(fields["steps"])
+	return job, err
+}
+
+func validateNPMReleaseWorkflowContract(workflow npmReleaseWorkflowDocument) error {
+	packageJob := workflow.Jobs["package"]
+	publishJob := workflow.Jobs["publish"]
+	if packageJob.RunsOn != "ubuntu-24.04" || packageJob.Timeout != "25" || len(packageJob.Needs) != 0 ||
+		publishJob.RunsOn != "ubuntu-24.04" || publishJob.Timeout != "10" || !reflect.DeepEqual(publishJob.Needs, []string{"package"}) {
+		return errors.New("npm release runners, timeouts, or dependency graph differ from the closed contract")
+	}
+	if !reflect.DeepEqual(packageJob.Permissions, map[string]string{"contents": "read"}) ||
+		!reflect.DeepEqual(publishJob.Permissions, map[string]string{"contents": "read", "id-token": "write"}) {
+		return errors.New("npm release split-authority permissions differ from the closed contract")
+	}
+	wantOutputs := map[string]string{
+		"artifact_id":     "${{ steps.artifact-metadata.outputs.artifact_id }}",
+		"artifact_digest": "${{ steps.artifact-metadata.outputs.artifact_digest }}",
+	}
+	if !reflect.DeepEqual(packageJob.Outputs, wantOutputs) {
+		return fmt.Errorf("npm package outputs = %v, want %v", packageJob.Outputs, wantOutputs)
+	}
+	if err := validateNPMReleaseActions(packageJob, publishJob); err != nil {
+		return err
+	}
+	if err := validateNPMReleaseStepShapes(packageJob, publishJob); err != nil {
+		return err
+	}
+	if err := validateNPMReleaseArtifactDigestContract(publishJob); err != nil {
+		return err
+	}
+	if err := validateNPMReleaseCohortAndE404Contracts(publishJob); err != nil {
+		return err
+	}
+	return validateNPMReleaseRunHashes(packageJob, publishJob)
+}
+
+func validateNPMReleaseArtifactDigestContract(publishJob releaseWorkflowJob) error {
+	validation, err := namedReleaseStep(publishJob.Steps, "Validate and extract npm artifact")
+	if err != nil {
+		return err
+	}
+	markers := []string{
+		`readonly archive_root="${RUNNER_TEMP}/npm-artifact-archive"`,
+		`readonly package_root="${RUNNER_TEMP}/npm-packages"`,
+		`[[ "${EXPECTED_ARTIFACT_DIGEST}" =~ ^[0-9a-f]{64}$ ]]`,
+		`actual_artifact_digest="$(sha256sum -- "${artifact_archive}" | awk '{print $1}')"`,
+		`test "${actual_artifact_digest}" = "${EXPECTED_ARTIFACT_DIGEST}"`,
+		`actual_entries="$(unzip -Z1 "${artifact_archive}" | LC_ALL=C sort)"`,
+		`test "${actual_entries}" = "${expected_entries}"`,
+		`unzip -q "${artifact_archive}" -d "${package_root}"`,
+		`test "${extracted_entries}" = "${expected_entries}"`,
+	}
+	if err := requireOrderedMarkers(validation.Run, markers...); err != nil {
+		return fmt.Errorf("npm artifact digest/extraction order: %w", err)
+	}
+	return nil
+}
+
+func validateNPMReleaseCohortAndE404Contracts(publishJob releaseWorkflowJob) error {
+	publish, err := namedReleaseStep(publishJob.Steps, "Publish verified npm packages")
+	if err != nil {
+		return err
+	}
+	for _, required := range []string{
+		`const descriptorPath = path.join(root, "packages.json");`,
+		`const descriptorMetadata = lstatSync(descriptorPath);`,
+		`!descriptorMetadata.isFile() || descriptorMetadata.isSymbolicLink() || descriptorMetadata.nlink !== 1`,
+		`const failure = JSON.parse(readFileSync(process.argv[2], "utf8"));`,
+		`JSON.stringify(Object.keys(failure)) !== JSON.stringify(["error"])`,
+		`JSON.stringify(Object.keys(failure.error).sort()) !== JSON.stringify(["code", "detail", "summary"])`,
+		`failure.error.code !== "E404"`,
+		`grep -Fx 'npm error code E404'`,
+	} {
+		if !strings.Contains(publish.Run, required) {
+			return fmt.Errorf("npm publication cohort/E404 contract is missing %q", required)
+		}
+	}
+	return nil
+}
+
+func validateNPMReleaseActions(packageJob, publishJob releaseWorkflowJob) error {
+	wantCounts := map[string]int{
+		checkoutAction: 1, setupGoAction: 1, setupNodeAction: 2,
+		uploadArtifactAction: 1, downloadArtifactAction: 1,
+	}
+	gotCounts := make(map[string]int)
+	for _, job := range []releaseWorkflowJob{packageJob, publishJob} {
+		for _, step := range job.Steps {
+			if step.Uses == "" {
+				continue
+			}
+			if _, allowed := wantCounts[step.Uses]; !allowed {
+				return fmt.Errorf("npm release uses unlisted action %q", step.Uses)
+			}
+			gotCounts[step.Uses]++
+		}
+	}
+	if !reflect.DeepEqual(gotCounts, wantCounts) {
+		return fmt.Errorf("npm release actions = %v, want %v", gotCounts, wantCounts)
+	}
+	if len(packageJob.Steps) != 11 || len(publishJob.Steps) != 5 {
+		return fmt.Errorf("npm release step counts package=%d publish=%d", len(packageJob.Steps), len(publishJob.Steps))
+	}
+	if !reflect.DeepEqual(packageJob.Steps[1].With, map[string]string{
+		"persist-credentials": "false", "fetch-depth": "0", "ref": "${{ steps.metadata.outputs.tag_commit }}",
+	}) || !reflect.DeepEqual(packageJob.Steps[2].With, map[string]string{"go-version": "1.26.5", "cache": "false"}) ||
+		!reflect.DeepEqual(packageJob.Steps[3].With, map[string]string{"node-version": "24.13.0", "package-manager-cache": "false"}) {
+		return errors.New("npm package checkout or tool setup inputs differ from the closed contract")
+	}
+	if !reflect.DeepEqual(publishJob.Steps[0].With, map[string]string{
+		"node-version": "24.13.0", "package-manager-cache": "false", "registry-url": "https://registry.npmjs.org/",
+	}) {
+		return errors.New("npm publish setup-node inputs differ from the closed contract")
+	}
+	upload := packageJob.Steps[9]
+	wantUploadPath := strings.Join([]string{
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-darwin-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-darwin-arm64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-linux-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-linux-arm64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-win32-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/packages.json",
+	}, "\n") + "\n"
+	if upload.ID != "upload" || !reflect.DeepEqual(upload.With, map[string]string{
+		"name": "npm-packages-v0.2.1", "path": wantUploadPath, "overwrite": "false",
+		"if-no-files-found": "error", "include-hidden-files": "false", "compression-level": "0", "retention-days": "1",
+	}) {
+		return fmt.Errorf("npm artifact upload inputs differ from the closed contract: %+v", upload)
+	}
+	download := publishJob.Steps[2]
+	if !reflect.DeepEqual(download.With, map[string]string{
+		"artifact-ids":    "${{ needs.package.outputs.artifact_id }}",
+		"path":            "${{ runner.temp }}/npm-artifact-archive",
+		"digest-mismatch": "error",
+		"skip-decompress": "true",
+	}) {
+		return fmt.Errorf("npm artifact download inputs differ from the closed contract: %v", download.With)
+	}
+	return nil
+}
+
+func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) error {
+	type shape struct {
+		name, id, uses, shell string
+		env                   map[string]string
+	}
+	wantPackage := []shape{
+		{name: "Validate immutable release metadata", id: "metadata", shell: "bash", env: map[string]string{
+			"GH_TOKEN": "${{ github.token }}", "EVENT_ACTION": "${{ github.event.action }}", "EVENT_REPOSITORY": "${{ github.repository }}",
+			"EVENT_RELEASE_ID": "${{ github.event.release.id }}", "EVENT_TAG": "${{ github.event.release.tag_name }}",
+			"EVENT_DRAFT": "${{ github.event.release.draft }}", "EVENT_PRERELEASE": "${{ github.event.release.prerelease }}",
+		}},
+		{uses: checkoutAction},
+		{uses: setupGoAction},
+		{uses: setupNodeAction},
+		{name: "Validate toolchain and source", shell: "bash", env: map[string]string{
+			"TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
+		}},
+		{name: "Download and verify immutable release assets", shell: "bash", env: map[string]string{
+			"GH_TOKEN": "${{ github.token }}", "TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
+		}},
+		{name: "Rebuild and compare release archives", id: "build-metadata", shell: "bash", env: map[string]string{
+			"TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
+		}},
+		{name: "Stage and inspect npm packages", shell: "bash", env: map[string]string{"VERSION": "${{ steps.metadata.outputs.version }}"}},
+		{name: "Install and execute Linux x64 package", shell: "bash", env: map[string]string{
+			"TAG": "${{ steps.metadata.outputs.tag }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}", "SOURCE_DATE": "${{ steps.build-metadata.outputs.source_date }}",
+		}},
+		{name: "Upload verified npm packages", id: "upload", uses: uploadArtifactAction},
+		{name: "Validate artifact outputs", id: "artifact-metadata", shell: "bash", env: map[string]string{
+			"RAW_ARTIFACT_ID": "${{ steps.upload.outputs.artifact-id }}", "RAW_ARTIFACT_DIGEST": "${{ steps.upload.outputs.artifact-digest }}",
+		}},
+	}
+	wantPublish := []shape{
+		{uses: setupNodeAction},
+		{name: "Validate artifact identity", shell: "bash", env: map[string]string{
+			"EXPECTED_ARTIFACT_ID": "${{ needs.package.outputs.artifact_id }}", "EXPECTED_ARTIFACT_DIGEST": "${{ needs.package.outputs.artifact_digest }}",
+		}},
+		{name: "Download verified npm packages", uses: downloadArtifactAction},
+		{name: "Validate and extract npm artifact", shell: "bash", env: map[string]string{
+			"EXPECTED_ARTIFACT_DIGEST": "${{ needs.package.outputs.artifact_digest }}",
+		}},
+		{name: "Publish verified npm packages", shell: "bash", env: map[string]string{
+			"NODE_AUTH_TOKEN": "${{ secrets.NPM_TOKEN }}", "EXPECTED_ARTIFACT_DIGEST": "${{ needs.package.outputs.artifact_digest }}",
+			"NPM_CONFIG_REGISTRY": "https://registry.npmjs.org/",
+		}},
+	}
+	validate := func(label string, steps []releaseWorkflowStep, wants []shape) error {
+		if len(steps) != len(wants) {
+			return fmt.Errorf("%s step count = %d, want %d", label, len(steps), len(wants))
+		}
+		for index, want := range wants {
+			got := steps[index]
+			if got.Name != want.name || got.ID != want.id || got.Uses != want.uses || got.Shell != want.shell || !reflect.DeepEqual(got.Env, want.env) {
+				return fmt.Errorf("%s step %d shape = %+v, want %+v", label, index, got, want)
+			}
+			if (got.Uses == "") == (got.Run == "") {
+				return fmt.Errorf("%s step %d does not have one execution form", label, index)
+			}
+			if got.Run != "" && len(got.With) != 0 {
+				return fmt.Errorf("%s run step %d has unexpected with inputs", label, index)
+			}
+		}
+		return nil
+	}
+	if err := validate("package", packageJob.Steps, wantPackage); err != nil {
+		return err
+	}
+	return validate("publish", publishJob.Steps, wantPublish)
+}
+
+func validateNPMReleaseRunHashes(packageJob, publishJob releaseWorkflowJob) error {
+	want := map[string]string{
+		"package/Validate immutable release metadata":          "adbdec70d8ed9440db1929aafc6ad19447f40105799c71a9475f3105b16cda77",
+		"package/Validate toolchain and source":                "631712fb03df18ac2a9572c46e11d4c769477aa60f9d1a96fcee3fb3627770ad",
+		"package/Download and verify immutable release assets": "63da1cd453591d8674f6e4d04bbde51b886f0e8a7b182a3c30e8ad31fce79120",
+		"package/Rebuild and compare release archives":         "a29e7f9ab62446c35ba3ffce2606e723b5eb492b54afa15a0ec3fb1e3e8612d9",
+		"package/Stage and inspect npm packages":               "8e9c66f39ec4ff6eaf541c414556bd22264707c12ccea2e23f7e701142c52726",
+		"package/Install and execute Linux x64 package":        "5f996fe5f6443404603107fe2e49e621fec165b9620db86b570d459c760be4e4",
+		"package/Validate artifact outputs":                    "6c1898c6abdc07af87012ddd3cbb076ffb6998f0a351ee17a0f9cf2378f37bc3",
+		"publish/Validate artifact identity":                   "fe060a961e6dbcddee8a6e7a84987c841c2fde0f9a618448fc3560b07a41a262",
+		"publish/Validate and extract npm artifact":            "627bfa6ce348696aa11792e517f1757f37de235bb806744ec6be2abc22d0a9d6",
+		"publish/Publish verified npm packages":                "bf40d47e14a5b60cecf8bf8f51bb5043671a8a691d8bd25c5004067f18dd4ded",
+	}
+	for label, job := range map[string]releaseWorkflowJob{"package": packageJob, "publish": publishJob} {
+		for _, step := range job.Steps {
+			if step.Run == "" {
+				continue
+			}
+			key := label + "/" + step.Name
+			digest, ok := want[key]
+			if !ok {
+				return fmt.Errorf("unexpected npm release run step %q", key)
+			}
+			if err := requireExactTextSHA256("decoded npm release step "+key, step.Run, digest); err != nil {
+				return err
+			}
+			delete(want, key)
+		}
+	}
+	if len(want) != 0 {
+		return fmt.Errorf("missing npm release run steps %v", reflect.ValueOf(want).MapKeys())
+	}
+	return nil
+}
+
 func TestReleaseWorkflowContract(t *testing.T) {
 	document := readRepositoryFile(t, ".github/workflows/release.yml")
 	workflow, err := parseClosedReleaseWorkflow(document)
@@ -6641,7 +7193,7 @@ func TestWorkflowActionlintIsolationScript(t *testing.T) {
 	if calls := readFakeGHCalls(t, filepath.Join(actionlintRoot, "actionlint.argv")); !reflect.DeepEqual(calls, [][]string{
 		{"-version"},
 		{"-help"},
-		{"-config-file", filepath.Join(actionlintRoot, "config", "actionlint.yaml"), "-shellcheck=", "-pyflakes=", "-no-color", ".github/workflows/ci.yml", ".github/workflows/release.yml"},
+		{"-config-file", filepath.Join(actionlintRoot, "config", "actionlint.yaml"), "-shellcheck=", "-pyflakes=", "-no-color", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/npm-release.yml"},
 	}) {
 		t.Fatalf("actionlint argv trace = %q", calls)
 	}
@@ -9143,6 +9695,36 @@ func TestSecretAssignmentPlaceholderAllowlist(t *testing.T) {
 	}
 }
 
+func TestNPMBootstrapSecretPlaceholderAllowlist(t *testing.T) {
+	const workflowPath = ".github/workflows/npm-release.yml"
+	const assignment = "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n"
+
+	allowedRoot := t.TempDir()
+	writeFixtureFile(t, allowedRoot, workflowPath, []byte(assignment))
+	if err := scanRepository(allowedRoot); err != nil {
+		t.Fatalf("exact npm bootstrap secret placeholder was rejected: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		relative string
+		contents string
+	}{
+		{name: "other path", relative: ".github/workflows/other.yml", contents: assignment},
+		{name: "other key", relative: workflowPath, contents: "NPM_TOKEN: ${{ secrets.NPM_TOKEN }}\n"},
+		{name: "other secret", relative: workflowPath, contents: "NODE_AUTH_TOKEN: ${{ secrets.OTHER_TOKEN }}\n"},
+		{name: "concrete token", relative: workflowPath, contents: "NODE_AUTH_TOKEN: actual-value\n"},
+		{name: "suffix", relative: workflowPath, contents: "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}suffix\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFixtureFile(t, root, test.relative, []byte(test.contents))
+			assertFinding(t, scanRepository(root), "secret_assignment", test.relative)
+		})
+	}
+}
+
 func TestScannerRejectsSecretAssignmentSyntaxes(t *testing.T) {
 	assignments := []string{
 		"OPENAI_" + "API_KEY=actual-value\n",
@@ -9749,11 +10331,20 @@ func hasSecretAssignment(relative string, contents []byte) bool {
 	uppercaseOnly := extension == ".go"
 	for _, line := range strings.Split(string(contents), "\n") {
 		key, value, ok := splitSecretAssignment(line, allowQuotedKey)
-		if ok && (!uppercaseOnly || key == strings.ToUpper(key)) && isSecretName(key) && !isAllowedPlaceholder(value) {
+		if ok && (!uppercaseOnly || key == strings.ToUpper(key)) && isSecretName(key) && !isAllowedSecretAssignmentPlaceholder(relative, key, value) {
 			return true
 		}
 	}
 	return false
+}
+
+func isAllowedSecretAssignmentPlaceholder(relative, key, value string) bool {
+	if isAllowedPlaceholder(value) {
+		return true
+	}
+	return filepath.ToSlash(relative) == ".github/workflows/npm-release.yml" &&
+		strings.TrimSpace(key) == "NODE_AUTH_TOKEN" &&
+		strings.TrimSpace(value) == "${{ secrets.NPM_TOKEN }}"
 }
 
 func splitSecretAssignment(line string, allowQuotedKey bool) (string, string, bool) {

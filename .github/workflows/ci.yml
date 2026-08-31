@@ -189,7 +189,7 @@ jobs:
           run_clean_actionlint \
             -config-file "${ACTIONLINT_ROOT}/config/actionlint.yaml" \
             -shellcheck= -pyflakes= -no-color \
-            .github/workflows/ci.yml .github/workflows/release.yml
+            .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/npm-release.yml
       - name: Check formatting
         shell: bash
         run: |
