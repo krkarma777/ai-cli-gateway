@@ -1,18 +1,21 @@
 import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { constants } from "node:fs";
+import { createHash } from "node:crypto";
 import {
-  chmod,
-  link,
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  readdirSync,
+} from "node:fs";
+import {
   lstat,
   mkdir,
   mkdtemp,
   open,
   readdir,
   realpath,
-  rm,
-  unlink,
-  writeFile,
 } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -219,9 +222,11 @@ async function exactTree(root, expectedFiles) {
   const files = [];
   const directories = [];
   const directoryMetadata = new Map();
-  async function visit(directory, prefix = "") {
+  async function visit(directory, prefix = "", observedByParent) {
     const before = await lstat(directory, { bigint: true });
     if (
+      (observedByParent !== undefined &&
+        !sameDirectory(observedByParent, before)) ||
       before.isSymbolicLink() ||
       !before.isDirectory() ||
       !ownedByCurrentUser(before)
@@ -239,7 +244,7 @@ async function exactTree(root, expectedFiles) {
       }
       if (metadata.isDirectory()) {
         directories.push(relative);
-        await visit(filename, relative);
+        await visit(filename, relative, metadata);
       } else if (metadata.isFile()) {
         if (metadata.nlink !== 1n) {
           throw verificationError();
@@ -259,7 +264,7 @@ async function exactTree(root, expectedFiles) {
     }
     directoryMetadata.set(prefix, after);
   }
-  await visit(root);
+  await visit(root, "", rootBefore);
   const rootAfter = await lstat(root, { bigint: true });
   if (
     !sameDirectory(rootBefore, rootAfter) ||
@@ -423,6 +428,7 @@ function packageModes(target) {
 async function validatePackageRoot(packageRoot, target, version) {
   const files = packageFiles(target);
   const metadata = await exactTree(packageRoot, files);
+  metadata.contentDigests = new Map();
   for (const [filename, expectedMode] of packageModes(target)) {
     requireMode(metadata.files.get(filename), expectedMode);
   }
@@ -470,10 +476,24 @@ async function validatePackageRoot(packageRoot, target, version) {
       throw verificationError();
     }
   } else {
-    const binary = metadata.files.get(`bin/${target.executable}`);
-    if (binary.size === 0n) {
+    const relative = `bin/${target.executable}`;
+    const binary = await stableRead(
+      path.join(packageRoot, "bin", target.executable),
+      metadata.files.get(relative),
+    );
+    if (binary.content.length === 0) {
       throw verificationError();
     }
+  }
+  for (const relative of files) {
+    const file = await stableRead(
+      path.join(packageRoot, ...relative.split("/")),
+      metadata.files.get(relative),
+    );
+    metadata.contentDigests.set(
+      relative,
+      createHash("sha512").update(file.content).digest("hex"),
+    );
   }
   return metadata;
 }
@@ -592,6 +612,7 @@ async function validateSource(repositoryRoot, version) {
       ],
       metadata: await validateSourcePackageRoot(launcherRoot, undefined, version),
       root: launcherRoot,
+      target: undefined,
     },
   ];
   for (const target of TARGETS) {
@@ -600,6 +621,7 @@ async function validateSource(repositoryRoot, version) {
       files: ["README.md", "package.json"],
       metadata: await validateSourcePackageRoot(packageRoot, target, version),
       root: packageRoot,
+      target,
     });
   }
 
@@ -616,7 +638,11 @@ async function validateSource(repositoryRoot, version) {
     await assertDirectoryStable(directory, expected);
   }
   for (const snapshot of packageSnapshots) {
-    const current = await exactTree(snapshot.root, snapshot.files);
+    const current = await validateSourcePackageRoot(
+      snapshot.root,
+      snapshot.target,
+      version,
+    );
     if (!samePackageMetadata(snapshot.metadata, current)) {
       throw verificationError();
     }
@@ -713,49 +739,183 @@ async function programmaticNpmInvocation(npmExecutable, npmArguments) {
 
 async function createNpmHome(tarballRoot) {
   const parent = path.dirname(tarballRoot);
-  const root = await mkdtemp(path.join(parent, ".npm-pack-home-"));
-  const identity = await lstat(root, { bigint: true });
+  const parentIdentity = await canonicalDirectory(parent);
+  let root;
   try {
-    await chmod(root, 0o700);
-    const secured = await lstat(root, { bigint: true });
-    if (
-      !sameNode(identity, secured) ||
-      secured.isSymbolicLink() ||
-      !secured.isDirectory() ||
-      !ownedByCurrentUser(secured) ||
-      (process.platform !== "win32" && (secured.mode & 0o077n) !== 0n)
-    ) {
-      throw verificationError();
-    }
+    root = await mkdtemp(path.join(parent, ".npm-pack-home-"));
+    const identity = await secureNpmDirectory(root);
     const temporary = path.join(root, "tmp");
     const cache = path.join(root, "cache");
     const logs = path.join(root, "logs");
-    await Promise.all([
-      mkdir(temporary, { mode: 0o700 }),
-      mkdir(cache, { mode: 0o700 }),
-      mkdir(logs, { mode: 0o700 }),
-    ]);
+    const directoryIdentities = new Map([[root, identity]]);
+    for (const directory of [temporary, cache, logs]) {
+      await mkdir(directory, { mode: 0o700 });
+      directoryIdentities.set(directory, await secureNpmDirectory(directory));
+    }
     const userConfig = path.join(root, "user.npmrc");
     const globalConfig = path.join(root, "global.npmrc");
-    await Promise.all([
-      writeFile(userConfig, "", { flag: "wx", mode: 0o600 }),
-      writeFile(globalConfig, "", { flag: "wx", mode: 0o600 }),
-    ]);
-    return {
+    const fileIdentities = new Map();
+    for (const filename of [userConfig, globalConfig]) {
+      fileIdentities.set(filename, await createEmptyNpmConfig(filename));
+    }
+    const home = {
       cache,
+      directoryIdentities,
+      fileIdentities,
       globalConfig,
-      identity: secured,
+      identity,
       logs,
+      parent,
+      parentIdentity,
       root,
       temporary,
       userConfig,
     };
+    await assertNpmHomeStable(home);
+    return home;
   } catch {
-    try {
-      await removeOwnedDirectory(root, identity);
-    } catch {
-      // Cleanup failures do not disclose paths or alter the fixed failure.
+    throw verificationError();
+  }
+}
+
+async function secureNpmDirectory(directory) {
+  const acquired = await lstat(directory, { bigint: true });
+  const handle = await open(
+    directory,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (
+      !sameNode(acquired, opened) ||
+      opened.isSymbolicLink() ||
+      !opened.isDirectory() ||
+      !ownedByCurrentUser(opened)
+    ) {
+      throw verificationError();
     }
+    await handle.chmod(0o700);
+    const secured = await handle.stat({ bigint: true });
+    const pathAfter = await lstat(directory, { bigint: true });
+    if (
+      !sameNode(opened, secured) ||
+      !sameNode(secured, pathAfter) ||
+      pathAfter.isSymbolicLink() ||
+      !pathAfter.isDirectory() ||
+      !ownedByCurrentUser(pathAfter) ||
+      (process.platform !== "win32" &&
+        Number(pathAfter.mode & 0o777n) !== 0o700) ||
+      (await realpath(directory)) !== directory
+    ) {
+      throw verificationError();
+    }
+    return pathAfter;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function createEmptyNpmConfig(filename) {
+  const handle = await open(
+    filename,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+    0o600,
+  );
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (
+      opened.isSymbolicLink() ||
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      !ownedByCurrentUser(opened)
+    ) {
+      throw verificationError();
+    }
+    await handle.chmod(0o600);
+    await handle.sync();
+    const secured = await handle.stat({ bigint: true });
+    const pathAfter = await lstat(filename, { bigint: true });
+    if (
+      !sameFile(opened, secured) ||
+      !sameFile(secured, pathAfter) ||
+      pathAfter.size !== 0n ||
+      pathAfter.isSymbolicLink() ||
+      !ownedByCurrentUser(pathAfter) ||
+      (process.platform !== "win32" &&
+        Number(pathAfter.mode & 0o777n) !== 0o600) ||
+      (await realpath(filename)) !== filename
+    ) {
+      throw verificationError();
+    }
+    return pathAfter;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function assertNpmHomeStable(home) {
+  const parentBefore = await lstat(home.parent, { bigint: true });
+  if (
+    !sameNode(home.parentIdentity, parentBefore) ||
+    parentBefore.isSymbolicLink() ||
+    !parentBefore.isDirectory() ||
+    !ownedByCurrentUser(parentBefore)
+  ) {
+    throw verificationError();
+  }
+  const rootBefore = await lstat(home.root, { bigint: true });
+  if (
+    !sameNode(home.identity, rootBefore) ||
+    rootBefore.isSymbolicLink() ||
+    !rootBefore.isDirectory() ||
+    !ownedByCurrentUser(rootBefore) ||
+    (process.platform !== "win32" &&
+      Number(rootBefore.mode & 0o777n) !== 0o700) ||
+    (await realpath(home.root)) !== home.root ||
+    !isDeepStrictEqual(
+      codePointSort(await readdir(home.root)),
+      ["cache", "global.npmrc", "logs", "tmp", "user.npmrc"],
+    )
+  ) {
+    throw verificationError();
+  }
+  for (const directory of [home.temporary, home.cache, home.logs]) {
+    const expected = home.directoryIdentities.get(directory);
+    const current = await lstat(directory, { bigint: true });
+    if (
+      expected === undefined ||
+      !sameNode(expected, current) ||
+      current.isSymbolicLink() ||
+      !current.isDirectory() ||
+      !ownedByCurrentUser(current) ||
+      (process.platform !== "win32" &&
+        Number(current.mode & 0o777n) !== 0o700) ||
+      (await realpath(directory)) !== directory
+    ) {
+      throw verificationError();
+    }
+  }
+  for (const filename of [home.userConfig, home.globalConfig]) {
+    const expected = home.fileIdentities.get(filename);
+    const current = await stableRead(filename, expected);
+    if (
+      current.content.length !== 0 ||
+      (process.platform !== "win32" &&
+        Number(current.metadata.mode & 0o777n) !== 0o600)
+    ) {
+      throw verificationError();
+    }
+  }
+  const [rootAfter, parentAfter] = await Promise.all([
+    lstat(home.root, { bigint: true }),
+    lstat(home.parent, { bigint: true }),
+  ]);
+  if (
+    !sameNode(home.identity, rootAfter) ||
+    !sameNode(home.parentIdentity, parentAfter) ||
+    rootAfter.isSymbolicLink() ||
+    parentAfter.isSymbolicLink()
+  ) {
     throw verificationError();
   }
 }
@@ -781,19 +941,6 @@ function closedNpmEnvironment(home) {
     NPM_CONFIG_UPDATE_NOTIFIER: "false",
     NPM_CONFIG_USERCONFIG: home.userConfig,
   };
-}
-
-async function removeOwnedDirectory(root, identity) {
-  try {
-    const current = await lstat(root, { bigint: true });
-    if (sameNode(identity, current) && current.isDirectory() && !current.isSymbolicLink()) {
-      await rm(root, { force: true, recursive: true });
-    }
-  } catch (error) {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
-  }
 }
 
 function collectChild(child, timeoutMs) {
@@ -1053,7 +1200,8 @@ async function descriptorForRecord(
 function samePackageMetadata(before, after) {
   if (
     before.files.size !== after.files.size ||
-    before.directories.size !== after.directories.size
+    before.directories.size !== after.directories.size ||
+    (before.contentDigests?.size ?? 0) !== (after.contentDigests?.size ?? 0)
   ) {
     return false;
   }
@@ -1069,6 +1217,11 @@ function samePackageMetadata(before, after) {
       afterDirectory === undefined ||
       !sameDirectory(beforeDirectory, afterDirectory)
     ) {
+      return false;
+    }
+  }
+  for (const [filename, beforeDigest] of before.contentDigests ?? []) {
+    if (after.contentDigests?.get(filename) !== beforeDigest) {
       return false;
     }
   }
@@ -1102,60 +1255,25 @@ async function syncDirectory(directory) {
   }
 }
 
-async function removeOwnedFile(filename, identity) {
-  if (filename === undefined || identity === undefined) {
-    return;
-  }
-  try {
-    const current = await lstat(filename, { bigint: true });
-    if (sameNode(identity, current) && current.isFile() && !current.isSymbolicLink()) {
-      await unlink(filename);
-    }
-  } catch (error) {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
-  }
-}
-
 async function writeCanonicalDescriptor(descriptor, descriptors) {
   await assertAbsent(descriptor);
   const directory = path.dirname(descriptor);
   const serialized = Buffer.from(`${JSON.stringify(descriptors, null, 2)}\n`, "utf8");
-  let temporaryPath;
-  let temporaryIdentity;
-  let descriptorIdentity;
+  let handle;
   try {
-    let handle;
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      const candidate = path.join(
-        directory,
-        `.packages.json-${randomBytes(12).toString("hex")}.tmp`,
-      );
-      try {
-        handle = await open(
-          candidate,
-          constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
-          0o600,
-        );
-        temporaryPath = candidate;
-        break;
-      } catch (error) {
-        if (error?.code !== "EEXIST") {
-          throw error;
-        }
-      }
-    }
-    if (temporaryPath === undefined || handle === undefined) {
-      throw verificationError();
-    }
+    handle = await open(
+      descriptor,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      0o600,
+    );
+    let descriptorIdentity;
     try {
-      temporaryIdentity = await handle.stat({ bigint: true });
+      descriptorIdentity = await handle.stat({ bigint: true });
       if (
-        temporaryIdentity.isSymbolicLink() ||
-        !temporaryIdentity.isFile() ||
-        temporaryIdentity.nlink !== 1n ||
-        !ownedByCurrentUser(temporaryIdentity)
+        descriptorIdentity.isSymbolicLink() ||
+        !descriptorIdentity.isFile() ||
+        descriptorIdentity.nlink !== 1n ||
+        !ownedByCurrentUser(descriptorIdentity)
       ) {
         throw verificationError();
       }
@@ -1163,72 +1281,35 @@ async function writeCanonicalDescriptor(descriptor, descriptors) {
       await handle.chmod(0o644);
       await handle.sync();
       const completed = await handle.stat({ bigint: true });
-      if (!sameNode(temporaryIdentity, completed) || completed.nlink !== 1n) {
+      if (
+        !sameNode(descriptorIdentity, completed) ||
+        completed.size !== BigInt(serialized.length) ||
+        completed.nlink !== 1n
+      ) {
         throw verificationError();
       }
-      temporaryIdentity = completed;
+      const pathIdentity = await lstat(descriptor, { bigint: true });
+      if (
+        !sameFile(completed, pathIdentity) ||
+        pathIdentity.isSymbolicLink() ||
+        !ownedByCurrentUser(pathIdentity) ||
+        (process.platform !== "win32" &&
+          Number(pathIdentity.mode & 0o777n) !== 0o644) ||
+        (await realpath(descriptor)) !== descriptor
+      ) {
+        throw verificationError();
+      }
+      descriptorIdentity = pathIdentity;
     } finally {
       await handle.close();
     }
-    const completedIdentity = await lstat(temporaryPath, { bigint: true });
-    if (
-      !sameFile(temporaryIdentity, completedIdentity) ||
-      completedIdentity.isSymbolicLink() ||
-      !completedIdentity.isFile() ||
-      completedIdentity.nlink !== 1n ||
-      !ownedByCurrentUser(completedIdentity) ||
-      (process.platform !== "win32" &&
-        Number(completedIdentity.mode & 0o777n) !== 0o644)
-    ) {
-      throw verificationError();
-    }
-    temporaryIdentity = completedIdentity;
-    await link(temporaryPath, descriptor);
-    descriptorIdentity = await lstat(descriptor, { bigint: true });
-    const linkedTemporary = await lstat(temporaryPath, { bigint: true });
-    if (
-      !sameNode(temporaryIdentity, descriptorIdentity) ||
-      !sameNode(temporaryIdentity, linkedTemporary) ||
-      descriptorIdentity.size !== temporaryIdentity.size ||
-      descriptorIdentity.nlink !== 2n ||
-      linkedTemporary.nlink !== 2n ||
-      descriptorIdentity.isSymbolicLink() ||
-      !descriptorIdentity.isFile()
-    ) {
-      throw verificationError();
-    }
-    await unlink(temporaryPath);
-    temporaryPath = undefined;
-    temporaryIdentity = undefined;
-    const finalIdentity = await lstat(descriptor, { bigint: true });
-    if (
-      !sameNode(descriptorIdentity, finalIdentity) ||
-      finalIdentity.size !== descriptorIdentity.size ||
-      finalIdentity.nlink !== 1n ||
-      finalIdentity.isSymbolicLink() ||
-      !finalIdentity.isFile() ||
-      (await realpath(descriptor)) !== descriptor
-    ) {
-      throw verificationError();
-    }
-    descriptorIdentity = finalIdentity;
-    const finalContent = await stableRead(descriptor, finalIdentity);
+    const finalContent = await stableRead(descriptor, descriptorIdentity);
     if (!finalContent.content.equals(serialized)) {
       throw verificationError();
     }
     await syncDirectory(directory);
     return descriptorIdentity;
   } catch {
-    try {
-      await removeOwnedFile(descriptor, descriptorIdentity);
-    } catch {
-      // Cleanup failures do not disclose paths or alter the fixed failure.
-    }
-    try {
-      await removeOwnedFile(temporaryPath, temporaryIdentity);
-    } catch {
-      // Cleanup failures do not disclose paths or alter the fixed failure.
-    }
     throw verificationError();
   }
 }
@@ -1258,6 +1339,396 @@ async function revalidatePackages(packages, version) {
     );
     if (!samePackageMetadata(packageRecord.metadata, current)) {
       throw verificationError();
+    }
+  }
+}
+
+function synchronousMetadata(filename) {
+  return lstatSync(filename, { bigint: true });
+}
+
+function assertSynchronousDirectory(filename, expected, { privateRoot = false } = {}) {
+  const current = synchronousMetadata(filename);
+  if (
+    !sameNode(expected, current) ||
+    current.isSymbolicLink() ||
+    !current.isDirectory() ||
+    !ownedByCurrentUser(current) ||
+    (privateRoot &&
+      process.platform !== "win32" &&
+      Number(current.mode & 0o077n) !== 0)
+  ) {
+    throw verificationError();
+  }
+  return current;
+}
+
+function exactSynchronousEntries(directory, expectedEntries) {
+  const actual = codePointSort(readdirSync(directory));
+  const expected = codePointSort([...expectedEntries]);
+  if (!isDeepStrictEqual(actual, expected)) {
+    throw verificationError();
+  }
+}
+
+function openSynchronousCohortFile(filename, expected) {
+  const pathBefore = synchronousMetadata(filename);
+  if (
+    !sameFile(expected, pathBefore) ||
+    pathBefore.isSymbolicLink() ||
+    pathBefore.nlink !== 1n ||
+    !ownedByCurrentUser(pathBefore)
+  ) {
+    throw verificationError();
+  }
+  const fd = openSync(
+    filename,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    if (!sameFile(pathBefore, opened)) {
+      throw verificationError();
+    }
+    return { expected, fd, filename, opened };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+function assertSynchronousCohortFile(record) {
+  const [openedAfter, pathAfter] = [
+    fstatSync(record.fd, { bigint: true }),
+    synchronousMetadata(record.filename),
+  ];
+  if (
+    !sameFile(record.expected, openedAfter) ||
+    !sameFile(record.opened, openedAfter) ||
+    !sameFile(openedAfter, pathAfter) ||
+    pathAfter.isSymbolicLink() ||
+    pathAfter.nlink !== 1n ||
+    !ownedByCurrentUser(pathAfter)
+  ) {
+    throw verificationError();
+  }
+}
+
+function hashSynchronousCohortFile(record) {
+  if (
+    record.opened.size <= 0n ||
+    record.opened.size > BigInt(Number.MAX_SAFE_INTEGER)
+  ) {
+    throw verificationError();
+  }
+  const sha1 = createHash("sha1");
+  const sha512 = createHash("sha512");
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  let position = 0;
+  while (position < Number(record.opened.size)) {
+    const bytesRead = readSync(
+      record.fd,
+      buffer,
+      0,
+      Math.min(buffer.length, Number(record.opened.size) - position),
+      position,
+    );
+    if (bytesRead === 0) {
+      throw verificationError();
+    }
+    const chunk = buffer.subarray(0, bytesRead);
+    sha1.update(chunk);
+    sha512.update(chunk);
+    position += bytesRead;
+  }
+  assertSynchronousCohortFile(record);
+  return {
+    integrity: `sha512-${sha512.digest("base64")}`,
+    shasum: sha1.digest("hex"),
+    size: position,
+  };
+}
+
+function readSynchronousCohortFile(record) {
+  if (
+    record.opened.size < 0n ||
+    record.opened.size > BigInt(MAX_NPM_OUTPUT)
+  ) {
+    throw verificationError();
+  }
+  const content = Buffer.alloc(Number(record.opened.size));
+  let position = 0;
+  while (position < content.length) {
+    const bytesRead = readSync(
+      record.fd,
+      content,
+      position,
+      content.length - position,
+      position,
+    );
+    if (bytesRead === 0) {
+      throw verificationError();
+    }
+    position += bytesRead;
+  }
+  assertSynchronousCohortFile(record);
+  return content;
+}
+
+function sha512SynchronousPath(filename, expected) {
+  const record = openSynchronousCohortFile(filename, expected);
+  try {
+    const hash = createHash("sha512");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    while (position < Number(record.opened.size)) {
+      const bytesRead = readSync(
+        record.fd,
+        buffer,
+        0,
+        Math.min(buffer.length, Number(record.opened.size) - position),
+        position,
+      );
+      if (bytesRead === 0) {
+        throw verificationError();
+      }
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    assertSynchronousCohortFile(record);
+    return hash.digest("hex");
+  } finally {
+    closeSync(record.fd);
+  }
+}
+
+function expectedSynchronousChildren(metadata, prefix) {
+  const entries = new Set();
+  const remember = (relative) => {
+    if (relative === prefix) {
+      return;
+    }
+    const parent = path.posix.dirname(relative);
+    if ((parent === "." ? "" : parent) === prefix) {
+      entries.add(path.posix.basename(relative));
+    }
+  };
+  for (const relative of metadata.directories.keys()) {
+    remember(relative);
+  }
+  for (const relative of metadata.files.keys()) {
+    remember(relative);
+  }
+  return codePointSort([...entries]);
+}
+
+function assertSynchronousPackage(packageRecord, parentObserved) {
+  const modes = packageModes(packageRecord.target);
+  const visit = (directory, prefix, observedByParent) => {
+    const expectedDirectory = packageRecord.metadata.directories.get(prefix);
+    const before = synchronousMetadata(directory);
+    if (
+      expectedDirectory === undefined ||
+      !sameDirectory(expectedDirectory, before) ||
+      !sameDirectory(observedByParent, before) ||
+      before.isSymbolicLink() ||
+      !before.isDirectory() ||
+      !ownedByCurrentUser(before)
+    ) {
+      throw verificationError();
+    }
+    const entries = codePointSort(readdirSync(directory));
+    if (
+      !isDeepStrictEqual(
+        entries,
+        expectedSynchronousChildren(packageRecord.metadata, prefix),
+      )
+    ) {
+      throw verificationError();
+    }
+    for (const entry of entries) {
+      const relative = prefix === "" ? entry : `${prefix}/${entry}`;
+      const filename = path.join(directory, entry);
+      const observed = synchronousMetadata(filename);
+      const childDirectory = packageRecord.metadata.directories.get(relative);
+      if (childDirectory !== undefined) {
+        if (!sameDirectory(childDirectory, observed)) {
+          throw verificationError();
+        }
+        visit(filename, relative, observed);
+        continue;
+      }
+      const expectedFile = packageRecord.metadata.files.get(relative);
+      if (
+        expectedFile === undefined ||
+        !sameFile(expectedFile, observed) ||
+        observed.isSymbolicLink() ||
+        observed.nlink !== 1n ||
+        !ownedByCurrentUser(observed) ||
+        (process.platform !== "win32" &&
+          Number(observed.mode & 0o777n) !== modes.get(relative)) ||
+        sha512SynchronousPath(filename, expectedFile) !==
+          packageRecord.metadata.contentDigests.get(relative)
+      ) {
+        throw verificationError();
+      }
+    }
+    const after = synchronousMetadata(directory);
+    if (
+      !sameDirectory(before, after) ||
+      !sameDirectory(expectedDirectory, after) ||
+      after.isSymbolicLink() ||
+      !ownedByCurrentUser(after)
+    ) {
+      throw verificationError();
+    }
+  };
+  visit(packageRecord.root, "", parentObserved);
+}
+
+function assertSynchronousStaging(
+  stagingRoot,
+  stagingIdentity,
+  completionIdentity,
+  packages,
+) {
+  const before = assertSynchronousDirectory(stagingRoot, stagingIdentity, {
+    privateRoot: true,
+  });
+  exactSynchronousEntries(stagingRoot, [
+    ".complete",
+    ...packages.map(({ target }) => target?.key ?? "launcher"),
+  ]);
+  for (const packageRecord of packages) {
+    const observed = synchronousMetadata(packageRecord.root);
+    if (
+      !sameDirectory(packageRecord.metadata.directories.get(""), observed) ||
+      observed.isSymbolicLink() ||
+      !ownedByCurrentUser(observed)
+    ) {
+      throw verificationError();
+    }
+    assertSynchronousPackage(packageRecord, observed);
+  }
+  const markerPath = path.join(stagingRoot, ".complete");
+  const marker = openSynchronousCohortFile(markerPath, completionIdentity);
+  try {
+    if (
+      !readSynchronousCohortFile(marker).equals(COMPLETION_MARKER_CONTENT) ||
+      (process.platform !== "win32" &&
+        Number(marker.opened.mode & 0o777n) !== 0o644)
+    ) {
+      throw verificationError();
+    }
+  } finally {
+    closeSync(marker.fd);
+  }
+  exactSynchronousEntries(stagingRoot, [
+    ".complete",
+    ...packages.map(({ target }) => target?.key ?? "launcher"),
+  ]);
+  const after = assertSynchronousDirectory(stagingRoot, stagingIdentity, {
+    privateRoot: true,
+  });
+  if (!sameNode(before, after)) {
+    throw verificationError();
+  }
+}
+
+function finalSynchronousCohort({
+  completionIdentity,
+  descriptor,
+  descriptorIdentity,
+  descriptors,
+  packages,
+  stagingIdentity,
+  stagingRoot,
+  tarballIdentity,
+  tarballRoot,
+  tarballs,
+}) {
+  const expectedTarballEntries = [
+    ...descriptors.map(({ filename }) => filename),
+    "packages.json",
+  ];
+  const opened = [];
+  try {
+    assertSynchronousStaging(
+      stagingRoot,
+      stagingIdentity,
+      completionIdentity,
+      packages,
+    );
+    assertSynchronousDirectory(tarballRoot, tarballIdentity, {
+      privateRoot: true,
+    });
+    exactSynchronousEntries(tarballRoot, expectedTarballEntries);
+    for (const tarball of tarballs) {
+      opened.push({
+        descriptor: tarball.descriptor,
+        record: openSynchronousCohortFile(
+          path.join(tarballRoot, tarball.descriptor.filename),
+          tarball.identity,
+        ),
+        type: "tarball",
+      });
+    }
+    const descriptorRecord = openSynchronousCohortFile(
+      descriptor,
+      descriptorIdentity,
+    );
+    opened.push({ record: descriptorRecord, type: "descriptor" });
+    exactSynchronousEntries(tarballRoot, expectedTarballEntries);
+
+    for (const item of opened) {
+      if (item.type === "tarball") {
+        const hashes = hashSynchronousCohortFile(item.record);
+        if (
+          hashes.integrity !== item.descriptor.integrity ||
+          hashes.shasum !== item.descriptor.shasum ||
+          hashes.size !== item.descriptor.size
+        ) {
+          throw verificationError();
+        }
+      } else {
+        const expected = Buffer.from(
+          `${JSON.stringify(descriptors, null, 2)}\n`,
+          "utf8",
+        );
+        if (
+          !readSynchronousCohortFile(item.record).equals(expected) ||
+          (process.platform !== "win32" &&
+            Number(item.record.opened.mode & 0o777n) !== 0o644)
+        ) {
+          throw verificationError();
+        }
+      }
+    }
+
+    assertSynchronousStaging(
+      stagingRoot,
+      stagingIdentity,
+      completionIdentity,
+      packages,
+    );
+    assertSynchronousDirectory(tarballRoot, tarballIdentity, {
+      privateRoot: true,
+    });
+    exactSynchronousEntries(tarballRoot, expectedTarballEntries);
+    for (const item of opened) {
+      assertSynchronousCohortFile(item.record);
+    }
+  } finally {
+    let closeFailure;
+    for (let index = opened.length - 1; index >= 0; index -= 1) {
+      try {
+        closeSync(opened[index].record.fd);
+      } catch (error) {
+        closeFailure ??= error;
+      }
+    }
+    if (closeFailure !== undefined) {
+      throw closeFailure;
     }
   }
 }
@@ -1327,13 +1798,19 @@ async function packAndVerifyWithInvocation(options, suppliedInvocation) {
       const name = packageRecord.target?.packageName ?? LAUNCHER_NAME;
       const filename = expectedFilename(name, options.version);
       await assertAbsent(path.join(options.tarballRoot, filename));
-      const record = await executeNpmPack(
-        invocation,
-        packageRecord.root,
-        options.tarballRoot,
-        home,
-        timeoutMs,
-      );
+      await assertNpmHomeStable(home);
+      let record;
+      try {
+        record = await executeNpmPack(
+          invocation,
+          packageRecord.root,
+          options.tarballRoot,
+          home,
+          timeoutMs,
+        );
+      } finally {
+        await assertNpmHomeStable(home);
+      }
       const verified = await descriptorForRecord(
         record,
         packageRecord.target,
@@ -1377,8 +1854,7 @@ async function packAndVerifyWithInvocation(options, suppliedInvocation) {
       throw verificationError();
     }
 
-    await removeOwnedDirectory(home.root, home.identity);
-    home = undefined;
+    await assertNpmHomeStable(home);
     await revalidateTarballs(options.tarballRoot, tarballs);
     descriptorIdentity = await writeCanonicalDescriptor(
       options.descriptor,
@@ -1413,23 +1889,21 @@ async function packAndVerifyWithInvocation(options, suppliedInvocation) {
     ) {
       throw verificationError();
     }
-    descriptorIdentity = undefined;
+    await assertNpmHomeStable(home);
+    finalSynchronousCohort({
+      completionIdentity,
+      descriptor: options.descriptor,
+      descriptorIdentity,
+      descriptors,
+      packages,
+      stagingIdentity,
+      stagingRoot: options.stagingRoot,
+      tarballIdentity,
+      tarballRoot: options.tarballRoot,
+      tarballs,
+    });
     return descriptors;
   } catch {
-    if (home !== undefined) {
-      try {
-        await removeOwnedDirectory(home.root, home.identity);
-      } catch {
-        // Cleanup failures do not disclose paths or alter the fixed failure.
-      }
-    }
-    if (descriptorIdentity !== undefined) {
-      try {
-        await removeOwnedFile(options?.descriptor, descriptorIdentity);
-      } catch {
-        // Cleanup failures do not disclose paths or alter the fixed failure.
-      }
-    }
     throw verificationError();
   }
 }
