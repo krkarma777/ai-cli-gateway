@@ -1636,51 +1636,61 @@ func validateExactDocumentationTable(document, heading string, expected []string
 	if err != nil {
 		return err
 	}
-	tables := make([][]string, 0, 1)
-	current := make([]string, 0, len(expected))
+	expectedSource := strings.Join(expected, "\n")
+	sealedSource := expectedSource + "\n\n"
+	if count := strings.Count(section, sealedSource); count != 1 {
+		return fmt.Errorf("section %q contains %d exact terminated target tables, want one", heading, count)
+	}
+	pipeLines := make([]string, 0, len(expected))
 	for _, line := range strings.Split(section, "\n") {
-		if strings.HasPrefix(line, "|") && strings.HasSuffix(line, "|") {
-			current = append(current, line)
-			continue
-		}
-		if len(current) > 0 {
-			tables = append(tables, current)
-			current = make([]string, 0, len(expected))
+		if strings.Contains(line, "|") {
+			pipeLines = append(pipeLines, line)
 		}
 	}
-	if len(current) > 0 {
-		tables = append(tables, current)
-	}
-	if len(tables) != 1 {
-		return fmt.Errorf("section %q contains %d Markdown tables, want exactly one", heading, len(tables))
-	}
-	if !reflect.DeepEqual(tables[0], expected) {
-		return fmt.Errorf("section %q table = %v, want exact %v", heading, tables[0], expected)
+	if !reflect.DeepEqual(pipeLines, expected) {
+		return fmt.Errorf("section %q pipe-containing lines = %v, want exact table %v", heading, pipeLines, expected)
 	}
 	return nil
 }
 
 func TestDocumentationNPMTargetTablesRejectExtraRows(t *testing.T) {
 	tests := []struct {
-		name     string
-		document string
-		heading  string
-		expected []string
-		extraRow string
+		name      string
+		document  string
+		heading   string
+		expected  []string
+		extraRows []struct {
+			name string
+			row  string
+		}
 	}{
 		{
 			name:     "Getting Started",
 			document: readGettingStarted(t),
 			heading:  "Install with npm",
 			expected: gettingStartedNPMTargetTable(),
-			extraRow: "| FreeBSD x86-64 | `freebsd-x64` | `ai-cli-gateway-freebsd-x64` |",
+			extraRows: []struct {
+				name string
+				row  string
+			}{
+				{name: "canonical outer pipes", row: "| FreeBSD x86-64 | `freebsd-x64` | `ai-cli-gateway-freebsd-x64` |"},
+				{name: "no leading outer pipe", row: "FreeBSD x86-64 | `freebsd-x64` | `ai-cli-gateway-freebsd-x64` |"},
+				{name: "no trailing outer pipe", row: "| FreeBSD x86-64 | `freebsd-x64` | `ai-cli-gateway-freebsd-x64`"},
+			},
 		},
 		{
 			name:     "v0.2.1 release notes",
 			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
 			heading:  "Supported targets",
 			expected: releaseNotesNPMTargetTable(),
-			extraRow: "| `freebsd-x64` | `ai-cli-gateway-freebsd-x64` | `freebsd` / `x64` |",
+			extraRows: []struct {
+				name string
+				row  string
+			}{
+				{name: "canonical outer pipes", row: "| `freebsd-x64` | `ai-cli-gateway-freebsd-x64` | `freebsd` / `x64` |"},
+				{name: "no leading outer pipe", row: "`freebsd-x64` | `ai-cli-gateway-freebsd-x64` | `freebsd` / `x64` |"},
+				{name: "no trailing outer pipe", row: "| `freebsd-x64` | `ai-cli-gateway-freebsd-x64` | `freebsd` / `x64`"},
+			},
 		},
 	}
 	for _, test := range tests {
@@ -1692,9 +1702,13 @@ func TestDocumentationNPMTargetTablesRejectExtraRows(t *testing.T) {
 			if strings.Count(test.document, lastRow) != 1 {
 				t.Fatalf("last target row %q is not unique", lastRow)
 			}
-			mutated := strings.Replace(test.document, lastRow, lastRow+"\n"+test.extraRow, 1)
-			if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
-				t.Fatal("exact target-table contract accepted an extra unsupported row")
+			for _, mutation := range test.extraRows {
+				t.Run(mutation.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, lastRow, lastRow+"\n"+mutation.row, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted an extra unsupported row")
+					}
+				})
 			}
 		})
 	}
