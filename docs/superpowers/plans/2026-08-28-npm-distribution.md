@@ -655,6 +655,14 @@ recompute SHA-1 and SHA-512 SRI from the regular non-link tarball, validate
 `files[].path` and `files[].mode`, and write canonical `packages.json`. Its
 package order is the five native packages followed by the launcher.
 
+> **Approved native-Windows pack-record qualification — 2026-08-31.** npm
+> 11.6.2 on native Windows reports the launcher
+> `bin/ai-cli-gateway.js` entry as mode `0644` in its `npm pack --json` file
+> record. Only host-record validation models that exact Windows, launcher, and
+> path-specific reporting boundary. The staged launcher entry and canonical
+> release mode remain `0755`; no tarball is rewritten. Ubuntu publication is
+> authoritative and must continue to enforce the `0755` launcher entry.
+
 The verifier accepts exactly two command shapes:
 
 ~~~console

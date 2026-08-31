@@ -534,73 +534,41 @@ test("rejects duplicate targets", async () => {
   await assertNoOwnedTemporaryRoot(fixture);
 });
 
-function waitForLine(child, expected) {
-  return new Promise((resolve, reject) => {
-    let stdout = "";
-    const timeout = setTimeout(() => reject(new Error(`timed out waiting for ${expected}`)), 10_000);
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-      if (stdout.split(/\r?\n/u).includes(expected)) {
-        clearTimeout(timeout);
-        resolve();
-      }
-    });
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once("exit", (code, signal) => {
-      if (!stdout.split(/\r?\n/u).includes(expected)) {
-        clearTimeout(timeout);
-        reject(new Error(`replacement process exited early: ${code ?? signal}`));
-      }
-    });
-  });
-}
-
-function outputReplacementProcess(outputRoot, capturedRoot) {
-  const source = `
-    const fs = require("node:fs");
-    const path = require("node:path");
-    const [outputRoot, capturedRoot] = process.argv.slice(1);
-    fs.writeSync(1, "READY\\n");
-    const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) {
-      try {
-        fs.renameSync(outputRoot, capturedRoot);
-        fs.mkdirSync(outputRoot, { mode: 0o700 });
-        fs.writeFileSync(path.join(outputRoot, "attacker-marker"), "replacement\\n");
-        fs.writeSync(1, "REPLACED\\n");
-        process.exit(0);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
-    }
-    process.exit(2);
-  `;
-  return spawn(process.execPath, ["--eval", source, outputRoot, capturedRoot], {
-    shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-test("rejects output-root replacement and preserves the replacement", async () => {
+test("rejects a same-uid output-root replacement without publishing it", async () => {
   const fixture = await stagingFixture();
   const capturedRoot = path.join(fixture.outputParent, "captured-staging");
-  const replacer = outputReplacementProcess(fixture.outputRoot, capturedRoot);
-  const replaced = waitForLine(replacer, "REPLACED");
-  await waitForLine(replacer, "READY");
+  const replacementMarker = path.join(fixture.outputRoot, "attacker-marker");
+  const originalMkdir = mutableFsPromises.mkdir;
+  const originalRename = mutableFsPromises.rename;
+  const originalWriteFile = mutableFsPromises.writeFile;
+  let replaced = false;
 
-  await assertStagingFailure(stagingOptions(fixture));
-  await replaced;
-
-  assert.equal(
-    await readFile(path.join(fixture.outputRoot, "attacker-marker"), "utf8"),
-    "replacement\n",
+  await withFsPromisePatches(
+    {
+      mkdir: async (directory, options) => {
+        const result = await originalMkdir(directory, options);
+        if (
+          directory === path.join(fixture.outputRoot, "launcher") &&
+          !replaced
+        ) {
+          await originalRename(fixture.outputRoot, capturedRoot);
+          await originalMkdir(fixture.outputRoot, { mode: 0o700 });
+          await originalWriteFile(replacementMarker, "replacement\n", {
+            flag: "wx",
+            mode: 0o600,
+          });
+          replaced = true;
+        }
+        return result;
+      },
+    },
+    () => assertStagingFailure(stagingOptions(fixture)),
   );
+
+  assert.equal(replaced, true);
+  assert.equal(await readFile(replacementMarker, "utf8"), "replacement\n");
   assert.equal(await pathExists(capturedRoot), true);
-  assert.deepEqual(await readdir(fixture.outputRoot), ["attacker-marker"]);
+  assert.equal(await pathExists(path.join(fixture.outputRoot, ".complete")), false);
   await assertNoOwnedTemporaryRoot(fixture);
 });
 
