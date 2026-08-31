@@ -1,0 +1,35 @@
+{
+  "name": "ai-cli-gateway",
+  "version": "0.2.1",
+  "description": "Run AI CLI Gateway through the matching native binary.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "ai-cli-gateway": "bin/ai-cli-gateway.js"
+  },
+  "files": ["bin/ai-cli-gateway.js", "lib/launcher.js", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "optionalDependencies": {
+    "ai-cli-gateway-darwin-x64": "0.2.1",
+    "ai-cli-gateway-darwin-arm64": "0.2.1",
+    "ai-cli-gateway-linux-x64": "0.2.1",
+    "ai-cli-gateway-linux-arm64": "0.2.1",
+    "ai-cli-gateway-win32-x64": "0.2.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/krkarma777/ai-cli-gateway.git",
+    "directory": "npm/launcher"
+  },
+  "homepage": "https://github.com/krkarma777/ai-cli-gateway#readme",
+  "bugs": {
+    "url": "https://github.com/krkarma777/ai-cli-gateway/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  }
+}

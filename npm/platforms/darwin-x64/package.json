@@ -1,0 +1,34 @@
+{
+  "name": "ai-cli-gateway-darwin-x64",
+  "version": "0.2.1",
+  "description": "Native AI CLI Gateway binary for darwin-x64.",
+  "license": "Apache-2.0",
+  "files": [
+    "bin/ai-cli-gateway",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/krkarma777/ai-cli-gateway.git",
+    "directory": "npm/platforms/darwin-x64"
+  },
+  "homepage": "https://github.com/krkarma777/ai-cli-gateway#readme",
+  "bugs": {
+    "url": "https://github.com/krkarma777/ai-cli-gateway/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  }
+}

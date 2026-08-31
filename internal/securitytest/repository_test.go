@@ -1468,36 +1468,1239 @@ func TestGuidedInitReferenceContract(t *testing.T) {
 	}
 }
 
-func TestGuidedInitCurrentOnboardingUsesV020(t *testing.T) {
+func TestDocumentationCurrentOnboardingUsesV021(t *testing.T) {
 	readme := string(readRepositoryFile(t, "README.md"))
 	for _, line := range strings.Split(readme, "\n") {
 		if strings.Contains(line, "v0.1.0") && !strings.Contains(line, "historical v0.1.0 release notes") {
 			t.Fatalf("README has a non-historical v0.1.0 pointer: %q", line)
 		}
+		if strings.Contains(line, "v0.2.0") && !strings.Contains(line, "historical v0.2.0 release notes") {
+			t.Fatalf("README has a non-historical v0.2.0 pointer: %q", line)
+		}
 	}
 	for _, path := range []string{"docs/getting-started.md", "docs/reference.md"} {
 		contents := string(readRepositoryFile(t, path))
-		if strings.Contains(contents, "v0.1.0") || strings.Contains(contents, "_0.1.0_") {
-			t.Fatalf("%s retains a current-onboarding v0.1.0 marker", path)
+		for _, stale := range []string{"v0.1.0", "_0.1.0_", "v0.2.0", "_0.2.0_"} {
+			if strings.Contains(contents, stale) {
+				t.Fatalf("%s retains a stale current-onboarding marker %q", path, stale)
+			}
 		}
+	}
+	reference := string(readRepositoryFile(t, "docs/reference.md"))
+	if !strings.HasPrefix(reference, "# AI CLI Gateway v0.2.1 API and Operations Reference\n\n") {
+		t.Fatal("docs/reference.md does not use the exact current v0.2.1 title")
 	}
 
 	gettingStarted := readGettingStarted(t)
 	requireContainsAll(t, "current onboarding", readme+gettingStarted,
-		"releases/tag/v0.2.0", "releases/download/v${VERSION}", "refs/tags/v0.2.0",
-		"ai-cli-gateway_0.2.0_linux_amd64.tar.gz",
-		"ai-cli-gateway_0.2.0_linux_arm64.tar.gz",
-		"ai-cli-gateway_0.2.0_darwin_amd64.tar.gz",
-		"ai-cli-gateway_0.2.0_darwin_arm64.tar.gz",
-		"ai-cli-gateway_0.2.0_windows_amd64.zip", "SHA256SUMS",
+		"releases/tag/v0.2.1", "releases/download/v${VERSION}", "refs/tags/v0.2.1",
+		"ai-cli-gateway_0.2.1_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_linux_arm64.tar.gz",
+		"ai-cli-gateway_0.2.1_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_darwin_arm64.tar.gz",
+		"ai-cli-gateway_0.2.1_windows_amd64.zip", "SHA256SUMS",
 	)
-	if !strings.Contains(readme, "docs/releases/v0.2.0.md") {
-		t.Fatal("README does not link the reviewed v0.2.0 release notes")
+	for _, notes := range []string{"docs/releases/v0.2.1.md", "docs/releases/v0.2.0.md"} {
+		if !strings.Contains(readme, notes) {
+			t.Fatalf("README does not link release notes %q", notes)
+		}
+	}
+}
+
+func TestReadmeNPMInstallV021Contract(t *testing.T) {
+	readme := string(readRepositoryFile(t, "README.md"))
+	quickStart, err := extractTopLevelMarkdownSection(readme, "Quick Start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantBeginning = "\n```console\n" +
+		"npm install --global ai-cli-gateway@0.2.1\n" +
+		"ai-cli-gateway version\n" +
+		"```\n\n" +
+		"For a manual checksum-verified installation, immediately follow the [v0.2.1 archive procedure](docs/getting-started.md#advanced-recovery-and-service-deployment)."
+	if !strings.HasPrefix(quickStart, wantBeginning) {
+		t.Fatal("README Quick Start does not begin with the exact npm install/version commands followed immediately by the manual checksum path")
+	}
+}
+
+func TestGettingStartedNPMInstallV021Contract(t *testing.T) {
+	document := readGettingStarted(t)
+	installation, err := extractTopLevelMarkdownSection(document, "Install with npm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireContainsAll(t, "Getting Started npm installation", installation,
+		"Node.js `>=22.14.0`",
+		"no lifecycle scripts", "does not download an executable",
+		"byte-for-byte identical", "npm provenance", "GitHub build-provenance",
+		"`npm audit signatures` verifies downloaded packages' registry signatures and provenance attestations.",
+		"Update", "Uninstall", "Optional-dependency recovery",
+	)
+	if err := validateExactDocumentationTable(document, "Install with npm", gettingStartedNPMTargetTable()); err != nil {
+		t.Fatalf("Getting Started npm target table: %v", err)
+	}
+	for _, command := range []string{
+		"npm install --global ai-cli-gateway@0.2.1",
+		"npm audit signatures",
+		"npm uninstall --global ai-cli-gateway",
+		"npm install --global --include=optional ai-cli-gateway@0.2.1",
+	} {
+		if !containsExactTrimmedLine(installation, command) {
+			t.Fatalf("Getting Started npm installation is missing exact command %q", command)
+		}
+	}
+}
+
+func TestReleaseNotesV021Contract(t *testing.T) {
+	notes := string(readRepositoryFile(t, "docs/releases/v0.2.1.md"))
+	wantHeadings := []string{
+		"# AI CLI Gateway v0.2.1",
+		"## npm installation",
+		"## Supported targets",
+		"## Supply-chain equivalence and provenance",
+		"## Unchanged gateway runtime",
+		"## Downloads and verification",
+	}
+	gotHeadings := make([]string, 0, len(wantHeadings))
+	for _, line := range strings.Split(notes, "\n") {
+		if strings.HasPrefix(line, "#") {
+			gotHeadings = append(gotHeadings, line)
+		}
+	}
+	if !reflect.DeepEqual(gotHeadings, wantHeadings) {
+		t.Fatalf("docs/releases/v0.2.1.md headings = %v, want exact %v", gotHeadings, wantHeadings)
+	}
+	requireContainsAll(t, "docs/releases/v0.2.1.md", notes,
+		"npm install --global ai-cli-gateway@0.2.1", "Node.js `>=22.14.0`",
+		"no lifecycle scripts", "does not download an executable",
+		"byte-for-byte identical", "npm provenance", "GitHub build-provenance attestations",
+		"five platform archives", "SPDX SBOM", "SHA256SUMS",
+	)
+	if err := validateExactDocumentationTable(notes, "Supported targets", releaseNotesNPMTargetTable()); err != nil {
+		t.Fatalf("docs/releases/v0.2.1.md target table: %v", err)
+	}
+	wantAssets := []string{
+		"ai-cli-gateway_0.2.1_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_linux_arm64.tar.gz",
+		"ai-cli-gateway_0.2.1_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_darwin_arm64.tar.gz",
+		"ai-cli-gateway_0.2.1_windows_amd64.zip",
+	}
+	for _, asset := range wantAssets {
+		if strings.Count(notes, "- `"+asset+"`") != 1 {
+			t.Fatalf("docs/releases/v0.2.1.md must list archive %q exactly once", asset)
+		}
+	}
+	if strings.Count(notes, "- `ai-cli-gateway_0.2.1_") != len(wantAssets) {
+		t.Fatal("docs/releases/v0.2.1.md must list exactly five v0.2.1 release assets")
+	}
+
+	expectedLinks := []string{
+		"[Getting Started](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/docs/getting-started.md)",
+		"[API and Operations Reference](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/docs/reference.md)",
+		"[Security Policy](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/SECURITY.md)",
+	}
+	requireContainsAll(t, "docs/releases/v0.2.1.md tag-pinned documentation links", notes, expectedLinks...)
+	markdownLinkPattern := regexp.MustCompile(`\[[^]]+\]\([^)]+\)`)
+	if links := markdownLinkPattern.FindAllString(notes, -1); !reflect.DeepEqual(links, expectedLinks) {
+		t.Fatalf("docs/releases/v0.2.1.md links = %v, want exact tag-pinned links %v", links, expectedLinks)
+	}
+}
+
+func gettingStartedNPMTargetTable() []string {
+	return []string{
+		"| Host | npm target | Native package |",
+		"|---|---|---|",
+		"| macOS Intel | `darwin-x64` | `ai-cli-gateway-darwin-x64` |",
+		"| macOS Apple silicon | `darwin-arm64` | `ai-cli-gateway-darwin-arm64` |",
+		"| Linux x86-64 | `linux-x64` | `ai-cli-gateway-linux-x64` |",
+		"| Linux ARM64 | `linux-arm64` | `ai-cli-gateway-linux-arm64` |",
+		"| Windows x86-64 | `win32-x64` | `ai-cli-gateway-win32-x64` |",
+	}
+}
+
+func releaseNotesNPMTargetTable() []string {
+	return []string{
+		"| npm target | Native package | npm host constraint |",
+		"|---|---|---|",
+		"| `darwin-x64` | `ai-cli-gateway-darwin-x64` | `darwin` / `x64` |",
+		"| `darwin-arm64` | `ai-cli-gateway-darwin-arm64` | `darwin` / `arm64` |",
+		"| `linux-x64` | `ai-cli-gateway-linux-x64` | `linux` / `x64` |",
+		"| `linux-arm64` | `ai-cli-gateway-linux-arm64` | `linux` / `arm64` |",
+		"| `win32-x64` | `ai-cli-gateway-win32-x64` | `win32` / `x64` |",
+	}
+}
+
+func validateExactDocumentationTable(document, heading string, expected []string) error {
+	section, err := extractActiveTopLevelMarkdownSection(document, heading)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(section, "\n")
+	tableStarts := make([]int, 0, 1)
+	for start := 0; start+len(expected) <= len(lines); start++ {
+		if reflect.DeepEqual(lines[start:start+len(expected)], expected) {
+			tableStarts = append(tableStarts, start)
+		}
+	}
+	if len(tableStarts) != 1 {
+		return fmt.Errorf("section %q contains %d exact target tables, want one", heading, len(tableStarts))
+	}
+	tableStart := tableStarts[0]
+	tableEnd := tableStart + len(expected)
+	if tableStart == 0 || !isDocumentationGFMBlankLine(lines[tableStart-1]) {
+		return fmt.Errorf("section %q target table is missing its leading active blank boundary", heading)
+	}
+	if tableEnd == len(lines) || !isDocumentationGFMBlankLine(lines[tableEnd]) {
+		return fmt.Errorf("section %q target table is missing its trailing active blank boundary", heading)
+	}
+	pipeLines := make([]string, 0, len(expected))
+	for _, line := range lines {
+		if strings.Contains(line, "|") {
+			pipeLines = append(pipeLines, line)
+		}
+	}
+	if !reflect.DeepEqual(pipeLines, expected) {
+		return fmt.Errorf("section %q pipe-containing lines = %v, want exact table %v", heading, pipeLines, expected)
+	}
+	return nil
+}
+
+const documentationFenceBoundary = "\x00gfm-fence-boundary\x00"
+
+func isDocumentationGFMBlankLine(line string) bool {
+	return strings.Trim(line, " \t") == ""
+}
+
+func plainDocumentationHeadingIdentity(text string) (string, bool) {
+	var identity strings.Builder
+	pendingSpace := false
+	for _, character := range text {
+		if character == ' ' || character == '\t' {
+			pendingSpace = identity.Len() > 0
+			continue
+		}
+		allowed := character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			strings.ContainsRune(".,-()", character)
+		if !allowed {
+			return "", false
+		}
+		if pendingSpace {
+			identity.WriteByte(' ')
+			pendingSpace = false
+		}
+		identity.WriteRune(character)
+	}
+	return identity.String(), true
+}
+
+func activeDocumentationMarkdownLines(document string) ([]string, error) {
+	normalized := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(document)
+	activeLines := make([]string, 0)
+	var fenceMarker byte
+	fenceLength := 0
+	for _, line := range strings.Split(normalized, "\n") {
+		if fenceLength > 0 {
+			if isGFMFenceClosing(line, fenceMarker, fenceLength) {
+				fenceMarker = 0
+				fenceLength = 0
+			}
+			continue
+		}
+		marker, length, _, opening, err := parseGFMFenceOpening(line)
+		if err != nil {
+			return nil, fmt.Errorf("documentation fence: %w", err)
+		}
+		if opening {
+			activeLines = append(activeLines, documentationFenceBoundary)
+			fenceMarker = marker
+			fenceLength = length
+			continue
+		}
+		if containsREADMERawHTMLConstruct(line) {
+			return nil, errors.New("documentation contains raw HTML outside a GFM code fence")
+		}
+		activeLines = append(activeLines, line)
+	}
+	if fenceLength > 0 {
+		return nil, errors.New("documentation contains an unterminated GFM code fence")
+	}
+	return activeLines, nil
+}
+
+func extractActiveTopLevelMarkdownSection(document, heading string) (string, error) {
+	activeLines, err := activeDocumentationMarkdownLines(document)
+	if err != nil {
+		return "", err
+	}
+	blockContexts := classifyDocumentationBlockLines(activeLines)
+	wantHeading := "## " + heading
+	found := false
+	inSection := false
+	sectionLines := make([]string, 0)
+	for index, line := range activeLines {
+		level, text, atx := parseDocumentationATXHeading(line)
+		if atx {
+			identity, plain := plainDocumentationHeadingIdentity(text)
+			if !plain {
+				return "", fmt.Errorf("document contains non-plain active heading %q", line)
+			}
+			if identity == heading {
+				if line != wantHeading {
+					return "", fmt.Errorf("document contains noncanonical active %q heading", heading)
+				}
+				if found {
+					return "", fmt.Errorf("document contains duplicate active %q section", heading)
+				}
+				found = true
+				inSection = true
+				continue
+			}
+			if isDocumentationListContainedATXHeading(activeLines, blockContexts, index, line) {
+				if inSection {
+					sectionLines = append(sectionLines, line)
+				}
+				continue
+			}
+			if inSection && level <= 2 {
+				inSection = false
+				continue
+			}
+			if inSection {
+				sectionLines = append(sectionLines, line)
+			}
+			continue
+		}
+
+		if level, setext := parseDocumentationSetextUnderline(line); setext &&
+			index > 0 && isDocumentationSetextHeadingText(blockContexts[index-1]) {
+			text := strings.Trim(activeLines[index-1], " \t")
+			identity, plain := plainDocumentationHeadingIdentity(text)
+			if !plain {
+				return "", fmt.Errorf("document contains non-plain active Setext heading %q", text)
+			}
+			if identity == heading {
+				return "", fmt.Errorf("document contains noncanonical active %q heading", heading)
+			}
+			if inSection && level <= 2 {
+				if last := len(sectionLines) - 1; last >= 0 && sectionLines[last] == activeLines[index-1] {
+					sectionLines = sectionLines[:last]
+				}
+				inSection = false
+			}
+			continue
+		}
+
+		if inSection {
+			sectionLines = append(sectionLines, line)
+		}
+	}
+	if !found {
+		return "", fmt.Errorf("document is missing active top-level %q section", heading)
+	}
+	return strings.Join(sectionLines, "\n"), nil
+}
+
+func parseDocumentationATXHeading(line string) (int, string, bool) {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || indent == len(line) || line[indent] != '#' {
+		return 0, "", false
+	}
+	end := indent
+	for end < len(line) && line[end] == '#' {
+		end++
+	}
+	level := end - indent
+	if level > 6 {
+		return 0, "", false
+	}
+	if end < len(line) && line[end] != ' ' && line[end] != '\t' {
+		return 0, "", false
+	}
+	text := strings.Trim(line[end:], " \t")
+	closing := len(text)
+	for closing > 0 && text[closing-1] == '#' {
+		closing--
+	}
+	if closing < len(text) && (closing == 0 || text[closing-1] == ' ' || text[closing-1] == '\t') {
+		if closing == 0 {
+			text = ""
+		} else {
+			text = strings.Trim(text[:closing-1], " \t")
+		}
+	}
+	return level, text, true
+}
+
+func parseDocumentationSetextUnderline(line string) (int, bool) {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || indent == len(line) || (line[indent] != '=' && line[indent] != '-') {
+		return 0, false
+	}
+	marker := line[indent]
+	end := indent
+	for end < len(line) && line[end] == marker {
+		end++
+	}
+	if strings.Trim(line[end:], " \t") != "" {
+		return 0, false
+	}
+	if marker == '=' {
+		return 1, true
+	}
+	return 2, true
+}
+
+type documentationBlockKind uint8
+
+const (
+	documentationBlockUnknown documentationBlockKind = iota
+	documentationBlockBlank
+	documentationBlockParagraph
+	documentationBlockListMarker
+	documentationBlockThematicBreak
+	documentationBlockATXHeading
+	documentationBlockSetextUnderline
+	documentationBlockQuote
+	documentationBlockIndentedCode
+	documentationBlockFence
+)
+
+type documentationListMarker struct {
+	contentIndent int
+	ordered       bool
+	start         int
+	hasContent    bool
+}
+
+type documentationBlockLineContext struct {
+	kind       documentationBlockKind
+	listMarker documentationListMarker
+}
+
+func classifyDocumentationBlockLines(lines []string) []documentationBlockLineContext {
+	contexts := make([]documentationBlockLineContext, len(lines))
+	paragraphOpen := false
+	for index, line := range lines {
+		switch {
+		case line == documentationFenceBoundary:
+			contexts[index].kind = documentationBlockFence
+			paragraphOpen = false
+		case isDocumentationGFMBlankLine(line):
+			contexts[index].kind = documentationBlockBlank
+			paragraphOpen = false
+		case isDocumentationATXHeadingLine(line):
+			contexts[index].kind = documentationBlockATXHeading
+			paragraphOpen = false
+		case isDocumentationBlockQuoteMarker(line):
+			contexts[index].kind = documentationBlockQuote
+			paragraphOpen = false
+		case isDocumentationSetextUnderlineAfterParagraph(line, paragraphOpen):
+			contexts[index].kind = documentationBlockSetextUnderline
+			paragraphOpen = false
+		case isDocumentationThematicBreak(line):
+			contexts[index].kind = documentationBlockThematicBreak
+			paragraphOpen = false
+		default:
+			marker, listMarker := parseDocumentationListMarker(line)
+			canInterruptParagraph := marker.hasContent && (!marker.ordered || marker.start == 1)
+			if listMarker && (!paragraphOpen || canInterruptParagraph) {
+				contexts[index] = documentationBlockLineContext{
+					kind:       documentationBlockListMarker,
+					listMarker: marker,
+				}
+				paragraphOpen = false
+				continue
+			}
+			if documentationLeadingSpaces(line) >= 4 && !paragraphOpen {
+				contexts[index].kind = documentationBlockIndentedCode
+				continue
+			}
+			contexts[index].kind = documentationBlockParagraph
+			paragraphOpen = true
+		}
+	}
+	return contexts
+}
+
+func isDocumentationATXHeadingLine(line string) bool {
+	_, _, atx := parseDocumentationATXHeading(line)
+	return atx
+}
+
+func isDocumentationBlockQuoteMarker(line string) bool {
+	indent := documentationLeadingSpaces(line)
+	return indent <= 3 && indent < len(line) && line[indent] == '>'
+}
+
+func isDocumentationSetextUnderlineAfterParagraph(line string, paragraphOpen bool) bool {
+	if !paragraphOpen {
+		return false
+	}
+	_, setext := parseDocumentationSetextUnderline(line)
+	return setext
+}
+
+func isDocumentationSetextHeadingText(context documentationBlockLineContext) bool {
+	return context.kind == documentationBlockParagraph
+}
+
+func isDocumentationListContainedATXHeading(
+	lines []string,
+	contexts []documentationBlockLineContext,
+	index int,
+	line string,
+) bool {
+	headingIndent := documentationLeadingSpaces(line)
+	if headingIndent == 0 || headingIndent > 3 || index == 0 {
+		return false
+	}
+	minimumIndent := headingIndent
+	blankSeen := false
+	for previous := index - 1; previous >= 0; previous-- {
+		context := contexts[previous]
+		switch context.kind {
+		case documentationBlockBlank:
+			if blankSeen {
+				return false
+			}
+			blankSeen = true
+		case documentationBlockListMarker:
+			return headingIndent >= context.listMarker.contentIndent &&
+				minimumIndent >= context.listMarker.contentIndent
+		case documentationBlockParagraph, documentationBlockIndentedCode:
+			indent := documentationLeadingSpaces(lines[previous])
+			if indent == 0 {
+				return false
+			}
+			if indent < minimumIndent {
+				minimumIndent = indent
+			}
+		case documentationBlockUnknown,
+			documentationBlockThematicBreak,
+			documentationBlockATXHeading,
+			documentationBlockSetextUnderline,
+			documentationBlockQuote,
+			documentationBlockFence:
+			return false
+		}
+	}
+	return false
+}
+
+func parseDocumentationListMarker(line string) (documentationListMarker, bool) {
+	if isDocumentationThematicBreak(line) {
+		return documentationListMarker{}, false
+	}
+	indent := documentationLeadingSpaces(line)
+	if indent > 3 || indent == len(line) {
+		return documentationListMarker{}, false
+	}
+	marker := documentationListMarker{}
+	cursor := indent
+	if line[cursor] == '-' || line[cursor] == '+' || line[cursor] == '*' {
+		cursor++
+	} else {
+		marker.ordered = true
+		digitStart := cursor
+		for cursor < len(line) && line[cursor] >= '0' && line[cursor] <= '9' && cursor-digitStart < 9 {
+			marker.start = marker.start*10 + int(line[cursor]-'0')
+			cursor++
+		}
+		if cursor == digitStart || cursor == len(line) || (line[cursor] != '.' && line[cursor] != ')') {
+			return documentationListMarker{}, false
+		}
+		cursor++
+	}
+	markerWidth := cursor - indent
+	if cursor == len(line) {
+		marker.contentIndent = indent + markerWidth + 1
+		return marker, true
+	}
+	spaceStart := cursor
+	for cursor < len(line) && line[cursor] == ' ' && cursor-spaceStart < 5 {
+		cursor++
+	}
+	spaces := cursor - spaceStart
+	if spaces < 1 || spaces > 4 {
+		return documentationListMarker{}, false
+	}
+	marker.contentIndent = indent + markerWidth + spaces
+	marker.hasContent = cursor < len(line)
+	return marker, true
+}
+
+func isDocumentationThematicBreak(line string) bool {
+	indent := documentationLeadingSpaces(line)
+	if indent > 3 || indent == len(line) {
+		return false
+	}
+	marker := line[indent]
+	if marker != '*' && marker != '-' && marker != '_' {
+		return false
+	}
+	count := 0
+	for cursor := indent; cursor < len(line); cursor++ {
+		switch line[cursor] {
+		case marker:
+			count++
+		case ' ', '\t':
+		default:
+			return false
+		}
+	}
+	return count >= 3
+}
+
+func documentationLeadingSpaces(line string) int {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	return indent
+}
+
+func TestDocumentationMarkdownHeadingParsing(t *testing.T) {
+	atxTests := []struct {
+		name      string
+		line      string
+		wantLevel int
+		wantText  string
+		want      bool
+	}{
+		{name: "H1", line: "# Other section", wantLevel: 1, wantText: "Other section", want: true},
+		{name: "indented H2", line: "   ## Other section", wantLevel: 2, wantText: "Other section", want: true},
+		{name: "tab separator", line: "##\tOther section", wantLevel: 2, wantText: "Other section", want: true},
+		{name: "closing hashes", line: " ## Other section ###  ", wantLevel: 2, wantText: "Other section", want: true},
+		{name: "empty H2", line: "##", wantLevel: 2, want: true},
+		{name: "H3 subsection", line: "### Child", wantLevel: 3, wantText: "Child", want: true},
+		{name: "four-space code", line: "    ## Other section"},
+		{name: "leading tab code", line: "\t## Other section"},
+		{name: "missing separator", line: "##Other section"},
+		{name: "seven markers", line: "####### Other section"},
+	}
+	for _, test := range atxTests {
+		t.Run("ATX "+test.name, func(t *testing.T) {
+			level, text, ok := parseDocumentationATXHeading(test.line)
+			if level != test.wantLevel || text != test.wantText || ok != test.want {
+				t.Fatalf("parseDocumentationATXHeading(%q) = (%d, %q, %v), want (%d, %q, %v)", test.line, level, text, ok, test.wantLevel, test.wantText, test.want)
+			}
+		})
+	}
+
+	setextTests := []struct {
+		name      string
+		line      string
+		wantLevel int
+		want      bool
+	}{
+		{name: "H1", line: "=============", wantLevel: 1, want: true},
+		{name: "H2", line: "-------------", wantLevel: 2, want: true},
+		{name: "three-space H2", line: "   ---\t", wantLevel: 2, want: true},
+		{name: "four-space code", line: "    ---"},
+		{name: "mixed markers", line: "--="},
+		{name: "empty", line: ""},
+	}
+	for _, test := range setextTests {
+		t.Run("Setext "+test.name, func(t *testing.T) {
+			level, ok := parseDocumentationSetextUnderline(test.line)
+			if level != test.wantLevel || ok != test.want {
+				t.Fatalf("parseDocumentationSetextUnderline(%q) = (%d, %v), want (%d, %v)", test.line, level, ok, test.wantLevel, test.want)
+			}
+		})
+	}
+	if !isDocumentationSetextHeadingText(classifyDocumentationBlockLines([]string{"\u00a0"})[0]) {
+		t.Fatal("NBSP is GFM Setext heading content, not a blank line")
+	}
+	t.Run("mixed line endings", func(t *testing.T) {
+		lines, err := activeDocumentationMarkdownLines("alpha\r\nbeta\rgamma\n")
+		if err != nil {
+			t.Fatalf("activeDocumentationMarkdownLines: %v", err)
+		}
+		want := []string{"alpha", "beta", "gamma", ""}
+		if !reflect.DeepEqual(lines, want) {
+			t.Fatalf("activeDocumentationMarkdownLines mixed line endings = %q, want %q", lines, want)
+		}
+	})
+}
+
+func TestDocumentationPlainHeadingIdentity(t *testing.T) {
+	allowed := []struct {
+		source string
+		want   string
+	}{
+		{source: "Install\t  with  npm", want: "Install with npm"},
+		{source: "AI CLI Gateway v0.2.1", want: "AI CLI Gateway v0.2.1"},
+		{source: "Optional-dependency recovery", want: "Optional-dependency recovery"},
+		{source: "Merge, dry run, Doctor, and recovery", want: "Merge, dry run, Doctor, and recovery"},
+		{source: "POSIX (macOS and Linux)", want: "POSIX (macOS and Linux)"},
+	}
+	for _, test := range allowed {
+		identity, ok := plainDocumentationHeadingIdentity(test.source)
+		if !ok || identity != test.want {
+			t.Errorf("plainDocumentationHeadingIdentity(%q) = (%q, %v), want (%q, true)", test.source, identity, ok, test.want)
+		}
+	}
+
+	forbidden := []string{
+		"Install with np&#109;",
+		`Install with np\m`,
+		"Install with `npm`",
+		"Install with *npm*",
+		"Install with _npm_",
+		"Install with ~~npm~~",
+		"[Install with npm](https://example.invalid)",
+		"<span>Install with npm</span>",
+		"!Install with npm",
+		"Install with café",
+		"Install with npm\x01",
+	}
+	for _, source := range forbidden {
+		if identity, ok := plainDocumentationHeadingIdentity(source); ok {
+			t.Errorf("plainDocumentationHeadingIdentity(%q) = (%q, true), want fail closed", source, identity)
+		}
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectExtraRows(t *testing.T) {
+	tests := []struct {
+		name      string
+		document  string
+		heading   string
+		expected  []string
+		extraRows []struct {
+			name string
+			row  string
+		}
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+			extraRows: []struct {
+				name string
+				row  string
+			}{
+				{name: "canonical outer pipes", row: "| FreeBSD x86-64 | `freebsd-x64` | `ai-cli-gateway-freebsd-x64` |"},
+				{name: "no leading outer pipe", row: "FreeBSD x86-64 | `freebsd-x64` | `ai-cli-gateway-freebsd-x64` |"},
+				{name: "no trailing outer pipe", row: "| FreeBSD x86-64 | `freebsd-x64` | `ai-cli-gateway-freebsd-x64`"},
+			},
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+			extraRows: []struct {
+				name string
+				row  string
+			}{
+				{name: "canonical outer pipes", row: "| `freebsd-x64` | `ai-cli-gateway-freebsd-x64` | `freebsd` / `x64` |"},
+				{name: "no leading outer pipe", row: "`freebsd-x64` | `ai-cli-gateway-freebsd-x64` | `freebsd` / `x64` |"},
+				{name: "no trailing outer pipe", row: "| `freebsd-x64` | `ai-cli-gateway-freebsd-x64` | `freebsd` / `x64`"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateExactDocumentationTable(test.document, test.heading, test.expected); err != nil {
+				t.Fatalf("baseline exact target table: %v", err)
+			}
+			lastRow := test.expected[len(test.expected)-1]
+			if strings.Count(test.document, lastRow) != 1 {
+				t.Fatalf("last target row %q is not unique", lastRow)
+			}
+			for _, mutation := range test.extraRows {
+				t.Run(mutation.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, lastRow, lastRow+"\n"+mutation.row, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted an extra unsupported row")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectHiddenTables(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateExactDocumentationTable(test.document, test.heading, test.expected); err != nil {
+				t.Fatalf("baseline exact target table: %v", err)
+			}
+			sealedTable := strings.Join(test.expected, "\n") + "\n\n"
+			if strings.Count(test.document, sealedTable) != 1 {
+				t.Fatal("exact terminated target table is not unique")
+			}
+			tableSource := strings.TrimSuffix(sealedTable, "\n\n")
+			mutations := []struct {
+				name        string
+				replacement string
+			}{
+				{name: "HTML comment", replacement: "<!--\n" + sealedTable + "-->\n\n"},
+				{name: "GFM text fence", replacement: "```text\n" + sealedTable + "```\n\n"},
+				{name: "indented code block", replacement: "    " + strings.ReplaceAll(tableSource, "\n", "\n    ") + "\n\n"},
+				{name: "block quote container", replacement: "> " + strings.ReplaceAll(tableSource, "\n", "\n> ") + "\n>\n\n"},
+			}
+			for _, mutation := range mutations {
+				t.Run(mutation.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, sealedTable, mutation.replacement, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a non-rendered table")
+					}
+				})
+			}
+			t.Run("unterminated GFM fence", func(t *testing.T) {
+				mutated := test.document + "\n```text\n"
+				if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+					t.Fatal("exact target-table contract accepted an unterminated GFM fence")
+				}
+			})
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRequireLeadingBlankBoundary(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateExactDocumentationTable(test.document, test.heading, test.expected); err != nil {
+				t.Fatalf("baseline exact target table: %v", err)
+			}
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			predecessors := []struct {
+				name string
+				line string
+			}{
+				{name: "blockquote lazy continuation", line: "> other"},
+				{name: "list lazy continuation", line: "- other"},
+			}
+			for _, predecessor := range predecessors {
+				t.Run(predecessor.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, predecessor.line+"\n"+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a table without a leading active blank boundary")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectNonGFMBlankBoundaries(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateExactDocumentationTable(test.document, test.heading, test.expected); err != nil {
+				t.Fatalf("baseline exact target table: %v", err)
+			}
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			t.Run("blockquote lazy continuation through NBSP", func(t *testing.T) {
+				mutated := strings.Replace(test.document, tableSource, "> other\n\u00a0\n"+tableSource, 1)
+				if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+					t.Fatal("exact target-table contract accepted NBSP as a leading GFM blank boundary")
+				}
+			})
+			t.Run("trailing NBSP", func(t *testing.T) {
+				mutated := strings.Replace(test.document, tableSource, tableSource+"\n\u00a0", 1)
+				if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+					t.Fatal("exact target-table contract accepted NBSP as a trailing GFM blank boundary")
+				}
+			})
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectSplitTables(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateExactDocumentationTable(test.document, test.heading, test.expected); err != nil {
+				t.Fatalf("baseline exact target table: %v", err)
+			}
+			splits := []struct {
+				name   string
+				before string
+				after  string
+			}{
+				{name: "between header and delimiter", before: test.expected[0], after: test.expected[1]},
+				{name: "between target rows", before: test.expected[2], after: test.expected[3]},
+			}
+			for _, split := range splits {
+				t.Run(split.name, func(t *testing.T) {
+					adjacent := split.before + "\n" + split.after
+					if strings.Count(test.document, adjacent) != 1 {
+						t.Fatalf("split target %q is not unique", adjacent)
+					}
+					separated := split.before + "\n```text\nnon-table boundary\n```\n" + split.after
+					mutated := strings.Replace(test.document, adjacent, separated, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract rejoined table fragments across a GFM fence")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectHeadingRelocation(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			mutations := []struct {
+				name   string
+				prefix string
+			}{
+				{name: "one-space ATX H2", prefix: " ## Other section\n\n"},
+				{name: "tab-separated ATX H2", prefix: "##\tOther section\n\n"},
+				{name: "ATX H1", prefix: "# Other section\n\n"},
+				{name: "Setext H2", prefix: "Other section\n-------------\n\n"},
+				{name: "Setext H1", prefix: "Other section\n=============\n\n"},
+				{name: "lone-CR Setext H2", prefix: "Other section\r-------------\n\n"},
+			}
+			for _, mutation := range mutations {
+				t.Run(mutation.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, mutation.prefix+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a table relocated below an H1 or H2")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectNoncanonicalTargetHeadings(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			mutations := []struct {
+				name   string
+				prefix string
+			}{
+				{name: "duplicate canonical target", prefix: "## " + test.heading + "\n\n"},
+				{name: "indented target", prefix: " ## " + test.heading + "\n\n"},
+				{name: "tab-separated target", prefix: "##\t" + test.heading + "\n\n"},
+				{name: "closing hashes target", prefix: "## " + test.heading + " ##\n\n"},
+				{name: "H3 target", prefix: "### " + test.heading + "\n\n"},
+				{name: "Setext target", prefix: test.heading + "\n-------------\n\n"},
+			}
+			for _, mutation := range mutations {
+				t.Run(mutation.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, mutation.prefix+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a duplicate or noncanonical target heading")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectRenderedTargetHeadings(t *testing.T) {
+	tests := []struct {
+		name             string
+		document         string
+		heading          string
+		expected         []string
+		renderedVariants []struct {
+			name string
+			text string
+		}
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+			renderedVariants: []struct {
+				name string
+				text string
+			}{
+				{name: "double ASCII whitespace", text: "Install  with npm"},
+				{name: "emphasis", text: "Install with *npm*"},
+				{name: "code span", text: "Install with `npm`"},
+				{name: "link label", text: "[Install with npm](https://example.invalid)"},
+				{name: "character reference", text: "Install with np&#109;"},
+			},
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+			renderedVariants: []struct {
+				name string
+				text string
+			}{
+				{name: "double ASCII whitespace", text: "Supported  targets"},
+				{name: "emphasis", text: "Supported *targets*"},
+				{name: "code span", text: "Supported `targets`"},
+				{name: "link label", text: "[Supported targets](https://example.invalid)"},
+				{name: "character reference", text: "Supported target&#115;"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			for _, variant := range test.renderedVariants {
+				t.Run(variant.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, "### "+variant.text+"\n\n"+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a noncanonical heading with the target's rendered identity")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectUnprovenListContexts(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	contexts := []struct {
+		name   string
+		prefix string
+	}{
+		{
+			name:   "thematic break does not prove a bullet list",
+			prefix: "* * *\n\n  ## Other section\n\n",
+		},
+		{
+			name:   "ordered start two cannot interrupt a paragraph",
+			prefix: "paragraph\n2. not a list\n\n   ## Other section\n\n",
+		},
+		{
+			name:   "unproven ordered marker remains Setext text",
+			prefix: "paragraph\n2. not a list\n---\n\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			for _, context := range contexts {
+				t.Run(context.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, context.prefix+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a root table after an unproven list context")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesAllowRootTableAfterListBlocks(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	contexts := []struct {
+		name   string
+		prefix string
+	}{
+		{name: "list item then thematic break", prefix: "- list item\n---\n\n"},
+		{name: "bullet list-contained ATX H2", prefix: "- list item\n\n  ## Nested heading\n\n"},
+		{name: "ordered list-contained ATX H2", prefix: "1. list item\n\n   ## Nested heading\n\n"},
+		{name: "list continuation before contained ATX H2", prefix: "- item\n  continuation\n\n  ## Nested heading\n\n"},
+		{name: "indented code then thematic break", prefix: "    code\n---\n\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			for _, context := range contexts {
+				t.Run(context.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, context.prefix+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err != nil {
+						t.Fatalf("exact target-table contract rejected a root table after a valid list block: %v", err)
+					}
+				})
+			}
+		})
 	}
 }
 
 func TestReleaseNotesV020Contract(t *testing.T) {
-	notes := string(readRepositoryFile(t, "docs/releases/v0.2.0.md"))
+	noteBytes := readRepositoryFile(t, "docs/releases/v0.2.0.md")
+	digest := sha256.Sum256(noteBytes)
+	if got := hex.EncodeToString(digest[:]); got != "46eb4a5046f8287886621069d45ea9384d5d5661a28a61bde1b7b531af021a30" {
+		t.Fatalf("docs/releases/v0.2.0.md SHA-256 = %s, want immutable historical release note", got)
+	}
+	notes := string(noteBytes)
 	if strings.Contains(strings.ToLower(notes), "unknown fields") {
 		t.Fatal("docs/releases/v0.2.0.md claims unsupported unknown-field preservation")
 	}
@@ -1612,11 +2815,11 @@ func TestGettingStartedReleaseQuickStartRejectsMutations(t *testing.T) {
 		{name: "PowerShell terminal key piped to host", mutate: replaceREADMENth(`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, `$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`+"\n"+`$LoadedGatewayKey | Out-Host`, 2)},
 		{name: "indirect POSIX key file output", sealOnly: true, mutate: replaceREADMEOnce(`ai-cli-gateway doctor --config "${GATEWAY_CONFIG_FILE}"`, `cat "${GATEWAY_CONFIG_DIR}"/*`+"\n"+`ai-cli-gateway doctor --config "${GATEWAY_CONFIG_FILE}"`)},
 		{name: "indirect PowerShell key file output", sealOnly: true, mutate: replaceREADMEOnce(`ai-cli-gateway.exe doctor --config $GatewayConfigFile`, `Get-ChildItem $GatewayConfigDir | Get-Content | Out-Host`+"\n"+`ai-cli-gateway.exe doctor --config $GatewayConfigFile`)},
-		{name: "comment-only fence source change", sealOnly: true, mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.0", "```bash\nset -eu\n# sealed source changed\nVERSION=0.2.0")},
-		{name: "early POSIX fence prints key", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.0", "```bash\nset -eu\nprintf '%s\\n' \"${GATEWAY_KEY}\"\nVERSION=0.2.0")},
+		{name: "comment-only fence source change", sealOnly: true, mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.1", "```bash\nset -eu\n# sealed source changed\nVERSION=0.2.1")},
+		{name: "early POSIX fence prints key", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.1", "```bash\nset -eu\nprintf '%s\\n' \"${GATEWAY_KEY}\"\nVERSION=0.2.1")},
 		{name: "unexpected shell fence prints key", mutate: replaceREADMEOnce("### Official SDK checks\n", "```sh\nprintf '%s\\n' \"${GATEWAY_KEY}\"\n```\n\n### Official SDK checks\n")},
 		{name: "tilde PowerShell fence prints key", mutate: replaceREADMEOnce("### Official SDK checks\n", "~~~powershell\n$LoadedGatewayKey | Out-Host\n~~~\n\n### Official SDK checks\n")},
-		{name: "first Bash fence changed to text", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.0", "```text\nset -eu\nVERSION=0.2.0")},
+		{name: "first Bash fence changed to text", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.1", "```text\nset -eu\nVERSION=0.2.1")},
 		{name: "Darwin ARM64 branch removed", mutate: replaceREADMEOnce(`  Darwin:arm64) ASSET="ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz" ;;`+"\n", "")},
 		{name: "Darwin ARM64 branch moved to unused function", mutate: moveREADMEHostBranchToUnusedFunction},
 		{name: "POSIX substitution commented", mutate: replaceREADMEOnce(`    [q{configured-provider-model}, $ENV{CODEX_MODEL}],`, `    # [q{configured-provider-model}, $ENV{CODEX_MODEL}],`)},
@@ -1959,9 +3162,9 @@ func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) er
 	windowsProse := document.prose[quickStartWindowsSection]
 	sdkProse := document.prose[quickStartSDKSection]
 	for _, marker := range []string{
-		"v0.2.0", "ai-cli-gateway_0.2.0_linux_amd64.tar.gz",
-		"ai-cli-gateway_0.2.0_linux_arm64.tar.gz", "ai-cli-gateway_0.2.0_darwin_amd64.tar.gz",
-		"ai-cli-gateway_0.2.0_darwin_arm64.tar.gz", "ai-cli-gateway_0.2.0_windows_amd64.zip",
+		"v0.2.1", "ai-cli-gateway_0.2.1_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_linux_arm64.tar.gz", "ai-cli-gateway_0.2.1_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_darwin_arm64.tar.gz", "ai-cli-gateway_0.2.1_windows_amd64.zip",
 	} {
 		if !strings.Contains(rootProse, marker) {
 			return fmt.Errorf("active Quick Start prose is missing %q", marker)
@@ -2608,15 +3811,15 @@ func validateREADMEQuickStartFenceSequence(document readmeQuickStartDocument) er
 
 func validateREADMEQuickStartFenceSources(document readmeQuickStartDocument) error {
 	expected := []string{
-		"212831af893fe4e039f04b7d7e209c9e9c5b5bf9d7a7d58c386cca8c40c05eb8", // POSIX download and checksum.
-		"e392ad30ceb3d312fe110aa8ac38ab67e7ed867227f3a100a8618c19f1b46cbe", // POSIX attestation.
+		"8b7855942fe53e033c3ea597f721d33db89feef96b7067e714985dab42af6c67", // POSIX download and checksum.
+		"f3e9ee89906ccef9f832e7d6e9336de5524d12ea58374f424911ba0aa67d0df3", // POSIX attestation.
 		"d54bf15936a9f8afd0dfbe3688e928719b92adf10411d31947d93a4c05652389", // POSIX install.
 		"70a3ca8fb27e89baa998ee97fc4ea5dd79f404bfe13e9d9657c754efdee9f0ac", // POSIX configuration.
 		"4db8c2817d0f3ea8ac4994d9bcff5b715954ff389a2b21288f4fb8bc21b50476", // POSIX serve.
 		"810f6e580c10eb1b5a6be46a7a7b669668ab630d73fb6a780fcf2d4f0e23fc69", // POSIX requests.
-		"122c2f822b6ddeab044c46b25bb8de0e541aa369d87fa3004855d4df733bc983", // Windows download and checksum.
-		"af3fd6aae4794fee5e520ec01da9b1a79b699e8333b73de10bf15620f5e19004", // Windows attestation.
-		"a2f2a3187205010ab3c34315f23c35edb144e2dd720c61b583038bfac8e26a02", // Windows install.
+		"e43fc580c7375ebf28645634ce2674ec7b8c54623ea7f59e07c2c07e554809de", // Windows download and checksum.
+		"01d67fe9a96033c00b4ce97733d4c646f4a46967893b4fb392b2d294ee403cf4", // Windows attestation.
+		"abc12f20551cbc54a1ed713b33b44410a1ca610c99d6e33d3443e0854f08151b", // Windows install.
 		"e945b7509ade4560e6912eb15f6d8d9990708524824c360e06cd7880f8998537", // Windows configuration.
 		"5b26c7ae1423bf83919abc35593accd9137111778cb21f641c473441e72cadc0", // Windows serve.
 		"a652421c0e76aa69d83c7b061c44c08357fcbd472ca64dc80d338c1c2b4c18b7", // Windows requests.
@@ -3028,10 +4231,10 @@ func TestGettingStartedPOSIXChecksumCommands(t *testing.T) {
 	if start < 0 || end < start {
 		t.Fatal("cannot extract the documented POSIX checksum program")
 	}
-	program := "set -eu\nASSET=ai-cli-gateway_0.2.0_darwin_arm64.tar.gz\n" + fences[0][start:end+len(endMarker)] + "\n"
+	program := "set -eu\nASSET=ai-cli-gateway_0.2.1_darwin_arm64.tar.gz\n" + fences[0][start:end+len(endMarker)] + "\n"
 	asset := []byte("verified release fixture\n")
 	digest := sha256.Sum256(asset)
-	validRecord := fmt.Sprintf("%x *ai-cli-gateway_0.2.0_darwin_arm64.tar.gz\n", digest)
+	validRecord := fmt.Sprintf("%x *ai-cli-gateway_0.2.1_darwin_arm64.tar.gz\n", digest)
 	decoys := ""
 	for index := 0; index < 5; index++ {
 		decoys += fmt.Sprintf("%064x *decoy-%d\n", index+1, index)
@@ -3043,12 +4246,12 @@ func TestGettingStartedPOSIXChecksumCommands(t *testing.T) {
 	}{
 		{name: "valid selected record", manifest: decoys + validRecord, wantOK: true},
 		{name: "duplicate selected record", manifest: decoys + validRecord + validRecord},
-		{name: "mismatched selected digest", manifest: decoys + strings.Repeat("0", 64) + " *ai-cli-gateway_0.2.0_darwin_arm64.tar.gz\n"},
+		{name: "mismatched selected digest", manifest: decoys + strings.Repeat("0", 64) + " *ai-cli-gateway_0.2.1_darwin_arm64.tar.gz\n"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
-			if err := os.WriteFile(filepath.Join(root, "ai-cli-gateway_0.2.0_darwin_arm64.tar.gz"), asset, 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(root, "ai-cli-gateway_0.2.1_darwin_arm64.tar.gz"), asset, 0o600); err != nil {
 				t.Fatalf("write asset fixture: %v", err)
 			}
 			if err := os.WriteFile(filepath.Join(root, "SHA256SUMS"), []byte(test.manifest), 0o600); err != nil {
@@ -3103,7 +4306,7 @@ esac
 	if err := os.Chmod(uname, 0o700); err != nil { //nolint:gosec // Test-owned fake uname must be executable and private.
 		t.Fatalf("make fake uname executable: %v", err)
 	}
-	program := "set -eu\nVERSION=0.2.0\n" + selector + "\nprintf '%s' \"${ASSET}\"\n"
+	program := "set -eu\nVERSION=0.2.1\n" + selector + "\nprintf '%s' \"${ASSET}\"\n"
 	tests := []struct {
 		name    string
 		system  string
@@ -3111,11 +4314,11 @@ esac
 		want    string
 		wantOK  bool
 	}{
-		{name: "Linux x86-64", system: "Linux", machine: "x86_64", want: "ai-cli-gateway_0.2.0_linux_amd64.tar.gz", wantOK: true},
-		{name: "Linux aarch64", system: "Linux", machine: "aarch64", want: "ai-cli-gateway_0.2.0_linux_arm64.tar.gz", wantOK: true},
-		{name: "Linux arm64", system: "Linux", machine: "arm64", want: "ai-cli-gateway_0.2.0_linux_arm64.tar.gz", wantOK: true},
-		{name: "Darwin Intel", system: "Darwin", machine: "x86_64", want: "ai-cli-gateway_0.2.0_darwin_amd64.tar.gz", wantOK: true},
-		{name: "Darwin Apple silicon", system: "Darwin", machine: "arm64", want: "ai-cli-gateway_0.2.0_darwin_arm64.tar.gz", wantOK: true},
+		{name: "Linux x86-64", system: "Linux", machine: "x86_64", want: "ai-cli-gateway_0.2.1_linux_amd64.tar.gz", wantOK: true},
+		{name: "Linux aarch64", system: "Linux", machine: "aarch64", want: "ai-cli-gateway_0.2.1_linux_arm64.tar.gz", wantOK: true},
+		{name: "Linux arm64", system: "Linux", machine: "arm64", want: "ai-cli-gateway_0.2.1_linux_arm64.tar.gz", wantOK: true},
+		{name: "Darwin Intel", system: "Darwin", machine: "x86_64", want: "ai-cli-gateway_0.2.1_darwin_amd64.tar.gz", wantOK: true},
+		{name: "Darwin Apple silicon", system: "Darwin", machine: "arm64", want: "ai-cli-gateway_0.2.1_darwin_arm64.tar.gz", wantOK: true},
 		{name: "unsupported", system: "FreeBSD", machine: "amd64"},
 	}
 	for _, test := range tests {
@@ -3276,7 +4479,7 @@ func TestGettingStartedWindowsChecksumCommandsNative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const archiveName = "ai-cli-gateway_0.2.0_windows_amd64.zip"
+	const archiveName = "ai-cli-gateway_0.2.1_windows_amd64.zip"
 	archive := []byte("verified Windows release fixture\n")
 	digest := sha256.Sum256(archive)
 	validRecord := fmt.Sprintf("%x *%s\n", digest, archiveName)
@@ -3555,6 +4758,7 @@ func TestPublicPolicyContributionSecurityAndIgnoreBoundary(t *testing.T) {
 		"/config.toml", ".env", ".env.*", "!.env.example",
 		"/.codex/", "/.claude/", "/.gemini/", "auth.json", ".credentials.json",
 		"credentials.json", "oauth_creds.json", "google_accounts.json",
+		"/npm/node_modules/", "/npm/**/*.tgz", "/npm/.staging/",
 	}
 	gotLines := nonCommentLines(ignore)
 	if !reflect.DeepEqual(gotLines, wantLines) {
@@ -3566,6 +4770,8 @@ func TestPublicPolicyContributionSecurityAndIgnoreBoundary(t *testing.T) {
 	for _, forbidden := range []string{
 		"config.example.toml", "docs/getting-started", "docs/reference",
 		"docs/releases", "README", "settings.json", "internal/securitytest",
+		"npm/package.json", "npm/package-lock.json", "npm/launcher",
+		"npm/platforms", "npm/scripts", "npm/test",
 	} {
 		if strings.Contains(ignore, forbidden) {
 			t.Fatalf(".gitignore contains forbidden broad/public rule %q", forbidden)
@@ -4045,6 +5251,7 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	jobs := extractYAMLJobBlocks(t, workflow)
 	wantJobs := map[string]struct{}{
 		"lint": {}, "linux": {}, "macos": {}, "windows": {}, "cross-build": {}, "sdk-contract": {},
+		"npm-contract": {}, "npm-host-install": {},
 	}
 	gotJobs := make(map[string]struct{}, len(jobs))
 	for name := range jobs {
@@ -4057,6 +5264,9 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 		if !strings.Contains(block, "timeout-minutes:") {
 			t.Fatalf("CI job %q has no bounded timeout-minutes", name)
 		}
+	}
+	for _, name := range []string{"lint", "linux", "macos", "windows", "cross-build", "sdk-contract"} {
+		block := jobs[name]
 		requireContainsAll(t, "CI job "+name, block,
 			checkoutAction, setupGoAction,
 			"go-version-file: .go-version", "cache: true")
@@ -4112,6 +5322,26 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	requireContainsAll(t, "SDK contract job", jobs["sdk-contract"],
 		"runs-on: ubuntu-latest", "timeout-minutes: 12",
 		setupPythonAction, setupNodeAction)
+	requireContainsAll(t, "npm contract job", jobs["npm-contract"],
+		"runs-on: ubuntu-24.04", "timeout-minutes: 8", checkoutAction, setupNodeAction,
+		`node-version: ${{ matrix.node-version }}`, "package-manager-cache: false",
+		`- "22.14.0"`, `- "24.13.0"`,
+		"npm ci --ignore-scripts --prefix npm", "npm test --prefix npm")
+	requireContainsAll(t, "npm host-install job", jobs["npm-host-install"],
+		`runs-on: ${{ matrix.runner }}`, "timeout-minutes: 15", checkoutAction,
+		setupGoAction, setupNodeAction, "go-version-file: .go-version", "cache: false",
+		`node-version: "24.13.0"`, "package-manager-cache: false",
+		"runner: ubuntu-24.04", "target: linux-x64", "goos: linux", "goarch: amd64",
+		"runner: macos-15", "target: darwin-arm64", "goos: darwin", "goarch: arm64",
+		"runner: windows-2025", "target: win32-x64", "goos: windows",
+		"executable: ai-cli-gateway.exe", "CGO_ENABLED: 0", "TAG=v0.2.1",
+		"node npm/scripts/stage-packages.js", "node npm/scripts/verify-packages.js",
+		"--target \"${NPM_TARGET}\"", "--version 0.2.1",
+		"npm install --global --ignore-scripts --no-audit --no-fund",
+		`converted="$(cygpath -u "$1")"`,
+		`SHIM="$(bash_path "${SHIM_NATIVE}")"`,
+		`version_output="$("${SHIM}" version)"`,
+		`^ai-cli-gateway v0[.]2[.]1 [(][0-9a-f]{40}, [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z[)]$`)
 
 	if strings.Count(workflow, "-tags=live") != 1 ||
 		!strings.Contains(workflow, "go test -tags=live -run '^$' ./internal/provider/...") {
@@ -4122,6 +5352,7 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 		"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
 		"continue-on-error: true", "allow-failure", "actions/checkout@v6", "actions/setup-go@v6",
 		"actions/checkout@v7", "actions/setup-go@v7", "golangci/golangci-lint-action@v9",
+		"actions/setup-node@v7",
 		"d583c34f0599d37dbac4a198b9c83201be380893",
 	} {
 		if strings.Contains(workflow, forbidden) {
@@ -4153,14 +5384,14 @@ func validateCIActionlintStep(workflow, lintJob string) error {
 	if actionlintStep == "" {
 		return errors.New("missing parsed Validate workflow syntax step")
 	}
-	if err := requireExactTextSHA256("parsed actionlint step metadata", actionlintStep, "a931acb732b7b1ff34549eb83f61795e502e014023bd6c7b7f4f962af0d84597"); err != nil {
+	if err := requireExactTextSHA256("parsed actionlint step metadata", actionlintStep, "dcd20e9e5820d344dd5098e7dee083de34fefa4782afb32db783f03f568201e3"); err != nil {
 		return err
 	}
 	actionlintRun, err := decodedWorkflowStepRun([]byte(workflow), "lint", "Validate workflow syntax")
 	if err != nil {
 		return fmt.Errorf("decode actionlint run: %w", err)
 	}
-	if err := requireExactTextSHA256("decoded actionlint run", actionlintRun, "fb19e602eee29370c9ca45392e5178b91ee76c181e05c2368984ae8de95cf5d3"); err != nil {
+	if err := requireExactTextSHA256("decoded actionlint run", actionlintRun, "3a4691e1ffa2261b6bc82b6a1afb7c6cbb7c903441191504c32c3ae37a2b9285"); err != nil {
 		return err
 	}
 	for _, required := range []string{
@@ -4191,7 +5422,7 @@ func validateCIActionlintStep(workflow, lintJob string) error {
 		`run_clean_actionlint -version`,
 		`run_clean_actionlint -help`,
 		`-config-file "${ACTIONLINT_ROOT}/config/actionlint.yaml"`,
-		`.github/workflows/ci.yml .github/workflows/release.yml`,
+		`.github/workflows/ci.yml .github/workflows/release.yml .github/workflows/npm-release.yml`,
 	} {
 		if !strings.Contains(actionlintStep, required) {
 			return fmt.Errorf("parsed actionlint step is missing %q", required)
@@ -4218,7 +5449,7 @@ func validateCIActionlintStep(workflow, lintJob string) error {
 		`run_clean_actionlint \`,
 		`-config-file "${ACTIONLINT_ROOT}/config/actionlint.yaml" \`,
 		`-shellcheck= -pyflakes= -no-color \`,
-		`.github/workflows/ci.yml .github/workflows/release.yml`,
+		`.github/workflows/ci.yml .github/workflows/release.yml .github/workflows/npm-release.yml`,
 	}
 	if shellLineSequenceCount(lines, wantLint) != 1 || shellLinePrefixCount(lines, "run_clean_actionlint ") != 1 ||
 		shellLineCount(lines, `test "$(run_clean_actionlint -version | sed -n '1p')" = v1.7.12`) != 1 ||
@@ -4339,8 +5570,8 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		{
 			name: "actionlint targets hidden in dead string",
 			mutate: replaceCIOnce(
-				"          run_clean_actionlint \\\n            -config-file \"${ACTIONLINT_ROOT}/config/actionlint.yaml\" \\\n            -shellcheck= -pyflakes= -no-color \\\n            .github/workflows/ci.yml .github/workflows/release.yml\n",
-				"          : '-config-file \"${ACTIONLINT_ROOT}/config/actionlint.yaml\" .github/workflows/ci.yml .github/workflows/release.yml'\n          run_clean_actionlint /dev/null\n",
+				"          run_clean_actionlint \\\n            -config-file \"${ACTIONLINT_ROOT}/config/actionlint.yaml\" \\\n            -shellcheck= -pyflakes= -no-color \\\n            .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/npm-release.yml\n",
+				"          : '-config-file \"${ACTIONLINT_ROOT}/config/actionlint.yaml\" .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/npm-release.yml'\n          run_clean_actionlint /dev/null\n",
 			),
 		},
 		{name: "missing workflow_call trigger", mutate: replaceCIOnce("  workflow_call:\n", "")},
@@ -4630,6 +5861,78 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		},
 		{name: "npm lifecycle scripts enabled", mutate: replaceCIOnce("npm ci --ignore-scripts", "npm ci")},
 		{
+			name: "npm contract lifecycle scripts enabled",
+			mutate: replaceCIOnce(
+				"npm ci --ignore-scripts --prefix npm",
+				"npm ci --prefix npm",
+			),
+		},
+		{
+			name:   "npm contract Node floor loosened",
+			mutate: replaceCIOnce(`      - "22.14.0"`, `      - "22"`),
+		},
+		{
+			name: "npm host omitted",
+			mutate: replaceCIOnce(
+				"          - runner: windows-2025\n"+
+					"            target: win32-x64\n"+
+					"            goos: windows\n"+
+					"            goarch: amd64\n"+
+					"            executable: ai-cli-gateway.exe\n",
+				"",
+			),
+		},
+		{
+			name: "npm host receives a secret",
+			mutate: replaceCIOnce(
+				"        env:\n          CGO_ENABLED: 0\n",
+				"        env:\n          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}\n          CGO_ENABLED: 0\n",
+			),
+		},
+		{
+			name: "npm host continue-on-error bypass",
+			mutate: replaceCIOnce(
+				"  npm-host-install:\n    runs-on: ${{ matrix.runner }}\n",
+				"  npm-host-install:\n    runs-on: ${{ matrix.runner }}\n    continue-on-error: true\n",
+			),
+		},
+		{
+			name:   "npm host moving action tag",
+			mutate: replaceCINth(setupNodeAction, "actions/setup-node@v7", 3),
+		},
+		{
+			name: "npm host execution skipped",
+			mutate: replaceCIOnce(
+				`          version_output="$("${SHIM}" version)"`,
+				`          version_output="ai-cli-gateway v0.2.1 (0000000000000000000000000000000000000000, 2000-01-01T00:00:00Z)"`,
+			),
+		},
+		{
+			name: "npm host Windows shim bypasses Bash path conversion",
+			mutate: replaceCIOnce(
+				`          SHIM="$(bash_path "${SHIM_NATIVE}")"`,
+				`          SHIM="${SHIM_NATIVE}"`,
+			),
+		},
+		{
+			name: "npm host Windows path conversion omitted",
+			mutate: replaceCIOnce(
+				`            converted="$(cygpath -u "$1")"`,
+				`            converted="$1"`,
+			),
+		},
+		{
+			name: "npm host Bash path backslash guard removed",
+			mutate: replaceCIOnce(
+				`            *\\*) return 1 ;;`,
+				`            *) ;;`,
+			),
+		},
+		{
+			name:   "npm host release version changed",
+			mutate: replaceCIOnce("          TAG=v0.2.1\n", "          TAG=v0.2.2\n"),
+		},
+		{
 			name: "wrong npm prefix",
 			mutate: replaceCIOnce(
 				`npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"`,
@@ -4828,7 +6131,10 @@ func validateSDKCIWorkflowContract(workflow string) error {
 	}
 
 	wantActionsByJob := expectedCIJobActions()
-	for _, name := range []string{"lint", "linux", "macos", "windows", "cross-build", "sdk-contract"} {
+	for _, name := range []string{
+		"lint", "linux", "macos", "windows", "cross-build", "sdk-contract",
+		"npm-contract", "npm-host-install",
+	} {
 		job := jobs[name]
 		contract := contracts[name]
 		fields, parseErr := parseImmediateYAMLFields(job, 4)
@@ -5083,7 +6389,167 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 				),
 			},
 		},
+		"npm-contract": {
+			fields: map[string]string{
+				"runs-on": "ubuntu-24.04", "timeout-minutes": "8", "strategy": "", "steps": "",
+			},
+			strategy: []string{
+				"  matrix:",
+				"    node-version:",
+				`      - "22.14.0"`,
+				`      - "24.13.0"`,
+			},
+			steps: []string{
+				checkout,
+				yamlContractLines(
+					"- uses: "+setupNodeAction,
+					"  with:",
+					"    node-version: ${{ matrix.node-version }}",
+					"    package-manager-cache: false",
+				),
+				yamlContractLines(
+					"- name: Install npm contract dependencies",
+					"  run: npm ci --ignore-scripts --prefix npm",
+				),
+				yamlContractLines(
+					"- name: Test npm package contract",
+					"  run: npm test --prefix npm",
+				),
+			},
+		},
+		"npm-host-install": {
+			fields: map[string]string{
+				"runs-on": "${{ matrix.runner }}", "timeout-minutes": "15", "strategy": "", "steps": "",
+			},
+			strategy: []string{
+				"  fail-fast: false",
+				"  matrix:",
+				"    include:",
+				"      - runner: ubuntu-24.04",
+				"        target: linux-x64",
+				"        goos: linux",
+				"        goarch: amd64",
+				"        executable: ai-cli-gateway",
+				"      - runner: macos-15",
+				"        target: darwin-arm64",
+				"        goos: darwin",
+				"        goarch: arm64",
+				"        executable: ai-cli-gateway",
+				"      - runner: windows-2025",
+				"        target: win32-x64",
+				"        goos: windows",
+				"        goarch: amd64",
+				"        executable: ai-cli-gateway.exe",
+			},
+			steps: []string{
+				checkout,
+				yamlContractLines(
+					"- uses: "+setupGoAction,
+					"  with:",
+					"    go-version-file: .go-version",
+					"    cache: false",
+				),
+				yamlContractLines(
+					"- uses: "+setupNodeAction,
+					"  with:",
+					`    node-version: "24.13.0"`,
+					"    package-manager-cache: false",
+				),
+				npmHostInstallStepContract(),
+			},
+		},
 	}
+}
+
+func npmHostInstallStepContract() string {
+	return yamlContractLines(
+		"- name: Build, pack, install, and execute host package",
+		"  shell: bash",
+		"  env:",
+		"    CGO_ENABLED: 0",
+		"    GOOS: ${{ matrix.goos }}",
+		"    GOARCH: ${{ matrix.goarch }}",
+		"    NPM_TARGET: ${{ matrix.target }}",
+		"    NATIVE_EXECUTABLE: ${{ matrix.executable }}",
+		"  run: |",
+		"    set -euo pipefail",
+		"    umask 077",
+		"    TAG=v0.2.1",
+		`    TAG_COMMIT="${GITHUB_SHA}"`,
+		`    [[ "${TAG_COMMIT}" =~ ^[0-9a-f]{40}$ ]]`,
+		`    source_epoch="$(git show -s --format=%ct "${TAG_COMMIT}")"`,
+		`    [[ "${source_epoch}" =~ ^[0-9]+$ ]]`,
+		`    source_date="$(node -e 'process.stdout.write(new Date(Number(process.argv[1]) * 1000).toISOString().replace(".000Z", "Z"))' "${source_epoch}")"`,
+		`    [[ "${source_date}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]`,
+		"    canonical_child() {",
+		`      node -e 'const path = require("node:path"); process.stdout.write(path.resolve(process.argv[1], process.argv[2]));' "$1" "$2"`,
+		"    }",
+		"    bash_path() {",
+		"      local converted",
+		`      if [[ "${RUNNER_OS}" = Windows ]]; then`,
+		"        command -v cygpath >/dev/null",
+		`        converted="$(cygpath -u "$1")"`,
+		"      else",
+		`        converted="$1"`,
+		"      fi",
+		`      case "${converted}" in`,
+		"        /*) ;;",
+		"        *) return 1 ;;",
+		"      esac",
+		`      case "${converted}" in`,
+		`        *\\*) return 1 ;;`,
+		"      esac",
+		`      printf '%s\n' "${converted}"`,
+		"    }",
+		`    NPM_JOB_PARENT="$(canonical_child "${RUNNER_TEMP}" npm-host-install)"`,
+		`    BINARY_ROOT="$(canonical_child "${NPM_JOB_PARENT}" binaries)"`,
+		`    BINARY_DIRECTORY="$(canonical_child "${BINARY_ROOT}" "${GOOS}_${GOARCH}")"`,
+		`    BINARY_PATH="$(canonical_child "${BINARY_DIRECTORY}" "${NATIVE_EXECUTABLE}")"`,
+		`    NPM_STAGING_ROOT="$(canonical_child "${NPM_JOB_PARENT}" staging)"`,
+		`    NPM_TARBALL_ROOT="$(canonical_child "${NPM_JOB_PARENT}" tarballs)"`,
+		`    NPM_INSTALL_PREFIX="$(canonical_child "${NPM_JOB_PARENT}" install)"`,
+		`    DESCRIPTOR="$(canonical_child "${NPM_TARBALL_ROOT}" packages.json)"`,
+		`    node -e 'const fs = require("node:fs"); for (const directory of process.argv.slice(1)) { if (fs.existsSync(directory)) process.exit(1); fs.mkdirSync(directory, { mode: 0o700 }); fs.chmodSync(directory, 0o700); const metadata = fs.lstatSync(directory); if (!metadata.isDirectory() || metadata.isSymbolicLink() || (process.platform !== "win32" && (metadata.mode & 0o777) !== 0o700) || (typeof process.getuid === "function" && metadata.uid !== process.getuid())) process.exit(1); }' \`,
+		`      "${NPM_JOB_PARENT}" \`,
+		`      "${BINARY_ROOT}" \`,
+		`      "${BINARY_DIRECTORY}" \`,
+		`      "${NPM_TARBALL_ROOT}" \`,
+		`      "${NPM_INSTALL_PREFIX}"`,
+		`    ldflags="-s -w -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Version=${TAG} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Commit=${TAG_COMMIT} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Date=${source_date}"`,
+		`    go build -trimpath -buildvcs=false -mod=readonly -ldflags "${ldflags}" \`,
+		`      -o "${BINARY_PATH}" ./cmd/ai-cli-gateway`,
+		`    node npm/scripts/stage-packages.js \`,
+		`      --repository-root "${GITHUB_WORKSPACE}" \`,
+		`      --binary-root "${BINARY_ROOT}" \`,
+		`      --output-root "${NPM_STAGING_ROOT}" \`,
+		`      --version 0.2.1 \`,
+		`      --target "${NPM_TARGET}"`,
+		`    node npm/scripts/verify-packages.js \`,
+		`      --staging-root "${NPM_STAGING_ROOT}" \`,
+		`      --tarball-root "${NPM_TARBALL_ROOT}" \`,
+		`      --descriptor "${DESCRIPTOR}" \`,
+		`      --version 0.2.1`,
+		"    package_filename() {",
+		`      node -e 'const fs = require("node:fs"); const packages = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const index = Number(process.argv[2]); const target = process.argv[3]; if (!Array.isArray(packages) || packages.length !== 2 || packages[0].name !== "ai-cli-gateway-" + target || packages[1].name !== "ai-cli-gateway" || (index !== 0 && index !== 1)) process.exit(1); process.stdout.write(packages[index].filename);' "${DESCRIPTOR}" "$1" "${NPM_TARGET}"`,
+		"    }",
+		`    NATIVE_FILENAME="$(package_filename 0)"`,
+		`    LAUNCHER_FILENAME="$(package_filename 1)"`,
+		`    NATIVE_TARBALL="$(canonical_child "${NPM_TARBALL_ROOT}" "${NATIVE_FILENAME}")"`,
+		`    LAUNCHER_TARBALL="$(canonical_child "${NPM_TARBALL_ROOT}" "${LAUNCHER_FILENAME}")"`,
+		`    npm install --global --ignore-scripts --no-audit --no-fund \`,
+		`      --prefix "${NPM_INSTALL_PREFIX}" "${NATIVE_TARBALL}" "${LAUNCHER_TARBALL}"`,
+		`    if [[ "${RUNNER_OS}" = Windows ]]; then`,
+		`      SHIM_NATIVE="$(canonical_child "${NPM_INSTALL_PREFIX}" ai-cli-gateway)"`,
+		"    else",
+		`      SHIM_NATIVE="$(canonical_child "${NPM_INSTALL_PREFIX}" bin/ai-cli-gateway)"`,
+		"    fi",
+		`    SHIM="$(bash_path "${SHIM_NATIVE}")"`,
+		`    test -x "${SHIM}"`,
+		`    version_output="$("${SHIM}" version)"`,
+		`    version_pattern='^ai-cli-gateway v0[.]2[.]1 [(][0-9a-f]{40}, [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z[)]$'`,
+		`    [[ "${version_output}" =~ ${version_pattern} ]]`,
+		`    test "${version_output}" = "ai-cli-gateway ${TAG} (${TAG_COMMIT}, ${source_date})"`,
+	)
 }
 
 func expectedCIJobActions() map[string][]string {
@@ -5101,6 +6567,8 @@ func expectedCIJobActions() map[string][]string {
 			setupPythonAction,
 			setupNodeAction,
 		},
+		"npm-contract":     {checkoutAction, setupNodeAction},
+		"npm-host-install": {checkoutAction, setupGoAction, setupNodeAction},
 	}
 }
 
@@ -5551,6 +7019,595 @@ type releaseWorkflowJob struct {
 type releaseWorkflowDocument struct {
 	Root *yaml.Node
 	Jobs map[string]releaseWorkflowJob
+}
+
+type npmReleaseWorkflowDocument struct {
+	Root *yaml.Node
+	Jobs map[string]releaseWorkflowJob
+}
+
+func TestNPMReleaseWorkflowContract(t *testing.T) {
+	document := readRepositoryFile(t, ".github/workflows/npm-release.yml")
+	workflow, err := parseClosedNPMReleaseWorkflow(document)
+	if err != nil {
+		t.Fatalf("parse closed npm release workflow: %v", err)
+	}
+	if err := validateNPMReleaseWorkflowContract(workflow); err != nil {
+		t.Fatalf("npm release workflow contract: %v", err)
+	}
+}
+
+func TestNPMReleaseWorkflowBashSyntax(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("decoded npm release shell syntax requires Bash")
+	}
+	workflow, err := parseClosedNPMReleaseWorkflow(readRepositoryFile(t, ".github/workflows/npm-release.yml"))
+	if err != nil {
+		t.Fatalf("parse closed npm release workflow: %v", err)
+	}
+	count := 0
+	for jobName, job := range workflow.Jobs {
+		for _, step := range job.Steps {
+			if step.Run == "" {
+				continue
+			}
+			assertBashSyntax(t, jobName+"/"+step.Name, step.Run)
+			count++
+		}
+	}
+	if count != 10 {
+		t.Fatalf("npm release Bash step count = %d, want 10", count)
+	}
+}
+
+func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
+	document := string(readRepositoryFile(t, ".github/workflows/npm-release.yml"))
+	tests := []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{name: "duplicate mapping key", mutate: replaceNPMReleaseOnce("name: npm Release\n", "name: npm Release\nname: Shadow\n")},
+		{name: "anchor", mutate: replaceNPMReleaseOnce("name: npm Release\n", "name: &release npm Release\n")},
+		{name: "alias", mutate: replaceNPMReleaseOnce("name: npm Release\n", "name: &release npm Release\nshadow: *release\n")},
+		{name: "unknown top field", mutate: replaceNPMReleaseOnce("name: npm Release\n", "name: npm Release\nunexpected: true\n")},
+		{name: "unknown job field", mutate: replaceNPMReleaseOnce("  package:\n    runs-on: ubuntu-24.04\n", "  package:\n    runs-on: ubuntu-24.04\n    if: always()\n")},
+		{name: "step continue on error", mutate: replaceNPMReleaseOnce("      - name: Validate immutable release metadata\n", "      - name: Validate immutable release metadata\n        continue-on-error: true\n")},
+		{name: "event widened", mutate: replaceNPMReleaseOnce("      - published\n", "      - published\n      - created\n")},
+		{name: "top permission widened", mutate: replaceNPMReleaseOnce("permissions: {}\n", "permissions:\n  contents: write\n")},
+		{name: "concurrency changed", mutate: replaceNPMReleaseOnce("npm-release-${{ github.repository }}-${{ github.event.release.tag_name }}", "npm-release-${{ github.repository }}")},
+		{name: "cancellation enabled", mutate: replaceNPMReleaseOnce("  cancel-in-progress: false\n", "  cancel-in-progress: true\n")},
+		{name: "package runner changed", mutate: replaceNPMReleaseOnce("  package:\n    runs-on: ubuntu-24.04\n", "  package:\n    runs-on: ubuntu-latest\n")},
+		{name: "package timeout changed", mutate: replaceNPMReleaseOnce("    timeout-minutes: 25\n", "    timeout-minutes: 26\n")},
+		{name: "package permission widened", mutate: replaceNPMReleaseOnce("    permissions:\n      contents: read\n", "    permissions:\n      contents: read\n      id-token: write\n")},
+		{name: "publish dependency changed", mutate: replaceNPMReleaseOnce("    needs: package\n", "    needs: unexpected\n")},
+		{name: "publish permission removed", mutate: replaceNPMReleaseOnce("      id-token: write\n", "      id-token: read\n")},
+		{name: "moving checkout", mutate: replaceNPMReleaseOnce(checkoutAction, "actions/checkout@v7")},
+		{name: "moving setup go", mutate: replaceNPMReleaseOnce(setupGoAction, "actions/setup-go@v7")},
+		{name: "moving setup node", mutate: replaceNPMReleaseOnce(setupNodeAction, "actions/setup-node@v7")},
+		{name: "moving upload", mutate: replaceNPMReleaseOnce(uploadArtifactAction, "actions/upload-artifact@v7")},
+		{name: "moving download", mutate: replaceNPMReleaseOnce(downloadArtifactAction, "actions/download-artifact@v8")},
+		{name: "checkout persists credentials", mutate: replaceNPMReleaseOnce("          persist-credentials: false\n", "          persist-credentials: true\n")},
+		{name: "wrong go version", mutate: replaceNPMReleaseOnce("          go-version: 1.26.5\n", "          go-version: latest\n")},
+		{name: "wrong node version", mutate: replaceNPMReleaseOnce("          node-version: \"24.13.0\"\n", "          node-version: latest\n")},
+		{name: "immutable guard removed", mutate: replaceNPMReleaseOnce("            (.immutable == true) and\n", "")},
+		{name: "repository authority changed", mutate: replaceNPMReleaseOnce("readonly repository=krkarma777/ai-cli-gateway", "readonly repository=attacker/ai-cli-gateway")},
+		{name: "canonical tag widened", mutate: replaceNPMReleaseOnce("test \"${EVENT_TAG}\" = v0.2.1", "[[ \"${EVENT_TAG}\" = v* ]]")},
+		{name: "asset allowlist weakened", mutate: replaceNPMReleaseOnce("          ai-cli-gateway_0.2.1_linux_arm64.tar.gz\n", "")},
+		{name: "asset digest weakened", mutate: replaceNPMReleaseOnce("^sha256:[0-9a-f]{64}$", "^sha256:")},
+		{name: "strict checksums removed", mutate: replaceNPMReleaseOnce("sha256sum --check --strict SHA256SUMS", "sha256sum --check SHA256SUMS")},
+		{name: "attestation predicate removed", mutate: replaceNPMReleaseOnce("              --predicate-type https://slsa.dev/provenance/v1 \\\n", "")},
+		{name: "attestation workflow changed", mutate: replaceNPMReleaseOnce("github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml", "github.com/attacker/workflow.yml")},
+		{name: "deterministic build flag removed", mutate: replaceNPMReleaseOnce("-trimpath -buildvcs=false -mod=readonly -ldflags", "-mod=readonly -ldflags")},
+		{name: "archive comparison removed", mutate: replaceNPMReleaseOnce("          test \"${actual_digest}\" = \"${expected_digest}\"\n", "")},
+		{name: "npm verifier removed", mutate: replaceNPMReleaseOnce("          node npm/scripts/verify-packages.js \\\n", "          true # node npm/scripts/verify-packages.js \\\n")},
+		{name: "linux execution removed", mutate: replaceNPMReleaseOnce("          test \"${version_output}\" = \"ai-cli-gateway ${TAG} (${TAG_COMMIT}, ${SOURCE_DATE})\"\n", "")},
+		{name: "artifact overwrite enabled", mutate: replaceNPMReleaseOnce("          overwrite: false\n", "          overwrite: true\n")},
+		{name: "artifact retention widened", mutate: replaceNPMReleaseOnce("          retention-days: 1\n", "          retention-days: 30\n")},
+		{name: "name based artifact download", mutate: replaceNPMReleaseOnce("          artifact-ids: ${{ needs.package.outputs.artifact_id }}\n", "          name: npm-packages-v0.2.1\n")},
+		{name: "artifact digest mismatch ignored", mutate: replaceNPMReleaseOnce("          digest-mismatch: error\n", "          digest-mismatch: ignore\n")},
+		{name: "raw artifact download decompressed", mutate: replaceNPMReleaseOnce("          skip-decompress: true\n", "          skip-decompress: false\n")},
+		{name: "raw artifact digest comparison removed", mutate: replaceNPMReleaseOnce("          test \"${actual_artifact_digest}\" = \"${EXPECTED_ARTIFACT_DIGEST}\"\n", "")},
+		{name: "downloaded descriptor lstat removed", mutate: replaceNPMReleaseOnce("          const descriptorMetadata = lstatSync(descriptorPath);\n", "")},
+		{name: "tarball rehash removed", mutate: replaceNPMReleaseOnce("            test \"${actual_integrity}\" = \"${integrities[${index}]}\"\n", "")},
+		{name: "structured E404 parser removed", mutate: replaceNPMReleaseOnce("          const failure = JSON.parse(readFileSync(process.argv[2], \"utf8\"));\n", "          const failure = { error: { code: \"E404\" } };\n")},
+		{name: "registry absence widened", mutate: replaceNPMReleaseOnce("grep -Fx 'npm error code E404'", "grep -F 'npm error'")},
+		{name: "publish scripts enabled", mutate: replaceNPMReleaseOnce("npm publish \"${tarball}\" --ignore-scripts --access public --provenance", "npm publish \"${tarball}\" --access public --provenance")},
+		{name: "publish provenance removed", mutate: replaceNPMReleaseOnce(" --access public --provenance", " --access public")},
+		{name: "launcher moved first", mutate: moveNPMReleaseLauncherFirst},
+		{name: "post publish SRI removed", mutate: replaceNPMReleaseLast("            test \"${remote_integrity}\" = \"${integrities[${index}]}\"\n", "")},
+		{name: "bootstrap token renamed", mutate: replaceNPMReleaseOnce("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n", "          NODE_AUTH_TOKEN: ${{ secrets.OTHER_TOKEN }}\n")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := test.mutate(document)
+			if mutated == document {
+				t.Fatal("mutation did not change npm release workflow")
+			}
+			workflow, err := parseClosedNPMReleaseWorkflow([]byte(mutated))
+			if err == nil {
+				err = validateNPMReleaseWorkflowContract(workflow)
+			}
+			if err == nil {
+				t.Fatal("closed npm release contract accepted mutation")
+			}
+		})
+	}
+}
+
+func replaceNPMReleaseOnce(old, replacement string) func(string) string {
+	return func(document string) string {
+		return strings.Replace(document, old, replacement, 1)
+	}
+}
+
+func replaceNPMReleaseLast(old, replacement string) func(string) string {
+	return func(document string) string {
+		index := strings.LastIndex(document, old)
+		if index < 0 {
+			return document
+		}
+		return document[:index] + replacement + document[index+len(old):]
+	}
+}
+
+func moveNPMReleaseLauncherFirst(document string) string {
+	nativeFirst := strings.Join([]string{
+		"          packages=(",
+		"            ai-cli-gateway-darwin-x64",
+		"            ai-cli-gateway-darwin-arm64",
+		"            ai-cli-gateway-linux-x64",
+		"            ai-cli-gateway-linux-arm64",
+		"            ai-cli-gateway-win32-x64",
+		"            ai-cli-gateway",
+		"          )",
+	}, "\n") + "\n"
+	launcherFirst := strings.Join([]string{
+		"          packages=(",
+		"            ai-cli-gateway",
+		"            ai-cli-gateway-darwin-x64",
+		"            ai-cli-gateway-darwin-arm64",
+		"            ai-cli-gateway-linux-x64",
+		"            ai-cli-gateway-linux-arm64",
+		"            ai-cli-gateway-win32-x64",
+		"          )",
+	}, "\n") + "\n"
+	return strings.Replace(document, nativeFirst, launcherFirst, 1)
+}
+
+func parseClosedNPMReleaseWorkflow(document []byte) (npmReleaseWorkflowDocument, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(document))
+	var root yaml.Node
+	if err := decoder.Decode(&root); err != nil {
+		return npmReleaseWorkflowDocument{}, fmt.Errorf("decode document: %w", err)
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return npmReleaseWorkflowDocument{}, errors.New("multiple YAML documents")
+		}
+		return npmReleaseWorkflowDocument{}, fmt.Errorf("decode trailing document: %w", err)
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) != 1 || root.Content[0].Kind != yaml.MappingNode || root.Content[0].Style&yaml.FlowStyle != 0 {
+		return npmReleaseWorkflowDocument{}, errors.New("npm release workflow must be one block mapping document")
+	}
+	if err := validateClosedNPMReleaseYAMLNode(&root); err != nil {
+		return npmReleaseWorkflowDocument{}, err
+	}
+	top, err := closedYAMLMapping(root.Content[0], "name", "on", "permissions", "concurrency", "jobs")
+	if err != nil {
+		return npmReleaseWorkflowDocument{}, fmt.Errorf("top level: %w", err)
+	}
+	if value, scalarErr := closedYAMLScalar(top["name"]); scalarErr != nil || value != "npm Release" {
+		return npmReleaseWorkflowDocument{}, fmt.Errorf("name must be npm Release: %w", scalarErr)
+	}
+	if err := validateNPMReleaseTrigger(top["on"]); err != nil {
+		return npmReleaseWorkflowDocument{}, err
+	}
+	permissions := top["permissions"]
+	if permissions.Kind != yaml.MappingNode || len(permissions.Content) != 0 || permissions.Style&yaml.FlowStyle == 0 {
+		return npmReleaseWorkflowDocument{}, errors.New("top-level permissions must be the explicit empty mapping")
+	}
+	if err := validateNPMReleaseConcurrency(top["concurrency"]); err != nil {
+		return npmReleaseWorkflowDocument{}, err
+	}
+	jobNodes, err := closedYAMLMapping(top["jobs"], "package", "publish")
+	if err != nil {
+		return npmReleaseWorkflowDocument{}, fmt.Errorf("jobs: %w", err)
+	}
+	jobs := make(map[string]releaseWorkflowJob, len(jobNodes))
+	for name, node := range jobNodes {
+		job, parseErr := parseNPMReleaseWorkflowJob(name, node)
+		if parseErr != nil {
+			return npmReleaseWorkflowDocument{}, fmt.Errorf("job %s: %w", name, parseErr)
+		}
+		jobs[name] = job
+	}
+	return npmReleaseWorkflowDocument{Root: &root, Jobs: jobs}, nil
+}
+
+func validateClosedNPMReleaseYAMLNode(node *yaml.Node) error {
+	if node == nil {
+		return errors.New("nil YAML node")
+	}
+	if node.Anchor != "" || node.Alias != nil || node.Kind == yaml.AliasNode {
+		return errors.New("anchors and aliases are forbidden")
+	}
+	if node.Style&yaml.TaggedStyle != 0 {
+		return errors.New("explicit YAML tags are forbidden")
+	}
+	if node.Kind == yaml.SequenceNode && node.Style&yaml.FlowStyle != 0 {
+		return errors.New("flow-style sequences are forbidden")
+	}
+	if node.Kind == yaml.MappingNode && node.Style&yaml.FlowStyle != 0 && len(node.Content) != 0 {
+		return errors.New("nonempty flow-style mappings are forbidden")
+	}
+	switch node.Kind {
+	case yaml.DocumentNode:
+		if node.ShortTag() != "!!null" && node.Tag != "" {
+			return fmt.Errorf("unsupported document tag %q", node.Tag)
+		}
+	case yaml.MappingNode:
+		if node.ShortTag() != "!!map" || len(node.Content)%2 != 0 {
+			return errors.New("invalid mapping node")
+		}
+		seen := make(map[string]struct{}, len(node.Content)/2)
+		for index := 0; index < len(node.Content); index += 2 {
+			key := node.Content[index]
+			if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" || key.Style&yaml.TaggedStyle != 0 || key.Value == "<<" {
+				return errors.New("mapping key must be an implicitly tagged non-merge string")
+			}
+			if _, duplicate := seen[key.Value]; duplicate {
+				return fmt.Errorf("duplicate mapping key %q", key.Value)
+			}
+			seen[key.Value] = struct{}{}
+		}
+	case yaml.SequenceNode:
+		if node.ShortTag() != "!!seq" {
+			return fmt.Errorf("sequence tag = %q", node.ShortTag())
+		}
+	case yaml.ScalarNode:
+		switch node.ShortTag() {
+		case "!!str", "!!int", "!!bool", "!!null", "!!float":
+		default:
+			return fmt.Errorf("unsupported implicit scalar tag %q", node.ShortTag())
+		}
+	case yaml.AliasNode:
+		return errors.New("YAML aliases are forbidden")
+	default:
+		return fmt.Errorf("unsupported YAML node kind %d", node.Kind)
+	}
+	for _, child := range node.Content {
+		if err := validateClosedNPMReleaseYAMLNode(child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNPMReleaseTrigger(node *yaml.Node) error {
+	trigger, err := closedYAMLMapping(node, "release")
+	if err != nil {
+		return fmt.Errorf("trigger: %w", err)
+	}
+	release, err := closedYAMLMapping(trigger["release"], "types")
+	if err != nil {
+		return fmt.Errorf("release trigger: %w", err)
+	}
+	types := release["types"]
+	if types.Kind != yaml.SequenceNode || len(types.Content) != 1 {
+		return errors.New("npm release trigger must have one release type")
+	}
+	value, err := closedYAMLScalar(types.Content[0])
+	if err != nil || value != "published" {
+		return errors.New("npm release trigger must be only published")
+	}
+	return nil
+}
+
+func validateNPMReleaseConcurrency(node *yaml.Node) error {
+	concurrency, err := closedYAMLScalarMap(node, "group", "cancel-in-progress")
+	if err != nil {
+		return fmt.Errorf("concurrency: %w", err)
+	}
+	want := map[string]string{
+		"group":              "npm-release-${{ github.repository }}-${{ github.event.release.tag_name }}",
+		"cancel-in-progress": "false",
+	}
+	if !reflect.DeepEqual(concurrency, want) {
+		return fmt.Errorf("npm release concurrency = %v, want %v", concurrency, want)
+	}
+	return nil
+}
+
+func parseNPMReleaseWorkflowJob(name string, node *yaml.Node) (releaseWorkflowJob, error) {
+	allowed := []string{"runs-on", "timeout-minutes", "permissions", "steps"}
+	switch name {
+	case "package":
+		allowed = append(allowed, "outputs")
+	case "publish":
+		allowed = append(allowed, "needs")
+	default:
+		return releaseWorkflowJob{}, fmt.Errorf("unexpected job %q", name)
+	}
+	fields, err := closedYAMLMapping(node, allowed...)
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	job := releaseWorkflowJob{}
+	job.RunsOn, err = closedYAMLScalar(fields["runs-on"])
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	job.Timeout, err = closedYAMLScalar(fields["timeout-minutes"])
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	if name == "publish" {
+		job.Needs, err = closedYAMLStringOrSequence(fields["needs"])
+		if err != nil {
+			return releaseWorkflowJob{}, err
+		}
+	}
+	permissionKeys := map[string][]string{
+		"package": {"contents"},
+		"publish": {"contents", "id-token"},
+	}
+	job.Permissions, err = closedYAMLScalarMap(fields["permissions"], permissionKeys[name]...)
+	if err != nil {
+		return releaseWorkflowJob{}, err
+	}
+	if name == "package" {
+		job.Outputs, err = closedYAMLScalarMap(fields["outputs"], "artifact_id", "artifact_digest")
+		if err != nil {
+			return releaseWorkflowJob{}, err
+		}
+	}
+	job.Steps, err = parseReleaseWorkflowSteps(fields["steps"])
+	return job, err
+}
+
+func validateNPMReleaseWorkflowContract(workflow npmReleaseWorkflowDocument) error {
+	packageJob := workflow.Jobs["package"]
+	publishJob := workflow.Jobs["publish"]
+	if packageJob.RunsOn != "ubuntu-24.04" || packageJob.Timeout != "25" || len(packageJob.Needs) != 0 ||
+		publishJob.RunsOn != "ubuntu-24.04" || publishJob.Timeout != "10" || !reflect.DeepEqual(publishJob.Needs, []string{"package"}) {
+		return errors.New("npm release runners, timeouts, or dependency graph differ from the closed contract")
+	}
+	if !reflect.DeepEqual(packageJob.Permissions, map[string]string{"contents": "read"}) ||
+		!reflect.DeepEqual(publishJob.Permissions, map[string]string{"contents": "read", "id-token": "write"}) {
+		return errors.New("npm release split-authority permissions differ from the closed contract")
+	}
+	wantOutputs := map[string]string{
+		"artifact_id":     "${{ steps.artifact-metadata.outputs.artifact_id }}",
+		"artifact_digest": "${{ steps.artifact-metadata.outputs.artifact_digest }}",
+	}
+	if !reflect.DeepEqual(packageJob.Outputs, wantOutputs) {
+		return fmt.Errorf("npm package outputs = %v, want %v", packageJob.Outputs, wantOutputs)
+	}
+	if err := validateNPMReleaseActions(packageJob, publishJob); err != nil {
+		return err
+	}
+	if err := validateNPMReleaseStepShapes(packageJob, publishJob); err != nil {
+		return err
+	}
+	if err := validateNPMReleaseArtifactDigestContract(publishJob); err != nil {
+		return err
+	}
+	if err := validateNPMReleaseCohortAndE404Contracts(publishJob); err != nil {
+		return err
+	}
+	return validateNPMReleaseRunHashes(packageJob, publishJob)
+}
+
+func validateNPMReleaseArtifactDigestContract(publishJob releaseWorkflowJob) error {
+	validation, err := namedReleaseStep(publishJob.Steps, "Validate and extract npm artifact")
+	if err != nil {
+		return err
+	}
+	markers := []string{
+		`readonly archive_root="${RUNNER_TEMP}/npm-artifact-archive"`,
+		`readonly package_root="${RUNNER_TEMP}/npm-packages"`,
+		`[[ "${EXPECTED_ARTIFACT_DIGEST}" =~ ^[0-9a-f]{64}$ ]]`,
+		`actual_artifact_digest="$(sha256sum -- "${artifact_archive}" | awk '{print $1}')"`,
+		`test "${actual_artifact_digest}" = "${EXPECTED_ARTIFACT_DIGEST}"`,
+		`actual_entries="$(unzip -Z1 "${artifact_archive}" | LC_ALL=C sort)"`,
+		`test "${actual_entries}" = "${expected_entries}"`,
+		`unzip -q "${artifact_archive}" -d "${package_root}"`,
+		`test "${extracted_entries}" = "${expected_entries}"`,
+	}
+	if err := requireOrderedMarkers(validation.Run, markers...); err != nil {
+		return fmt.Errorf("npm artifact digest/extraction order: %w", err)
+	}
+	return nil
+}
+
+func validateNPMReleaseCohortAndE404Contracts(publishJob releaseWorkflowJob) error {
+	publish, err := namedReleaseStep(publishJob.Steps, "Publish verified npm packages")
+	if err != nil {
+		return err
+	}
+	for _, required := range []string{
+		`const descriptorPath = path.join(root, "packages.json");`,
+		`const descriptorMetadata = lstatSync(descriptorPath);`,
+		`!descriptorMetadata.isFile() || descriptorMetadata.isSymbolicLink() || descriptorMetadata.nlink !== 1`,
+		`const failure = JSON.parse(readFileSync(process.argv[2], "utf8"));`,
+		`JSON.stringify(Object.keys(failure)) !== JSON.stringify(["error"])`,
+		`JSON.stringify(Object.keys(failure.error).sort()) !== JSON.stringify(["code", "detail", "summary"])`,
+		`failure.error.code !== "E404"`,
+		`grep -Fx 'npm error code E404'`,
+	} {
+		if !strings.Contains(publish.Run, required) {
+			return fmt.Errorf("npm publication cohort/E404 contract is missing %q", required)
+		}
+	}
+	return nil
+}
+
+func validateNPMReleaseActions(packageJob, publishJob releaseWorkflowJob) error {
+	wantCounts := map[string]int{
+		checkoutAction: 1, setupGoAction: 1, setupNodeAction: 2,
+		uploadArtifactAction: 1, downloadArtifactAction: 1,
+	}
+	gotCounts := make(map[string]int)
+	for _, job := range []releaseWorkflowJob{packageJob, publishJob} {
+		for _, step := range job.Steps {
+			if step.Uses == "" {
+				continue
+			}
+			if _, allowed := wantCounts[step.Uses]; !allowed {
+				return fmt.Errorf("npm release uses unlisted action %q", step.Uses)
+			}
+			gotCounts[step.Uses]++
+		}
+	}
+	if !reflect.DeepEqual(gotCounts, wantCounts) {
+		return fmt.Errorf("npm release actions = %v, want %v", gotCounts, wantCounts)
+	}
+	if len(packageJob.Steps) != 11 || len(publishJob.Steps) != 5 {
+		return fmt.Errorf("npm release step counts package=%d publish=%d", len(packageJob.Steps), len(publishJob.Steps))
+	}
+	if !reflect.DeepEqual(packageJob.Steps[1].With, map[string]string{
+		"persist-credentials": "false", "fetch-depth": "0", "ref": "${{ steps.metadata.outputs.tag_commit }}",
+	}) || !reflect.DeepEqual(packageJob.Steps[2].With, map[string]string{"go-version": "1.26.5", "cache": "false"}) ||
+		!reflect.DeepEqual(packageJob.Steps[3].With, map[string]string{"node-version": "24.13.0", "package-manager-cache": "false"}) {
+		return errors.New("npm package checkout or tool setup inputs differ from the closed contract")
+	}
+	if !reflect.DeepEqual(publishJob.Steps[0].With, map[string]string{
+		"node-version": "24.13.0", "package-manager-cache": "false", "registry-url": "https://registry.npmjs.org/",
+	}) {
+		return errors.New("npm publish setup-node inputs differ from the closed contract")
+	}
+	upload := packageJob.Steps[9]
+	wantUploadPath := strings.Join([]string{
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-darwin-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-darwin-arm64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-linux-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-linux-arm64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-win32-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/packages.json",
+	}, "\n") + "\n"
+	if upload.ID != "upload" || !reflect.DeepEqual(upload.With, map[string]string{
+		"name": "npm-packages-v0.2.1", "path": wantUploadPath, "overwrite": "false",
+		"if-no-files-found": "error", "include-hidden-files": "false", "compression-level": "0", "retention-days": "1",
+	}) {
+		return fmt.Errorf("npm artifact upload inputs differ from the closed contract: %+v", upload)
+	}
+	download := publishJob.Steps[2]
+	if !reflect.DeepEqual(download.With, map[string]string{
+		"artifact-ids":    "${{ needs.package.outputs.artifact_id }}",
+		"path":            "${{ runner.temp }}/npm-artifact-archive",
+		"digest-mismatch": "error",
+		"skip-decompress": "true",
+	}) {
+		return fmt.Errorf("npm artifact download inputs differ from the closed contract: %v", download.With)
+	}
+	return nil
+}
+
+func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) error {
+	type shape struct {
+		name, id, uses, shell string
+		env                   map[string]string
+	}
+	wantPackage := []shape{
+		{name: "Validate immutable release metadata", id: "metadata", shell: "bash", env: map[string]string{ //nolint:gosec // This is GitHub's documented token expression, not a credential.
+			"GH_TOKEN": "${{ github.token }}", "EVENT_ACTION": "${{ github.event.action }}", "EVENT_REPOSITORY": "${{ github.repository }}",
+			"EVENT_RELEASE_ID": "${{ github.event.release.id }}", "EVENT_TAG": "${{ github.event.release.tag_name }}",
+			"EVENT_DRAFT": "${{ github.event.release.draft }}", "EVENT_PRERELEASE": "${{ github.event.release.prerelease }}",
+		}},
+		{uses: checkoutAction},
+		{uses: setupGoAction},
+		{uses: setupNodeAction},
+		{name: "Validate toolchain and source", shell: "bash", env: map[string]string{
+			"TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
+		}},
+		{name: "Download and verify immutable release assets", shell: "bash", env: map[string]string{ //nolint:gosec // This is GitHub's documented token expression, not a credential.
+			"GH_TOKEN": "${{ github.token }}", "TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
+		}},
+		{name: "Rebuild and compare release archives", id: "build-metadata", shell: "bash", env: map[string]string{
+			"TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
+		}},
+		{name: "Stage and inspect npm packages", shell: "bash", env: map[string]string{"VERSION": "${{ steps.metadata.outputs.version }}"}},
+		{name: "Install and execute Linux x64 package", shell: "bash", env: map[string]string{
+			"TAG": "${{ steps.metadata.outputs.tag }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}", "SOURCE_DATE": "${{ steps.build-metadata.outputs.source_date }}",
+		}},
+		{name: "Upload verified npm packages", id: "upload", uses: uploadArtifactAction},
+		{name: "Validate artifact outputs", id: "artifact-metadata", shell: "bash", env: map[string]string{
+			"RAW_ARTIFACT_ID": "${{ steps.upload.outputs.artifact-id }}", "RAW_ARTIFACT_DIGEST": "${{ steps.upload.outputs.artifact-digest }}",
+		}},
+	}
+	wantPublish := []shape{
+		{uses: setupNodeAction},
+		{name: "Validate artifact identity", shell: "bash", env: map[string]string{
+			"EXPECTED_ARTIFACT_ID": "${{ needs.package.outputs.artifact_id }}", "EXPECTED_ARTIFACT_DIGEST": "${{ needs.package.outputs.artifact_digest }}",
+		}},
+		{name: "Download verified npm packages", uses: downloadArtifactAction},
+		{name: "Validate and extract npm artifact", shell: "bash", env: map[string]string{
+			"EXPECTED_ARTIFACT_DIGEST": "${{ needs.package.outputs.artifact_digest }}",
+		}},
+		{name: "Publish verified npm packages", shell: "bash", env: map[string]string{ //nolint:gosec // This is a GitHub secret reference, not secret material.
+			"NODE_AUTH_TOKEN": "${{ secrets.NPM_TOKEN }}", "EXPECTED_ARTIFACT_DIGEST": "${{ needs.package.outputs.artifact_digest }}",
+			"NPM_CONFIG_REGISTRY": "https://registry.npmjs.org/",
+		}},
+	}
+	validate := func(label string, steps []releaseWorkflowStep, wants []shape) error {
+		if len(steps) != len(wants) {
+			return fmt.Errorf("%s step count = %d, want %d", label, len(steps), len(wants))
+		}
+		for index, want := range wants {
+			got := steps[index]
+			if got.Name != want.name || got.ID != want.id || got.Uses != want.uses || got.Shell != want.shell || !reflect.DeepEqual(got.Env, want.env) {
+				return fmt.Errorf("%s step %d shape = %+v, want %+v", label, index, got, want)
+			}
+			if (got.Uses == "") == (got.Run == "") {
+				return fmt.Errorf("%s step %d does not have one execution form", label, index)
+			}
+			if got.Run != "" && len(got.With) != 0 {
+				return fmt.Errorf("%s run step %d has unexpected with inputs", label, index)
+			}
+		}
+		return nil
+	}
+	if err := validate("package", packageJob.Steps, wantPackage); err != nil {
+		return err
+	}
+	return validate("publish", publishJob.Steps, wantPublish)
+}
+
+func validateNPMReleaseRunHashes(packageJob, publishJob releaseWorkflowJob) error {
+	want := map[string]string{
+		"package/Validate immutable release metadata":          "adbdec70d8ed9440db1929aafc6ad19447f40105799c71a9475f3105b16cda77",
+		"package/Validate toolchain and source":                "631712fb03df18ac2a9572c46e11d4c769477aa60f9d1a96fcee3fb3627770ad",
+		"package/Download and verify immutable release assets": "63da1cd453591d8674f6e4d04bbde51b886f0e8a7b182a3c30e8ad31fce79120",
+		"package/Rebuild and compare release archives":         "a29e7f9ab62446c35ba3ffce2606e723b5eb492b54afa15a0ec3fb1e3e8612d9",
+		"package/Stage and inspect npm packages":               "8e9c66f39ec4ff6eaf541c414556bd22264707c12ccea2e23f7e701142c52726",
+		"package/Install and execute Linux x64 package":        "5f996fe5f6443404603107fe2e49e621fec165b9620db86b570d459c760be4e4",
+		"package/Validate artifact outputs":                    "6c1898c6abdc07af87012ddd3cbb076ffb6998f0a351ee17a0f9cf2378f37bc3",
+		"publish/Validate artifact identity":                   "fe060a961e6dbcddee8a6e7a84987c841c2fde0f9a618448fc3560b07a41a262",
+		"publish/Validate and extract npm artifact":            "627bfa6ce348696aa11792e517f1757f37de235bb806744ec6be2abc22d0a9d6",
+		"publish/Publish verified npm packages":                "bf40d47e14a5b60cecf8bf8f51bb5043671a8a691d8bd25c5004067f18dd4ded",
+	}
+	for label, job := range map[string]releaseWorkflowJob{"package": packageJob, "publish": publishJob} {
+		for _, step := range job.Steps {
+			if step.Run == "" {
+				continue
+			}
+			key := label + "/" + step.Name
+			digest, ok := want[key]
+			if !ok {
+				return fmt.Errorf("unexpected npm release run step %q", key)
+			}
+			if err := requireExactTextSHA256("decoded npm release step "+key, step.Run, digest); err != nil {
+				return err
+			}
+			delete(want, key)
+		}
+	}
+	if len(want) != 0 {
+		return fmt.Errorf("missing npm release run steps %v", reflect.ValueOf(want).MapKeys())
+	}
+	return nil
 }
 
 func TestReleaseWorkflowContract(t *testing.T) {
@@ -6376,7 +8433,7 @@ func TestWorkflowActionlintIsolationScript(t *testing.T) {
 	if calls := readFakeGHCalls(t, filepath.Join(actionlintRoot, "actionlint.argv")); !reflect.DeepEqual(calls, [][]string{
 		{"-version"},
 		{"-help"},
-		{"-config-file", filepath.Join(actionlintRoot, "config", "actionlint.yaml"), "-shellcheck=", "-pyflakes=", "-no-color", ".github/workflows/ci.yml", ".github/workflows/release.yml"},
+		{"-config-file", filepath.Join(actionlintRoot, "config", "actionlint.yaml"), "-shellcheck=", "-pyflakes=", "-no-color", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/npm-release.yml"},
 	}) {
 		t.Fatalf("actionlint argv trace = %q", calls)
 	}
@@ -8578,12 +10635,15 @@ func TestMakefileExactVerificationChain(t *testing.T) {
 	targets, dependencies, recipes := parseMakefileTargets(t, makefile)
 	wantTargets := map[string]struct{}{
 		"fmt-check": {}, "vet": {}, "lint": {}, "test": {}, "race": {},
-		"integration": {}, "build": {}, "verify": {},
+		"integration": {}, "build": {}, "npm-test": {}, "npm-pack-check": {}, "verify": {},
 	}
 	if !reflect.DeepEqual(targets, wantTargets) {
 		t.Fatalf("Makefile targets = %v, want exact public targets %v", targets, wantTargets)
 	}
-	wantVerify := []string{"fmt-check", "vet", "lint", "test", "race", "integration", "build"}
+	wantVerify := []string{
+		"fmt-check", "vet", "lint", "npm-test", "npm-pack-check",
+		"test", "race", "integration", "build",
+	}
 	if !reflect.DeepEqual(dependencies["verify"], wantVerify) {
 		t.Fatalf("verify prerequisites = %q, want exact order %q", dependencies["verify"], wantVerify)
 	}
@@ -8592,7 +10652,10 @@ func TestMakefileExactVerificationChain(t *testing.T) {
 	}
 
 	phony := makefileDirectiveFields(makefile, ".PHONY:")
-	wantPhony := []string{"fmt-check", "vet", "lint", "test", "race", "integration", "build", "verify"}
+	wantPhony := []string{
+		"fmt-check", "vet", "lint", "test", "race", "integration", "build", "verify",
+		"npm-test", "npm-pack-check",
+	}
 	if !reflect.DeepEqual(phony, wantPhony) {
 		t.Fatalf(".PHONY = %q, want exact target order %q", phony, wantPhony)
 	}
@@ -8601,6 +10664,13 @@ func TestMakefileExactVerificationChain(t *testing.T) {
 	requireExactRecipe(t, recipes, "test", "go test ./...")
 	requireExactRecipe(t, recipes, "race", "go test -race ./...")
 	requireExactRecipe(t, recipes, "integration", "go test -tags=integration ./...")
+	if got, want := recipes["npm-test"], []string{
+		"npm ci --ignore-scripts --prefix npm",
+		"npm test --prefix npm",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Makefile npm-test recipe = %q, want exactly %q", got, want)
+	}
+	requireExactRecipe(t, recipes, "npm-pack-check", "node npm/scripts/verify-packages.js --source-check")
 
 	fmtRecipe := collapseWhitespace(strings.Join(recipes["fmt-check"], " "))
 	requireContainsAll(t, "fmt-check recipe", fmtRecipe,
@@ -8613,7 +10683,7 @@ func TestMakefileExactVerificationChain(t *testing.T) {
 	lower := strings.ToLower(makefile)
 	for _, forbidden := range []string{
 		"git init", "git add", "git commit", "git push", "go get", "curl ", "wget ",
-		"npm ", "npx ", "-tags=live", " codex ", " claude ", " gemini ",
+		"npx ", "-tags=live", " codex ", " claude ", " gemini ",
 	} {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("Makefile contains forbidden repository/network/provider action %q", strings.TrimSpace(forbidden))
@@ -8656,12 +10726,13 @@ func parseMakefileTargets(t *testing.T, document string) (
 }
 
 func makefileDirectiveFields(document, directive string) []string {
+	var result []string
 	for _, line := range strings.Split(document, "\n") {
 		if strings.HasPrefix(line, directive) {
-			return strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, directive)))
+			result = append(result, strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, directive)))...)
 		}
 	}
-	return nil
+	return result
 }
 
 func requireExactRecipe(t *testing.T, recipes map[string][]string, target, want string) {
@@ -8861,6 +10932,36 @@ func TestSecretAssignmentPlaceholderAllowlist(t *testing.T) {
 	writeFixtureFile(t, root, "config.example.toml", []byte("api_key_env = \"AI_CLI_GATEWAY_API_KEY\"\n"))
 	if err := scanRepository(root); err != nil {
 		t.Fatalf("scanRepository(config.example.toml) error = %q, want nil", err)
+	}
+}
+
+func TestNPMBootstrapSecretPlaceholderAllowlist(t *testing.T) {
+	const workflowPath = ".github/workflows/npm-release.yml"
+	const assignment = "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n"
+
+	allowedRoot := t.TempDir()
+	writeFixtureFile(t, allowedRoot, workflowPath, []byte(assignment))
+	if err := scanRepository(allowedRoot); err != nil {
+		t.Fatalf("exact npm bootstrap secret placeholder was rejected: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		relative string
+		contents string
+	}{
+		{name: "other path", relative: ".github/workflows/other.yml", contents: assignment},
+		{name: "other key", relative: workflowPath, contents: "NPM_TOKEN: ${{ secrets.NPM_TOKEN }}\n"},
+		{name: "other secret", relative: workflowPath, contents: "NODE_AUTH_TOKEN: ${{ secrets.OTHER_TOKEN }}\n"},
+		{name: "concrete token", relative: workflowPath, contents: "NODE_AUTH_TOKEN: actual-value\n"},
+		{name: "suffix", relative: workflowPath, contents: "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}suffix\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFixtureFile(t, root, test.relative, []byte(test.contents))
+			assertFinding(t, scanRepository(root), "secret_assignment", test.relative)
+		})
 	}
 }
 
@@ -9470,11 +11571,20 @@ func hasSecretAssignment(relative string, contents []byte) bool {
 	uppercaseOnly := extension == ".go"
 	for _, line := range strings.Split(string(contents), "\n") {
 		key, value, ok := splitSecretAssignment(line, allowQuotedKey)
-		if ok && (!uppercaseOnly || key == strings.ToUpper(key)) && isSecretName(key) && !isAllowedPlaceholder(value) {
+		if ok && (!uppercaseOnly || key == strings.ToUpper(key)) && isSecretName(key) && !isAllowedSecretAssignmentPlaceholder(relative, key, value) {
 			return true
 		}
 	}
 	return false
+}
+
+func isAllowedSecretAssignmentPlaceholder(relative, key, value string) bool {
+	if isAllowedPlaceholder(value) {
+		return true
+	}
+	return filepath.ToSlash(relative) == ".github/workflows/npm-release.yml" &&
+		strings.TrimSpace(key) == "NODE_AUTH_TOKEN" &&
+		strings.TrimSpace(value) == "${{ secrets.NPM_TOKEN }}"
 }
 
 func splitSecretAssignment(line string, allowQuotedKey bool) (string, string, bool) {

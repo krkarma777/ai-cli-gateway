@@ -1,10 +1,65 @@
 # Getting Started
 
-Install AI CLI Gateway v0.2.0, connect one authenticated provider CLI, and send a first request.
+Install AI CLI Gateway v0.2.1, connect one authenticated provider CLI, and send a first request.
+
+## Install with npm
+
+The npm launcher requires Node.js `>=22.14.0`. A normal global installation selects exactly one compatible native package from the five supported targets:
+
+| Host | npm target | Native package |
+|---|---|---|
+| macOS Intel | `darwin-x64` | `ai-cli-gateway-darwin-x64` |
+| macOS Apple silicon | `darwin-arm64` | `ai-cli-gateway-darwin-arm64` |
+| Linux x86-64 | `linux-x64` | `ai-cli-gateway-linux-x64` |
+| Linux ARM64 | `linux-arm64` | `ai-cli-gateway-linux-arm64` |
+| Windows x86-64 | `win32-x64` | `ai-cli-gateway-win32-x64` |
+
+Install the exact release and confirm the native CLI version:
+
+```console
+npm install --global ai-cli-gateway@0.2.1
+ai-cli-gateway version
+```
+
+The public packages have no lifecycle scripts. npm resolves the matching optional package from the registry; installation does not download an executable through a lifecycle hook, and the launcher performs no application-owned network download on first execution. The native executable in each npm package is byte-for-byte identical to the executable in its matching GitHub Release archive. The packages carry npm provenance, while the archives, SPDX SBOM, and checksum manifest carry GitHub build-provenance attestations.
+
+`npm audit signatures` verifies downloaded packages' registry signatures and provenance attestations. Run it from a project lockfile that includes the package:
+
+```console
+npm audit signatures
+```
+
+npm provenance and registry signatures complement the archive verification below; neither replaces checking `SHA256SUMS` and the GitHub attestation when installing an archive manually.
+
+### Update
+
+Update an older installation to this exact release by rerunning the pinned install:
+
+```console
+npm install --global ai-cli-gateway@0.2.1
+```
+
+### Uninstall
+
+Remove the launcher and its selected native optional package with:
+
+```console
+npm uninstall --global ai-cli-gateway
+```
+
+### Optional-dependency recovery
+
+If the launcher reports that its native package is missing, remove any `--omit=optional` configuration and reinstall with optional packages enabled:
+
+```console
+npm install --global --include=optional ai-cli-gateway@0.2.1
+```
+
+The launcher does not search `PATH` for a fallback binary and does not repair the installation by downloading one.
 
 ## Quick Start
 
-The normal local path is guided setup followed by serve. If the binary is not installed yet, use the checksum-verified [v0.2.0 installation procedure](#advanced-recovery-and-service-deployment), stop after placing the binary on `PATH`, and return here. Install and authenticate at least one supported provider CLI with its own tooling before running init.
+The normal local path is guided setup followed by serve. Install the binary with the npm path above or use the checksum-verified [v0.2.1 installation procedure](#advanced-recovery-and-service-deployment), stop after placing the binary on `PATH`, and return here. Install and authenticate at least one supported provider CLI with its own tooling before running init.
 
 ### Run guided init
 
@@ -184,17 +239,17 @@ Invalid or unsafe existing files are never repaired automatically. An unapproved
 
 ## Advanced recovery and service deployment
 
-This v0.2.0 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway with an explicit environment-backed key. Use it when guided init cannot run, when recovering an existing deployment, or when preparing a dedicated service identity.
+This v0.2.1 path installs one release archive without administrator privileges, verifies only the archive that was downloaded, and starts a Codex-backed local gateway with an explicit environment-backed key. Use it when guided init cannot run, when recovering an existing deployment, or when preparing a dedicated service identity.
 
 Choose the one archive matching the machine:
 
 | Host | Release asset |
 |---|---|
-| Linux x86-64 | `ai-cli-gateway_0.2.0_linux_amd64.tar.gz` |
-| Linux ARM64 | `ai-cli-gateway_0.2.0_linux_arm64.tar.gz` |
-| macOS Intel | `ai-cli-gateway_0.2.0_darwin_amd64.tar.gz` |
-| macOS Apple silicon | `ai-cli-gateway_0.2.0_darwin_arm64.tar.gz` |
-| Windows x86-64 | `ai-cli-gateway_0.2.0_windows_amd64.zip` |
+| Linux x86-64 | `ai-cli-gateway_0.2.1_linux_amd64.tar.gz` |
+| Linux ARM64 | `ai-cli-gateway_0.2.1_linux_arm64.tar.gz` |
+| macOS Intel | `ai-cli-gateway_0.2.1_darwin_amd64.tar.gz` |
+| macOS Apple silicon | `ai-cli-gateway_0.2.1_darwin_arm64.tar.gz` |
+| Windows x86-64 | `ai-cli-gateway_0.2.1_windows_amd64.zip` |
 
 The commands below never print or source the gateway key. Install and log in with the official Codex CLI first. The model placeholder is not a provider default or entitlement claim: select a model that the authenticated CLI account can actually access. The gateway never copies Codex authentication files.
 
@@ -204,7 +259,7 @@ Run the following in a Bash or Zsh terminal. It selects one of the four POSIX ar
 
 ```bash
 set -eu
-VERSION=0.2.0
+VERSION=0.2.1
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64) ASSET="ai-cli-gateway_${VERSION}_linux_amd64.tar.gz" ;;
   Linux:aarch64|Linux:arm64) ASSET="ai-cli-gateway_${VERSION}_linux_arm64.tar.gz" ;;
@@ -250,7 +305,7 @@ gh attestation verify "${ASSET}" \
   --repo krkarma777/ai-cli-gateway \
   --predicate-type https://slsa.dev/provenance/v1 \
   --signer-workflow github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml \
-  --source-ref refs/tags/v0.2.0
+  --source-ref refs/tags/v0.2.1
 ```
 
 Only after the digest comparison succeeds, extract and place the binary in a user-owned directory:
@@ -392,8 +447,8 @@ Use PowerShell 7 as an unprivileged gateway identity. This downloads exactly the
 
 ```powershell
 $ErrorActionPreference = 'Stop'
-$Version = '0.2.0'
-$ArchiveName = 'ai-cli-gateway_0.2.0_windows_amd64.zip'
+$Version = '0.2.1'
+$ArchiveName = 'ai-cli-gateway_0.2.1_windows_amd64.zip'
 $DownloadDir = Join-Path ([IO.Path]::GetTempPath()) ("ai-cli-gateway-" + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($DownloadDir) | Out-Null
 $ArchivePath = Join-Path $DownloadDir $ArchiveName
@@ -420,14 +475,14 @@ gh.exe attestation verify $ArchivePath `
   --repo krkarma777/ai-cli-gateway `
   --predicate-type https://slsa.dev/provenance/v1 `
   --signer-workflow github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml `
-  --source-ref refs/tags/v0.2.0
+  --source-ref refs/tags/v0.2.1
 ```
 
 Extract to the temporary directory and copy the executable into a user-owned binary directory:
 
 ```powershell
 Expand-Archive -LiteralPath $ArchivePath -DestinationPath $DownloadDir
-$ReleaseRoot = Join-Path $DownloadDir 'ai-cli-gateway_0.2.0_windows_amd64'
+$ReleaseRoot = Join-Path $DownloadDir 'ai-cli-gateway_0.2.1_windows_amd64'
 $BinDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'AI CLI Gateway\bin'
 [IO.Directory]::CreateDirectory($BinDir) | Out-Null
 Copy-Item -LiteralPath (Join-Path $ReleaseRoot 'ai-cli-gateway.exe') `

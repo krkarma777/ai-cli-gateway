@@ -1,4 +1,5 @@
 .PHONY: fmt-check vet lint test race integration build verify
+.PHONY: npm-test npm-pack-check
 GOLANGCI_LINT ?= golangci-lint
 
 fmt-check:
@@ -14,6 +15,13 @@ vet:
 lint:
 	$(GOLANGCI_LINT) run ./...
 
+npm-test:
+	npm ci --ignore-scripts --prefix npm
+	npm test --prefix npm
+
+npm-pack-check:
+	node npm/scripts/verify-packages.js --source-check
+
 test:
 	go test ./...
 
@@ -27,4 +35,4 @@ build:
 	CGO_ENABLED=0 go build -trimpath -o "$${TMPDIR:-/tmp}/ai-cli-gateway" \
 		./cmd/ai-cli-gateway
 
-verify: fmt-check vet lint test race integration build
+verify: fmt-check vet lint npm-test npm-pack-check test race integration build
