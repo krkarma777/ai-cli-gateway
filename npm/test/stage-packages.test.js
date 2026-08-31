@@ -30,6 +30,7 @@ import {
 } from "../scripts/stage-packages.js";
 import {
   chmodNpmDirectory,
+  npmPackRecordModes,
   packAndVerify,
   sourceCheck,
 } from "../scripts/verify-packages.js";
@@ -228,6 +229,31 @@ test("uses the supported npm-directory chmod route on each platform", async () =
   calls.length = 0;
   await chmodNpmDirectory("/npm-home", handle, "linux", chmodPath);
   assert.deepEqual(calls, [["handle", 0o700]]);
+});
+
+test("models only the exact Windows launcher npm pack-record mode boundary", () => {
+  const launcherWindows = npmPackRecordModes(undefined, "win32");
+  const launcherPosix = npmPackRecordModes(undefined, "linux");
+  assert.equal(launcherWindows.get("bin/ai-cli-gateway.js"), 0o644);
+  assert.equal(launcherPosix.get("bin/ai-cli-gateway.js"), 0o755);
+  for (const wrongMode of [0o643, 0o645, 0o755]) {
+    assert.notEqual(launcherWindows.get("bin/ai-cli-gateway.js"), wrongMode);
+  }
+  for (const filename of ["LICENSE", "README.md", "lib/launcher.js", "package.json"]) {
+    assert.equal(launcherWindows.get(filename), 0o644);
+    assert.equal(launcherPosix.get(filename), 0o644);
+  }
+
+  for (const target of TARGETS) {
+    const modes = npmPackRecordModes(target, "win32");
+    for (const filename of ["LICENSE", "README.md", "package.json"]) {
+      assert.equal(modes.get(filename), 0o644);
+    }
+    assert.equal(
+      modes.get(`bin/${target.executable}`),
+      target.platform === "win32" ? 0o644 : 0o755,
+    );
+  }
 });
 
 test("stages all native packages followed by the launcher", async () => {

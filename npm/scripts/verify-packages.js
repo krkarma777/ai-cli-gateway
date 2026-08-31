@@ -443,6 +443,17 @@ function packageModes(target) {
   return modes;
 }
 
+export function npmPackRecordModes(target, platform = process.platform) {
+  const modes = packageModes(target);
+  if (platform === "win32" && target === undefined) {
+    // npm 11.6.2 cannot observe the staged POSIX execute bit on Windows and
+    // reports the launcher bin pack record as 0644. The Ubuntu release packer
+    // still requires and emits the canonical 0755 entry.
+    modes.set("bin/ai-cli-gateway.js", 0o644);
+  }
+  return modes;
+}
+
 async function validatePackageRoot(packageRoot, target, version) {
   const files = packageFiles(target);
   const metadata = await exactTree(packageRoot, files);
@@ -1149,7 +1160,7 @@ function expectedFilename(name, version) {
 
 function validatePackFiles(value, target, stagedMetadata) {
   const expectedFiles = packageFiles(target);
-  const modes = packageModes(target);
+  const modes = npmPackRecordModes(target);
   if (!Array.isArray(value) || value.length !== expectedFiles.length) {
     throw verificationError();
   }
