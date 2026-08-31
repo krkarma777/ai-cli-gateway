@@ -5910,8 +5910,8 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "registry absence widened", mutate: replaceNPMReleaseOnce("grep -Fx 'npm error code E404'", "grep -F 'npm error'")},
 		{name: "publish scripts enabled", mutate: replaceNPMReleaseOnce("npm publish \"${tarball}\" --ignore-scripts --access public --provenance", "npm publish \"${tarball}\" --access public --provenance")},
 		{name: "publish provenance removed", mutate: replaceNPMReleaseOnce(" --access public --provenance", " --access public")},
-		{name: "launcher moved first", mutate: replaceNPMReleaseOnce("            ai-cli-gateway-darwin-x64\n", "            ai-cli-gateway\n")},
-		{name: "post publish SRI removed", mutate: replaceNPMReleaseOnce("            test \"${remote_integrity}\" = \"${integrities[${index}]}\"\n", "")},
+		{name: "launcher moved first", mutate: moveNPMReleaseLauncherFirst},
+		{name: "post publish SRI removed", mutate: replaceNPMReleaseLast("            test \"${remote_integrity}\" = \"${integrities[${index}]}\"\n", "")},
 		{name: "bootstrap token renamed", mutate: replaceNPMReleaseOnce("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n", "          NODE_AUTH_TOKEN: ${{ secrets.OTHER_TOKEN }}\n")},
 	}
 	for _, test := range tests {
@@ -5935,6 +5935,40 @@ func replaceNPMReleaseOnce(old, replacement string) func(string) string {
 	return func(document string) string {
 		return strings.Replace(document, old, replacement, 1)
 	}
+}
+
+func replaceNPMReleaseLast(old, replacement string) func(string) string {
+	return func(document string) string {
+		index := strings.LastIndex(document, old)
+		if index < 0 {
+			return document
+		}
+		return document[:index] + replacement + document[index+len(old):]
+	}
+}
+
+func moveNPMReleaseLauncherFirst(document string) string {
+	nativeFirst := strings.Join([]string{
+		"          packages=(",
+		"            ai-cli-gateway-darwin-x64",
+		"            ai-cli-gateway-darwin-arm64",
+		"            ai-cli-gateway-linux-x64",
+		"            ai-cli-gateway-linux-arm64",
+		"            ai-cli-gateway-win32-x64",
+		"            ai-cli-gateway",
+		"          )",
+	}, "\n") + "\n"
+	launcherFirst := strings.Join([]string{
+		"          packages=(",
+		"            ai-cli-gateway",
+		"            ai-cli-gateway-darwin-x64",
+		"            ai-cli-gateway-darwin-arm64",
+		"            ai-cli-gateway-linux-x64",
+		"            ai-cli-gateway-linux-arm64",
+		"            ai-cli-gateway-win32-x64",
+		"          )",
+	}, "\n") + "\n"
+	return strings.Replace(document, nativeFirst, launcherFirst, 1)
 }
 
 func parseClosedNPMReleaseWorkflow(document []byte) (npmReleaseWorkflowDocument, error) {
@@ -6034,6 +6068,8 @@ func validateClosedNPMReleaseYAMLNode(node *yaml.Node) error {
 		default:
 			return fmt.Errorf("unsupported implicit scalar tag %q", node.ShortTag())
 		}
+	case yaml.AliasNode:
+		return errors.New("YAML aliases are forbidden")
 	default:
 		return fmt.Errorf("unsupported YAML node kind %d", node.Kind)
 	}
@@ -6082,11 +6118,12 @@ func validateNPMReleaseConcurrency(node *yaml.Node) error {
 
 func parseNPMReleaseWorkflowJob(name string, node *yaml.Node) (releaseWorkflowJob, error) {
 	allowed := []string{"runs-on", "timeout-minutes", "permissions", "steps"}
-	if name == "package" {
+	switch name {
+	case "package":
 		allowed = append(allowed, "outputs")
-	} else if name == "publish" {
+	case "publish":
 		allowed = append(allowed, "needs")
-	} else {
+	default:
 		return releaseWorkflowJob{}, fmt.Errorf("unexpected job %q", name)
 	}
 	fields, err := closedYAMLMapping(node, allowed...)
@@ -6271,7 +6308,7 @@ func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) err
 		env                   map[string]string
 	}
 	wantPackage := []shape{
-		{name: "Validate immutable release metadata", id: "metadata", shell: "bash", env: map[string]string{
+		{name: "Validate immutable release metadata", id: "metadata", shell: "bash", env: map[string]string{ //nolint:gosec // This is GitHub's documented token expression, not a credential.
 			"GH_TOKEN": "${{ github.token }}", "EVENT_ACTION": "${{ github.event.action }}", "EVENT_REPOSITORY": "${{ github.repository }}",
 			"EVENT_RELEASE_ID": "${{ github.event.release.id }}", "EVENT_TAG": "${{ github.event.release.tag_name }}",
 			"EVENT_DRAFT": "${{ github.event.release.draft }}", "EVENT_PRERELEASE": "${{ github.event.release.prerelease }}",
@@ -6282,7 +6319,7 @@ func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) err
 		{name: "Validate toolchain and source", shell: "bash", env: map[string]string{
 			"TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
 		}},
-		{name: "Download and verify immutable release assets", shell: "bash", env: map[string]string{
+		{name: "Download and verify immutable release assets", shell: "bash", env: map[string]string{ //nolint:gosec // This is GitHub's documented token expression, not a credential.
 			"GH_TOKEN": "${{ github.token }}", "TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
 		}},
 		{name: "Rebuild and compare release archives", id: "build-metadata", shell: "bash", env: map[string]string{
@@ -6306,7 +6343,7 @@ func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) err
 		{name: "Validate and extract npm artifact", shell: "bash", env: map[string]string{
 			"EXPECTED_ARTIFACT_DIGEST": "${{ needs.package.outputs.artifact_digest }}",
 		}},
-		{name: "Publish verified npm packages", shell: "bash", env: map[string]string{
+		{name: "Publish verified npm packages", shell: "bash", env: map[string]string{ //nolint:gosec // This is a GitHub secret reference, not secret material.
 			"NODE_AUTH_TOKEN": "${{ secrets.NPM_TOKEN }}", "EXPECTED_ARTIFACT_DIGEST": "${{ needs.package.outputs.artifact_digest }}",
 			"NPM_CONFIG_REGISTRY": "https://registry.npmjs.org/",
 		}},
