@@ -1468,36 +1468,167 @@ func TestGuidedInitReferenceContract(t *testing.T) {
 	}
 }
 
-func TestGuidedInitCurrentOnboardingUsesV020(t *testing.T) {
+func TestDocumentationCurrentOnboardingUsesV021(t *testing.T) {
 	readme := string(readRepositoryFile(t, "README.md"))
 	for _, line := range strings.Split(readme, "\n") {
 		if strings.Contains(line, "v0.1.0") && !strings.Contains(line, "historical v0.1.0 release notes") {
 			t.Fatalf("README has a non-historical v0.1.0 pointer: %q", line)
 		}
+		if strings.Contains(line, "v0.2.0") && !strings.Contains(line, "historical v0.2.0 release notes") {
+			t.Fatalf("README has a non-historical v0.2.0 pointer: %q", line)
+		}
 	}
 	for _, path := range []string{"docs/getting-started.md", "docs/reference.md"} {
 		contents := string(readRepositoryFile(t, path))
-		if strings.Contains(contents, "v0.1.0") || strings.Contains(contents, "_0.1.0_") {
-			t.Fatalf("%s retains a current-onboarding v0.1.0 marker", path)
+		for _, stale := range []string{"v0.1.0", "_0.1.0_", "v0.2.0", "_0.2.0_"} {
+			if strings.Contains(contents, stale) {
+				t.Fatalf("%s retains a stale current-onboarding marker %q", path, stale)
+			}
 		}
+	}
+	reference := string(readRepositoryFile(t, "docs/reference.md"))
+	if !strings.HasPrefix(reference, "# AI CLI Gateway v0.2.1 API and Operations Reference\n\n") {
+		t.Fatal("docs/reference.md does not use the exact current v0.2.1 title")
 	}
 
 	gettingStarted := readGettingStarted(t)
 	requireContainsAll(t, "current onboarding", readme+gettingStarted,
-		"releases/tag/v0.2.0", "releases/download/v${VERSION}", "refs/tags/v0.2.0",
-		"ai-cli-gateway_0.2.0_linux_amd64.tar.gz",
-		"ai-cli-gateway_0.2.0_linux_arm64.tar.gz",
-		"ai-cli-gateway_0.2.0_darwin_amd64.tar.gz",
-		"ai-cli-gateway_0.2.0_darwin_arm64.tar.gz",
-		"ai-cli-gateway_0.2.0_windows_amd64.zip", "SHA256SUMS",
+		"releases/tag/v0.2.1", "releases/download/v${VERSION}", "refs/tags/v0.2.1",
+		"ai-cli-gateway_0.2.1_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_linux_arm64.tar.gz",
+		"ai-cli-gateway_0.2.1_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_darwin_arm64.tar.gz",
+		"ai-cli-gateway_0.2.1_windows_amd64.zip", "SHA256SUMS",
 	)
-	if !strings.Contains(readme, "docs/releases/v0.2.0.md") {
-		t.Fatal("README does not link the reviewed v0.2.0 release notes")
+	for _, notes := range []string{"docs/releases/v0.2.1.md", "docs/releases/v0.2.0.md"} {
+		if !strings.Contains(readme, notes) {
+			t.Fatalf("README does not link release notes %q", notes)
+		}
+	}
+}
+
+func TestReadmeNPMInstallV021Contract(t *testing.T) {
+	readme := string(readRepositoryFile(t, "README.md"))
+	quickStart, err := extractTopLevelMarkdownSection(readme, "Quick Start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantBeginning = "\n```console\n" +
+		"npm install --global ai-cli-gateway@0.2.1\n" +
+		"ai-cli-gateway version\n" +
+		"```\n\n" +
+		"For a manual checksum-verified installation, immediately follow the [v0.2.1 archive procedure](docs/getting-started.md#advanced-recovery-and-service-deployment)."
+	if !strings.HasPrefix(quickStart, wantBeginning) {
+		t.Fatal("README Quick Start does not begin with the exact npm install/version commands followed immediately by the manual checksum path")
+	}
+}
+
+func TestGettingStartedNPMInstallV021Contract(t *testing.T) {
+	document := readGettingStarted(t)
+	installation, err := extractTopLevelMarkdownSection(document, "Install with npm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireContainsAll(t, "Getting Started npm installation", installation,
+		"Node.js `>=22.14.0`",
+		"no lifecycle scripts", "does not download an executable",
+		"byte-for-byte identical", "npm provenance", "GitHub build-provenance",
+		"`npm audit signatures`", "Update", "Uninstall", "Optional-dependency recovery",
+	)
+	for _, row := range []string{
+		"| macOS Intel | `darwin-x64` | `ai-cli-gateway-darwin-x64` |",
+		"| macOS Apple silicon | `darwin-arm64` | `ai-cli-gateway-darwin-arm64` |",
+		"| Linux x86-64 | `linux-x64` | `ai-cli-gateway-linux-x64` |",
+		"| Linux ARM64 | `linux-arm64` | `ai-cli-gateway-linux-arm64` |",
+		"| Windows x86-64 | `win32-x64` | `ai-cli-gateway-win32-x64` |",
+	} {
+		if !strings.Contains(installation, row) {
+			t.Fatalf("Getting Started npm target table is missing exact row %q", row)
+		}
+	}
+	for _, command := range []string{
+		"npm install --global ai-cli-gateway@0.2.1",
+		"npm audit signatures",
+		"npm uninstall --global ai-cli-gateway",
+		"npm install --global --include=optional ai-cli-gateway@0.2.1",
+	} {
+		if !containsExactTrimmedLine(installation, command) {
+			t.Fatalf("Getting Started npm installation is missing exact command %q", command)
+		}
+	}
+}
+
+func TestReleaseNotesV021Contract(t *testing.T) {
+	notes := string(readRepositoryFile(t, "docs/releases/v0.2.1.md"))
+	wantHeadings := []string{
+		"# AI CLI Gateway v0.2.1",
+		"## npm installation",
+		"## Supported targets",
+		"## Supply-chain equivalence and provenance",
+		"## Unchanged gateway runtime",
+		"## Downloads and verification",
+	}
+	gotHeadings := make([]string, 0, len(wantHeadings))
+	for _, line := range strings.Split(notes, "\n") {
+		if strings.HasPrefix(line, "#") {
+			gotHeadings = append(gotHeadings, line)
+		}
+	}
+	if !reflect.DeepEqual(gotHeadings, wantHeadings) {
+		t.Fatalf("docs/releases/v0.2.1.md headings = %v, want exact %v", gotHeadings, wantHeadings)
+	}
+	requireContainsAll(t, "docs/releases/v0.2.1.md", notes,
+		"npm install --global ai-cli-gateway@0.2.1", "Node.js `>=22.14.0`",
+		"no lifecycle scripts", "does not download an executable",
+		"byte-for-byte identical", "npm provenance", "GitHub build-provenance attestations",
+		"five platform archives", "SPDX SBOM", "SHA256SUMS",
+	)
+	for _, row := range []string{
+		"| `darwin-x64` | `ai-cli-gateway-darwin-x64` | `darwin` / `x64` |",
+		"| `darwin-arm64` | `ai-cli-gateway-darwin-arm64` | `darwin` / `arm64` |",
+		"| `linux-x64` | `ai-cli-gateway-linux-x64` | `linux` / `x64` |",
+		"| `linux-arm64` | `ai-cli-gateway-linux-arm64` | `linux` / `arm64` |",
+		"| `win32-x64` | `ai-cli-gateway-win32-x64` | `win32` / `x64` |",
+	} {
+		if !strings.Contains(notes, row) {
+			t.Fatalf("docs/releases/v0.2.1.md is missing exact target row %q", row)
+		}
+	}
+	wantAssets := []string{
+		"ai-cli-gateway_0.2.1_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_linux_arm64.tar.gz",
+		"ai-cli-gateway_0.2.1_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_darwin_arm64.tar.gz",
+		"ai-cli-gateway_0.2.1_windows_amd64.zip",
+	}
+	for _, asset := range wantAssets {
+		if strings.Count(notes, "- `"+asset+"`") != 1 {
+			t.Fatalf("docs/releases/v0.2.1.md must list archive %q exactly once", asset)
+		}
+	}
+	if strings.Count(notes, "- `ai-cli-gateway_0.2.1_") != len(wantAssets) {
+		t.Fatal("docs/releases/v0.2.1.md must list exactly five v0.2.1 release assets")
+	}
+
+	expectedLinks := []string{
+		"[Getting Started](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/docs/getting-started.md)",
+		"[API and Operations Reference](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/docs/reference.md)",
+		"[Security Policy](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/SECURITY.md)",
+	}
+	requireContainsAll(t, "docs/releases/v0.2.1.md tag-pinned documentation links", notes, expectedLinks...)
+	markdownLinkPattern := regexp.MustCompile(`\[[^]]+\]\([^)]+\)`)
+	if links := markdownLinkPattern.FindAllString(notes, -1); !reflect.DeepEqual(links, expectedLinks) {
+		t.Fatalf("docs/releases/v0.2.1.md links = %v, want exact tag-pinned links %v", links, expectedLinks)
 	}
 }
 
 func TestReleaseNotesV020Contract(t *testing.T) {
-	notes := string(readRepositoryFile(t, "docs/releases/v0.2.0.md"))
+	noteBytes := readRepositoryFile(t, "docs/releases/v0.2.0.md")
+	digest := sha256.Sum256(noteBytes)
+	if got := hex.EncodeToString(digest[:]); got != "46eb4a5046f8287886621069d45ea9384d5d5661a28a61bde1b7b531af021a30" {
+		t.Fatalf("docs/releases/v0.2.0.md SHA-256 = %s, want immutable historical release note", got)
+	}
+	notes := string(noteBytes)
 	if strings.Contains(strings.ToLower(notes), "unknown fields") {
 		t.Fatal("docs/releases/v0.2.0.md claims unsupported unknown-field preservation")
 	}
@@ -1612,11 +1743,11 @@ func TestGettingStartedReleaseQuickStartRejectsMutations(t *testing.T) {
 		{name: "PowerShell terminal key piped to host", mutate: replaceREADMENth(`$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`, `$LoadedGatewayKey = [IO.File]::ReadAllText($GatewayKeyPath).Trim()`+"\n"+`$LoadedGatewayKey | Out-Host`, 2)},
 		{name: "indirect POSIX key file output", sealOnly: true, mutate: replaceREADMEOnce(`ai-cli-gateway doctor --config "${GATEWAY_CONFIG_FILE}"`, `cat "${GATEWAY_CONFIG_DIR}"/*`+"\n"+`ai-cli-gateway doctor --config "${GATEWAY_CONFIG_FILE}"`)},
 		{name: "indirect PowerShell key file output", sealOnly: true, mutate: replaceREADMEOnce(`ai-cli-gateway.exe doctor --config $GatewayConfigFile`, `Get-ChildItem $GatewayConfigDir | Get-Content | Out-Host`+"\n"+`ai-cli-gateway.exe doctor --config $GatewayConfigFile`)},
-		{name: "comment-only fence source change", sealOnly: true, mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.0", "```bash\nset -eu\n# sealed source changed\nVERSION=0.2.0")},
-		{name: "early POSIX fence prints key", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.0", "```bash\nset -eu\nprintf '%s\\n' \"${GATEWAY_KEY}\"\nVERSION=0.2.0")},
+		{name: "comment-only fence source change", sealOnly: true, mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.1", "```bash\nset -eu\n# sealed source changed\nVERSION=0.2.1")},
+		{name: "early POSIX fence prints key", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.1", "```bash\nset -eu\nprintf '%s\\n' \"${GATEWAY_KEY}\"\nVERSION=0.2.1")},
 		{name: "unexpected shell fence prints key", mutate: replaceREADMEOnce("### Official SDK checks\n", "```sh\nprintf '%s\\n' \"${GATEWAY_KEY}\"\n```\n\n### Official SDK checks\n")},
 		{name: "tilde PowerShell fence prints key", mutate: replaceREADMEOnce("### Official SDK checks\n", "~~~powershell\n$LoadedGatewayKey | Out-Host\n~~~\n\n### Official SDK checks\n")},
-		{name: "first Bash fence changed to text", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.0", "```text\nset -eu\nVERSION=0.2.0")},
+		{name: "first Bash fence changed to text", mutate: replaceREADMEOnce("```bash\nset -eu\nVERSION=0.2.1", "```text\nset -eu\nVERSION=0.2.1")},
 		{name: "Darwin ARM64 branch removed", mutate: replaceREADMEOnce(`  Darwin:arm64) ASSET="ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz" ;;`+"\n", "")},
 		{name: "Darwin ARM64 branch moved to unused function", mutate: moveREADMEHostBranchToUnusedFunction},
 		{name: "POSIX substitution commented", mutate: replaceREADMEOnce(`    [q{configured-provider-model}, $ENV{CODEX_MODEL}],`, `    # [q{configured-provider-model}, $ENV{CODEX_MODEL}],`)},
@@ -1959,9 +2090,9 @@ func validateREADMEReleaseQuickStartContract(readme string, sealSources bool) er
 	windowsProse := document.prose[quickStartWindowsSection]
 	sdkProse := document.prose[quickStartSDKSection]
 	for _, marker := range []string{
-		"v0.2.0", "ai-cli-gateway_0.2.0_linux_amd64.tar.gz",
-		"ai-cli-gateway_0.2.0_linux_arm64.tar.gz", "ai-cli-gateway_0.2.0_darwin_amd64.tar.gz",
-		"ai-cli-gateway_0.2.0_darwin_arm64.tar.gz", "ai-cli-gateway_0.2.0_windows_amd64.zip",
+		"v0.2.1", "ai-cli-gateway_0.2.1_linux_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_linux_arm64.tar.gz", "ai-cli-gateway_0.2.1_darwin_amd64.tar.gz",
+		"ai-cli-gateway_0.2.1_darwin_arm64.tar.gz", "ai-cli-gateway_0.2.1_windows_amd64.zip",
 	} {
 		if !strings.Contains(rootProse, marker) {
 			return fmt.Errorf("active Quick Start prose is missing %q", marker)
@@ -2608,15 +2739,15 @@ func validateREADMEQuickStartFenceSequence(document readmeQuickStartDocument) er
 
 func validateREADMEQuickStartFenceSources(document readmeQuickStartDocument) error {
 	expected := []string{
-		"212831af893fe4e039f04b7d7e209c9e9c5b5bf9d7a7d58c386cca8c40c05eb8", // POSIX download and checksum.
-		"e392ad30ceb3d312fe110aa8ac38ab67e7ed867227f3a100a8618c19f1b46cbe", // POSIX attestation.
+		"8b7855942fe53e033c3ea597f721d33db89feef96b7067e714985dab42af6c67", // POSIX download and checksum.
+		"f3e9ee89906ccef9f832e7d6e9336de5524d12ea58374f424911ba0aa67d0df3", // POSIX attestation.
 		"d54bf15936a9f8afd0dfbe3688e928719b92adf10411d31947d93a4c05652389", // POSIX install.
 		"70a3ca8fb27e89baa998ee97fc4ea5dd79f404bfe13e9d9657c754efdee9f0ac", // POSIX configuration.
 		"4db8c2817d0f3ea8ac4994d9bcff5b715954ff389a2b21288f4fb8bc21b50476", // POSIX serve.
 		"810f6e580c10eb1b5a6be46a7a7b669668ab630d73fb6a780fcf2d4f0e23fc69", // POSIX requests.
-		"122c2f822b6ddeab044c46b25bb8de0e541aa369d87fa3004855d4df733bc983", // Windows download and checksum.
-		"af3fd6aae4794fee5e520ec01da9b1a79b699e8333b73de10bf15620f5e19004", // Windows attestation.
-		"a2f2a3187205010ab3c34315f23c35edb144e2dd720c61b583038bfac8e26a02", // Windows install.
+		"e43fc580c7375ebf28645634ce2674ec7b8c54623ea7f59e07c2c07e554809de", // Windows download and checksum.
+		"01d67fe9a96033c00b4ce97733d4c646f4a46967893b4fb392b2d294ee403cf4", // Windows attestation.
+		"abc12f20551cbc54a1ed713b33b44410a1ca610c99d6e33d3443e0854f08151b", // Windows install.
 		"e945b7509ade4560e6912eb15f6d8d9990708524824c360e06cd7880f8998537", // Windows configuration.
 		"5b26c7ae1423bf83919abc35593accd9137111778cb21f641c473441e72cadc0", // Windows serve.
 		"a652421c0e76aa69d83c7b061c44c08357fcbd472ca64dc80d338c1c2b4c18b7", // Windows requests.
@@ -3028,10 +3159,10 @@ func TestGettingStartedPOSIXChecksumCommands(t *testing.T) {
 	if start < 0 || end < start {
 		t.Fatal("cannot extract the documented POSIX checksum program")
 	}
-	program := "set -eu\nASSET=ai-cli-gateway_0.2.0_darwin_arm64.tar.gz\n" + fences[0][start:end+len(endMarker)] + "\n"
+	program := "set -eu\nASSET=ai-cli-gateway_0.2.1_darwin_arm64.tar.gz\n" + fences[0][start:end+len(endMarker)] + "\n"
 	asset := []byte("verified release fixture\n")
 	digest := sha256.Sum256(asset)
-	validRecord := fmt.Sprintf("%x *ai-cli-gateway_0.2.0_darwin_arm64.tar.gz\n", digest)
+	validRecord := fmt.Sprintf("%x *ai-cli-gateway_0.2.1_darwin_arm64.tar.gz\n", digest)
 	decoys := ""
 	for index := 0; index < 5; index++ {
 		decoys += fmt.Sprintf("%064x *decoy-%d\n", index+1, index)
@@ -3043,12 +3174,12 @@ func TestGettingStartedPOSIXChecksumCommands(t *testing.T) {
 	}{
 		{name: "valid selected record", manifest: decoys + validRecord, wantOK: true},
 		{name: "duplicate selected record", manifest: decoys + validRecord + validRecord},
-		{name: "mismatched selected digest", manifest: decoys + strings.Repeat("0", 64) + " *ai-cli-gateway_0.2.0_darwin_arm64.tar.gz\n"},
+		{name: "mismatched selected digest", manifest: decoys + strings.Repeat("0", 64) + " *ai-cli-gateway_0.2.1_darwin_arm64.tar.gz\n"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
-			if err := os.WriteFile(filepath.Join(root, "ai-cli-gateway_0.2.0_darwin_arm64.tar.gz"), asset, 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(root, "ai-cli-gateway_0.2.1_darwin_arm64.tar.gz"), asset, 0o600); err != nil {
 				t.Fatalf("write asset fixture: %v", err)
 			}
 			if err := os.WriteFile(filepath.Join(root, "SHA256SUMS"), []byte(test.manifest), 0o600); err != nil {
@@ -3103,7 +3234,7 @@ esac
 	if err := os.Chmod(uname, 0o700); err != nil { //nolint:gosec // Test-owned fake uname must be executable and private.
 		t.Fatalf("make fake uname executable: %v", err)
 	}
-	program := "set -eu\nVERSION=0.2.0\n" + selector + "\nprintf '%s' \"${ASSET}\"\n"
+	program := "set -eu\nVERSION=0.2.1\n" + selector + "\nprintf '%s' \"${ASSET}\"\n"
 	tests := []struct {
 		name    string
 		system  string
@@ -3111,11 +3242,11 @@ esac
 		want    string
 		wantOK  bool
 	}{
-		{name: "Linux x86-64", system: "Linux", machine: "x86_64", want: "ai-cli-gateway_0.2.0_linux_amd64.tar.gz", wantOK: true},
-		{name: "Linux aarch64", system: "Linux", machine: "aarch64", want: "ai-cli-gateway_0.2.0_linux_arm64.tar.gz", wantOK: true},
-		{name: "Linux arm64", system: "Linux", machine: "arm64", want: "ai-cli-gateway_0.2.0_linux_arm64.tar.gz", wantOK: true},
-		{name: "Darwin Intel", system: "Darwin", machine: "x86_64", want: "ai-cli-gateway_0.2.0_darwin_amd64.tar.gz", wantOK: true},
-		{name: "Darwin Apple silicon", system: "Darwin", machine: "arm64", want: "ai-cli-gateway_0.2.0_darwin_arm64.tar.gz", wantOK: true},
+		{name: "Linux x86-64", system: "Linux", machine: "x86_64", want: "ai-cli-gateway_0.2.1_linux_amd64.tar.gz", wantOK: true},
+		{name: "Linux aarch64", system: "Linux", machine: "aarch64", want: "ai-cli-gateway_0.2.1_linux_arm64.tar.gz", wantOK: true},
+		{name: "Linux arm64", system: "Linux", machine: "arm64", want: "ai-cli-gateway_0.2.1_linux_arm64.tar.gz", wantOK: true},
+		{name: "Darwin Intel", system: "Darwin", machine: "x86_64", want: "ai-cli-gateway_0.2.1_darwin_amd64.tar.gz", wantOK: true},
+		{name: "Darwin Apple silicon", system: "Darwin", machine: "arm64", want: "ai-cli-gateway_0.2.1_darwin_arm64.tar.gz", wantOK: true},
 		{name: "unsupported", system: "FreeBSD", machine: "amd64"},
 	}
 	for _, test := range tests {
@@ -3276,7 +3407,7 @@ func TestGettingStartedWindowsChecksumCommandsNative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const archiveName = "ai-cli-gateway_0.2.0_windows_amd64.zip"
+	const archiveName = "ai-cli-gateway_0.2.1_windows_amd64.zip"
 	archive := []byte("verified Windows release fixture\n")
 	digest := sha256.Sum256(archive)
 	validRecord := fmt.Sprintf("%x *%s\n", digest, archiveName)

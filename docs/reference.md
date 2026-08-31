@@ -1,6 +1,6 @@
-# API and Operations Reference
+# AI CLI Gateway v0.2.1 API and Operations Reference
 
-Detailed contracts and operating boundaries for AI CLI Gateway v0.2.0. For installation and a first request, start with [Getting Started](getting-started.md).
+Detailed contracts and operating boundaries for AI CLI Gateway v0.2.1. For installation and a first request, start with [Getting Started](getting-started.md).
 
 ## Architecture and endpoint scope
 
