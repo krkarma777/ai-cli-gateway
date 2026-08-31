@@ -507,9 +507,10 @@ feat: add native npm launcher
 
 Create real temporary repository, binary, and output roots. Test one successful
 all-target staging plan and separate failures for relative or linked roots,
-pre-existing output, a world-writable non-sticky parent on POSIX, missing or
-linked binaries, source version mismatch, unexpected source files, duplicate
-targets, and output-root replacement.
+pre-existing output, a group- or other-writable parent on POSIX (including a
+sticky world-writable parent), missing or linked binaries, source version
+mismatch, unexpected source files, duplicate targets, and output-root
+replacement.
 
 The successful assertion is:
 
@@ -546,16 +547,49 @@ Expected: FAIL with `ERR_MODULE_NOT_FOUND` for
 
 - [ ] **Step 3: Implement private staging**
 
-`stagePackages` uses promise-based `node:fs` calls and never a shell. It creates
-a sibling temporary directory with `mkdtemp` and mode `0700`, copies with
-`COPYFILE_EXCL`, applies `0644` to metadata and `0755` to POSIX
-binaries/launcher entry, and renames the complete root to the requested absent
-output path.
+> **Approved superseding decision — 2026-08-31.** This replaces the sibling
+> `mkdtemp` plus final-directory-rename design below. Portable Node filesystem
+> APIs do not provide an atomic, no-replace directory rename: an ordinary
+> rename can replace an existing destination on supported platforms. Staging
+> therefore acquires the absent final `outputRoot` directly with exclusive
+> creation, fixes it to mode `0700`, and writes only beneath that captured root.
+>
+> Publication is marker-gated. `.complete` is acquired with exclusive creation
+> and kept invalid (empty, with the final `0644` mode) while every fallible or
+> asynchronous source/binary/root validation and file, descendant-directory,
+> output-root, and output-parent sync runs. After the last validation, one
+> synchronous commit writes the exact marker bytes and returns without another
+> awaited or rejecting operation. A crash before or during that write can
+> leave no marker or an empty/partial marker; consumers accept only the exact
+> marker content, so those states fail closed. A crash may still lose marker
+> durability, but it cannot turn an empty or partial marker into an accepted
+> one. Failures retain the partial final root and invalid marker for inspection;
+> the staging code never recursively cleans up an externally reachable path.
+>
+> On POSIX, the actual output parent must be a canonical directory owned by the
+> current uid with neither group-write nor other-write permission. Sticky
+> world-writable directories are not an exception. The release workflow must
+> create this parent privately for the job before staging. On Windows, the
+> caller must likewise provide a trusted private temporary root; staging still
+> applies the canonical, non-link, stable-identity, and ownership checks that
+> Node exposes, but it does not infer ACL isolation from POSIX mode bits.
+>
+> Reviewer item 1 is accepted as a threat-boundary correction, not as a claim
+> of impossible same-uid resistance. Node has no portable `mkdirat`/`openat`
+> directory-fd-relative creation primitive or directory lock, so a hostile
+> process running as the same uid can still race path replacement and is
+> outside this release-job boundary. Synchronous `mkdir`/`open`/`fstat`/`lstat`
+> sequences and held descriptors should be used where portable and practical
+> to remove event-loop windows, but they narrow the race rather than changing
+> that boundary. The completion marker specifically remains held by its file
+> descriptor from invalid acquisition through the final synchronous commit.
 
-Before and after each copy, compare `dev`, `ino`, `size`, file type, and link
-state. Before returning, compare the root identity captured before rename with
-the final root. On failure, remove only the owned temporary root and return
-`npm package staging failed`.
+`stagePackages` uses only Node filesystem APIs and never a shell. Copies use
+exclusive destination creation, metadata is mode `0644`, and POSIX
+binaries/the launcher entry are mode `0755`. Before and after each copy it
+compares `dev`, `ino`, size, file type, and link state. It recursively validates
+the captured final root before publication and returns the fixed
+`npm package staging failed` error on every pre-publication failure.
 
 The exact command interface is:
 

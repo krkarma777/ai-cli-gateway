@@ -1,4 +1,13 @@
-import { constants } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  writeSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -73,6 +82,15 @@ function sameDirectory(left, right) {
 
 function ownedByCurrentUser(metadata) {
   return typeof process.getuid !== "function" || metadata.uid === BigInt(process.getuid());
+}
+
+function privateOutputParent(metadata) {
+  return (
+    metadata.isDirectory() &&
+    !metadata.isSymbolicLink() &&
+    ownedByCurrentUser(metadata) &&
+    (process.platform === "win32" || (metadata.mode & 0o022n) === 0n)
+  );
 }
 
 async function existingCanonicalDirectory(directory) {
@@ -743,7 +761,7 @@ async function assertStagedRootStable(
   outputRoot,
   outputIdentity,
   packageRecords,
-  { completionMarker, includeMarker = false } = {},
+  { includeMarker = false } = {},
 ) {
   const before = await assertOwnedRoot(outputRoot, outputIdentity);
   if (
@@ -766,9 +784,6 @@ async function assertStagedRootStable(
       throw stagingError();
     }
     await assertStagedPackageStable(packageRecord, observed);
-  }
-  if (completionMarker !== undefined) {
-    await assertCompletionMarker(completionMarker);
   }
   const after = await assertOwnedRoot(outputRoot, outputIdentity);
   if (!sameNode(before, after)) {
@@ -837,16 +852,15 @@ async function syncStagedPackages(packageRecords) {
   }
 }
 
-async function createCompletionMarker(outputRoot, validateBeforeCommit) {
+function acquireInvalidCompletionMarker(outputRoot) {
   const marker = path.join(outputRoot, ".complete");
-  const handle = await open(
+  const fd = openSync(
     marker,
     constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
     0o600,
   );
-  let opened;
   try {
-    opened = await handle.stat({ bigint: true });
+    const opened = fstatSync(fd, { bigint: true });
     if (
       opened.isSymbolicLink() ||
       !opened.isFile() ||
@@ -855,8 +869,7 @@ async function createCompletionMarker(outputRoot, validateBeforeCommit) {
     ) {
       throw stagingError();
     }
-    await validateBeforeCommit();
-    const acquiredPath = await lstat(marker, { bigint: true });
+    const acquiredPath = lstatSync(marker, { bigint: true });
     if (
       !sameFile(opened, acquiredPath) ||
       acquiredPath.size !== 0n ||
@@ -865,40 +878,99 @@ async function createCompletionMarker(outputRoot, validateBeforeCommit) {
     ) {
       throw stagingError();
     }
-    await handle.writeFile(COMPLETION_MARKER_CONTENT);
-    await handle.chmod(0o644);
-    await handle.sync();
-    const completed = await handle.stat({ bigint: true });
-    if (!sameNode(opened, completed) || completed.nlink !== 1n) {
+    fchmodSync(fd, 0o644);
+    fsyncSync(fd);
+    const invalid = fstatSync(fd, { bigint: true });
+    const invalidPath = lstatSync(marker, { bigint: true });
+    if (
+      !sameFile(opened, invalid) ||
+      !sameFile(invalid, invalidPath) ||
+      invalid.size !== 0n ||
+      invalid.nlink !== 1n ||
+      invalid.isSymbolicLink() ||
+      !ownedByCurrentUser(invalid) ||
+      (process.platform !== "win32" &&
+        Number(invalid.mode & 0o777n) !== 0o644)
+    ) {
       throw stagingError();
     }
-    opened = completed;
-  } finally {
-    await handle.close();
+    return { fd, identity: invalid, path: marker };
+  } catch (error) {
+    try {
+      closeSync(fd);
+    } catch {
+      // Preserve the fixed staging failure if closing an invalid marker fails.
+    }
+    throw error;
   }
-  const content = await validatedRead(marker);
-  if (
-    !sameFile(opened, content.metadata) ||
-    !content.content.equals(COMPLETION_MARKER_CONTENT) ||
-    (process.platform !== "win32" &&
-      Number(content.metadata.mode & 0o777n) !== 0o644)
-  ) {
-    throw stagingError();
-  }
-  return { identity: content.metadata, path: marker };
 }
 
-async function assertCompletionMarker(markerRecord) {
-  const content = await validatedRead(markerRecord.path);
+async function assertInvalidCompletionMarker(markerRecord) {
+  const opened = fstatSync(markerRecord.fd, { bigint: true });
+  const current = await lstat(markerRecord.path, { bigint: true });
   if (
-    !sameFile(markerRecord.identity, content.metadata) ||
-    !content.content.equals(COMPLETION_MARKER_CONTENT)
+    !sameFile(markerRecord.identity, opened) ||
+    !sameFile(opened, current) ||
+    current.size !== 0n ||
+    current.isSymbolicLink() ||
+    !ownedByCurrentUser(current) ||
+    (process.platform !== "win32" &&
+      Number(current.mode & 0o777n) !== 0o644)
   ) {
     throw stagingError();
   }
+}
+
+function closeInvalidCompletionMarker(markerRecord) {
+  if (markerRecord?.fd === undefined) {
+    return;
+  }
+  try {
+    closeSync(markerRecord.fd);
+  } catch {
+    // A close failure must not replace the fixed staging failure.
+  }
+  markerRecord.fd = undefined;
+}
+
+function commitCompletionMarker(markerRecord) {
+  let offset = 0;
+  try {
+    const opened = fstatSync(markerRecord.fd, { bigint: true });
+    const current = lstatSync(markerRecord.path, { bigint: true });
+    if (
+      !sameFile(markerRecord.identity, opened) ||
+      !sameFile(opened, current) ||
+      current.size !== 0n ||
+      current.isSymbolicLink() ||
+      !ownedByCurrentUser(current) ||
+      (process.platform !== "win32" &&
+        Number(current.mode & 0o777n) !== 0o644)
+    ) {
+      throw stagingError();
+    }
+    while (offset < COMPLETION_MARKER_CONTENT.length) {
+      const written = writeSync(
+        markerRecord.fd,
+        COMPLETION_MARKER_CONTENT,
+        offset,
+        COMPLETION_MARKER_CONTENT.length - offset,
+        offset,
+      );
+      if (written <= 0) {
+        throw stagingError();
+      }
+      offset += written;
+    }
+  } catch (error) {
+    closeInvalidCompletionMarker(markerRecord);
+    throw error;
+  }
+  closeInvalidCompletionMarker(markerRecord);
 }
 
 export async function stagePackages(options) {
+  let pendingCompletionMarker;
   try {
     if (
       options === null ||
@@ -925,11 +997,7 @@ export async function stagePackages(options) {
       throw stagingError();
     }
     const outputParentIdentity = await existingCanonicalDirectory(outputParent);
-    if (
-      process.platform !== "win32" &&
-      (outputParentIdentity.mode & 0o002n) !== 0n &&
-      (outputParentIdentity.mode & 0o1000n) === 0n
-    ) {
+    if (!privateOutputParent(outputParentIdentity)) {
       throw stagingError();
     }
     await assertAbsent(options.outputRoot);
@@ -942,12 +1010,11 @@ export async function stagePackages(options) {
     await assertPlanStable(binaryPlan);
 
     const ownedOutputIdentity = await createPrivateDirectory(options.outputRoot);
+    const acquiredOutputParent = await lstat(outputParent, { bigint: true });
     if (
       (await realpath(options.outputRoot)) !== options.outputRoot ||
-      !sameNode(
-        outputParentIdentity,
-        await lstat(outputParent, { bigint: true }),
-      )
+      !sameNode(outputParentIdentity, acquiredOutputParent) ||
+      !privateOutputParent(acquiredOutputParent)
     ) {
       throw stagingError();
     }
@@ -980,6 +1047,7 @@ export async function stagePackages(options) {
       !sameNode(repositoryIdentity, repositoryAfter) ||
       !sameNode(binaryIdentity, binaryAfter) ||
       !sameNode(outputParentIdentity, outputParentAfter) ||
+      !privateOutputParent(outputParentAfter) ||
       !sameNode(ownedOutputIdentity, completedRoot) ||
       completedRoot.isSymbolicLink() ||
       !completedRoot.isDirectory()
@@ -1007,27 +1075,27 @@ export async function stagePackages(options) {
     );
     await assertPlanStable(sourcePlan);
     await assertPlanStable(binaryPlan);
-    const completionMarker = await createCompletionMarker(
+    pendingCompletionMarker = acquireInvalidCompletionMarker(
       options.outputRoot,
-      async () => {
-        await assertStagedRootStable(
-          options.outputRoot,
-          ownedOutputIdentity,
-          publishedPackages,
-          { includeMarker: true },
-        );
-        await assertPlanStable(sourcePlan);
-        await assertPlanStable(binaryPlan);
-      },
     );
+    await assertStagedRootStable(
+      options.outputRoot,
+      ownedOutputIdentity,
+      publishedPackages,
+      { includeMarker: true },
+    );
+    await assertInvalidCompletionMarker(pendingCompletionMarker);
+    await assertPlanStable(sourcePlan);
+    await assertPlanStable(binaryPlan);
     await syncDirectory(options.outputRoot, ownedOutputIdentity);
     await syncDirectory(outputParent, outputParentIdentity);
     await assertStagedRootStable(
       options.outputRoot,
       ownedOutputIdentity,
       publishedPackages,
-      { completionMarker, includeMarker: true },
+      { includeMarker: true },
     );
+    await assertInvalidCompletionMarker(pendingCompletionMarker);
     const [finalRoot, finalParent] = await Promise.all([
       lstat(options.outputRoot, { bigint: true }),
       lstat(outputParent, { bigint: true }),
@@ -1037,10 +1105,12 @@ export async function stagePackages(options) {
       finalRoot.isSymbolicLink() ||
       !finalRoot.isDirectory() ||
       !sameNode(outputParentIdentity, finalParent) ||
-      finalParent.isSymbolicLink()
+      !privateOutputParent(finalParent)
     ) {
       throw stagingError();
     }
+    await assertPlanStable(sourcePlan);
+    await assertPlanStable(binaryPlan);
 
     const staged = [
       ...targets.map((target) => ({
@@ -1054,8 +1124,10 @@ export async function stagePackages(options) {
         root: path.join(options.outputRoot, "launcher"),
       },
     ];
+    commitCompletionMarker(pendingCompletionMarker);
     return staged;
   } catch {
+    closeInvalidCompletionMarker(pendingCompletionMarker);
     throw stagingError();
   }
 }

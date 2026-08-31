@@ -93,6 +93,14 @@ function sameFile(left, right) {
   );
 }
 
+function sameFileVersion(left, right) {
+  return (
+    sameFile(left, right) &&
+    left.ctimeNs === right.ctimeNs &&
+    left.mtimeNs === right.mtimeNs
+  );
+}
+
 function sameDirectory(left, right) {
   return (
     left.nlink === right.nlink &&
@@ -1374,7 +1382,7 @@ function exactSynchronousEntries(directory, expectedEntries) {
 function openSynchronousCohortFile(filename, expected) {
   const pathBefore = synchronousMetadata(filename);
   if (
-    !sameFile(expected, pathBefore) ||
+    !sameFileVersion(expected, pathBefore) ||
     pathBefore.isSymbolicLink() ||
     pathBefore.nlink !== 1n ||
     !ownedByCurrentUser(pathBefore)
@@ -1387,7 +1395,7 @@ function openSynchronousCohortFile(filename, expected) {
   );
   try {
     const opened = fstatSync(fd, { bigint: true });
-    if (!sameFile(pathBefore, opened)) {
+    if (!sameFileVersion(pathBefore, opened)) {
       throw verificationError();
     }
     return { expected, fd, filename, opened };
@@ -1403,9 +1411,9 @@ function assertSynchronousCohortFile(record) {
     synchronousMetadata(record.filename),
   ];
   if (
-    !sameFile(record.expected, openedAfter) ||
-    !sameFile(record.opened, openedAfter) ||
-    !sameFile(openedAfter, pathAfter) ||
+    !sameFileVersion(record.expected, openedAfter) ||
+    !sameFileVersion(record.opened, openedAfter) ||
+    !sameFileVersion(openedAfter, pathAfter) ||
     pathAfter.isSymbolicLink() ||
     pathAfter.nlink !== 1n ||
     !ownedByCurrentUser(pathAfter)

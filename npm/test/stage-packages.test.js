@@ -383,6 +383,27 @@ test(
   },
 );
 
+test(
+  "rejects group-writable and sticky world-writable output parents",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    for (const [label, unsafeMode] of [
+      ["group-writable", 0o770],
+      ["sticky world-writable", 0o1777],
+    ]) {
+      await t.test(label, async () => {
+        const fixture = await stagingFixture();
+        await chmod(fixture.outputParent, unsafeMode);
+
+        await assertStagingFailure(stagingOptions(fixture));
+
+        assert.equal(await pathExists(fixture.outputRoot), false);
+        await assertNoOwnedTemporaryRoot(fixture);
+      });
+    }
+  },
+);
+
 test("rejects a missing native binary", async () => {
   const fixture = await stagingFixture();
   const target = TARGETS[0];
@@ -562,6 +583,7 @@ test("never recursively deletes an output-root replacement raced during cleanup"
   const fixture = await stagingFixture();
   const capturedRoot = path.join(fixture.outputParent, "captured-cleanup-output");
   const replacementMarker = path.join(fixture.outputRoot, "foreign-owner-marker");
+  const originalOpenSync = mutableFs.openSync;
   const originalMkdir = mutableFsPromises.mkdir;
   const originalOpen = mutableFsPromises.open;
   const originalRename = mutableFsPromises.rename;
@@ -569,28 +591,39 @@ test("never recursively deletes an output-root replacement raced during cleanup"
   const originalWriteFile = mutableFsPromises.writeFile;
   let cleanupRaced = false;
 
-  await withFsPromisePatches(
+  await withFsPatches(
     {
-      open: async (filename, ...argumentsAfterFilename) => {
+      openSync: (filename, ...argumentsAfterFilename) => {
         if (filename === path.join(fixture.outputRoot, ".complete")) {
           throw new Error("injected completion-marker failure");
         }
-        return originalOpen(filename, ...argumentsAfterFilename);
-      },
-      rm: async (directory, options) => {
-        if (directory === fixture.outputRoot && !cleanupRaced) {
-          await originalRename(fixture.outputRoot, capturedRoot);
-          await originalMkdir(fixture.outputRoot, { mode: 0o700 });
-          await originalWriteFile(replacementMarker, "foreign owner\n", {
-            flag: "wx",
-            mode: 0o600,
-          });
-          cleanupRaced = true;
-        }
-        return originalRm(directory, options);
+        return originalOpenSync(filename, ...argumentsAfterFilename);
       },
     },
-    () => assertStagingFailure(stagingOptions(fixture)),
+    () =>
+      withFsPromisePatches(
+        {
+          open: async (filename, ...argumentsAfterFilename) => {
+            if (filename === path.join(fixture.outputRoot, ".complete")) {
+              throw new Error("injected completion-marker failure");
+            }
+            return originalOpen(filename, ...argumentsAfterFilename);
+          },
+          rm: async (directory, options) => {
+            if (directory === fixture.outputRoot && !cleanupRaced) {
+              await originalRename(fixture.outputRoot, capturedRoot);
+              await originalMkdir(fixture.outputRoot, { mode: 0o700 });
+              await originalWriteFile(replacementMarker, "foreign owner\n", {
+                flag: "wx",
+                mode: 0o600,
+              });
+              cleanupRaced = true;
+            }
+            return originalRm(directory, options);
+          },
+        },
+        () => assertStagingFailure(stagingOptions(fixture)),
+      ),
   );
 
   if (cleanupRaced) {
@@ -660,23 +693,37 @@ test("rejects child removal immediately before completion-marker acquisition", a
     "bin",
     target.executable,
   );
+  const originalOpenSync = mutableFs.openSync;
+  const originalRmSync = mutableFs.rmSync;
   const originalOpen = mutableFsPromises.open;
   const originalRm = mutableFsPromises.rm;
   let removed = false;
 
-  await withFsPromisePatches(
+  await withFsPatches(
     {
-      open: async (filename, ...argumentsAfterFilename) => {
+      openSync: (filename, ...argumentsAfterFilename) => {
         if (filename === path.join(fixture.outputRoot, ".complete") && !removed) {
-          await originalRm(stagedBinary);
+          originalRmSync(stagedBinary);
           removed = true;
         }
-        return originalOpen(filename, ...argumentsAfterFilename);
+        return originalOpenSync(filename, ...argumentsAfterFilename);
       },
     },
     () =>
-      assertStagingFailure(
-        stagingOptions(fixture, { targets: [target] }),
+      withFsPromisePatches(
+        {
+          open: async (filename, ...argumentsAfterFilename) => {
+            if (filename === path.join(fixture.outputRoot, ".complete") && !removed) {
+              await originalRm(stagedBinary);
+              removed = true;
+            }
+            return originalOpen(filename, ...argumentsAfterFilename);
+          },
+        },
+        () =>
+          assertStagingFailure(
+            stagingOptions(fixture, { targets: [target] }),
+          ),
       ),
   );
 
@@ -693,6 +740,8 @@ test("rejects same-size child mutation immediately after completion-marker acqui
     "bin",
     target.executable,
   );
+  const originalOpenSync = mutableFs.openSync;
+  const originalWriteFileSync = mutableFs.writeFileSync;
   const originalOpen = mutableFsPromises.open;
   const originalWriteFile = mutableFsPromises.writeFile;
   const expected = Buffer.from(`${target.key}\n`, "utf8");
@@ -700,13 +749,64 @@ test("rejects same-size child mutation immediately after completion-marker acqui
   assert.equal(replacement.equals(expected), false);
   let mutated = false;
 
+  await withFsPatches(
+    {
+      openSync: (filename, ...argumentsAfterFilename) => {
+        const descriptor = originalOpenSync(filename, ...argumentsAfterFilename);
+        if (filename === path.join(fixture.outputRoot, ".complete") && !mutated) {
+          originalWriteFileSync(stagedBinary, replacement);
+          mutated = true;
+        }
+        return descriptor;
+      },
+    },
+    () =>
+      withFsPromisePatches(
+        {
+          open: async (filename, ...argumentsAfterFilename) => {
+            const handle = await originalOpen(filename, ...argumentsAfterFilename);
+            if (filename === path.join(fixture.outputRoot, ".complete") && !mutated) {
+              await originalWriteFile(stagedBinary, replacement);
+              mutated = true;
+            }
+            return handle;
+          },
+        },
+        () =>
+          assertStagingFailure(
+            stagingOptions(fixture, { targets: [target] }),
+          ),
+      ),
+  );
+
+  assert.equal(mutated, true);
+  await assertNoValidCompletionMarker(fixture.outputRoot);
+});
+
+test("keeps the marker invalid when the second output-root sync fails", async () => {
+  const fixture = await stagingFixture();
+  const target = TARGETS[2];
+  const originalOpen = mutableFsPromises.open;
+  let outputRootOpens = 0;
+  let syncFailed = false;
+
   await withFsPromisePatches(
     {
       open: async (filename, ...argumentsAfterFilename) => {
         const handle = await originalOpen(filename, ...argumentsAfterFilename);
-        if (filename === path.join(fixture.outputRoot, ".complete") && !mutated) {
-          await originalWriteFile(stagedBinary, replacement);
-          mutated = true;
+        if (filename === fixture.outputRoot) {
+          outputRootOpens += 1;
+          if (outputRootOpens === 2) {
+            Object.defineProperty(handle, "sync", {
+              configurable: true,
+              value: async () => {
+                syncFailed = true;
+                const error = new Error("injected second output-root sync failure");
+                error.code = "EIO";
+                throw error;
+              },
+            });
+          }
         }
         return handle;
       },
@@ -717,8 +817,53 @@ test("rejects same-size child mutation immediately after completion-marker acqui
       ),
   );
 
-  assert.equal(mutated, true);
+  assert.equal(syncFailed, true);
   await assertNoValidCompletionMarker(fixture.outputRoot);
+});
+
+test("keeps the marker invalid when the output-parent sync fails", async () => {
+  const fixture = await stagingFixture();
+  const target = TARGETS[2];
+  const originalOpen = mutableFsPromises.open;
+  let syncFailed = false;
+
+  await withFsPromisePatches(
+    {
+      open: async (filename, ...argumentsAfterFilename) => {
+        const handle = await originalOpen(filename, ...argumentsAfterFilename);
+        if (filename === fixture.outputParent) {
+          Object.defineProperty(handle, "sync", {
+            configurable: true,
+            value: async () => {
+              syncFailed = true;
+              const error = new Error("injected output-parent sync failure");
+              error.code = "EIO";
+              throw error;
+            },
+          });
+        }
+        return handle;
+      },
+    },
+    () =>
+      assertStagingFailure(
+        stagingOptions(fixture, { targets: [target] }),
+      ),
+  );
+
+  assert.equal(syncFailed, true);
+  await assertNoValidCompletionMarker(fixture.outputRoot);
+});
+
+test("publishes the exact completion marker only on successful staging", async () => {
+  const fixture = await stagingFixture();
+  const target = TARGETS[2];
+
+  await stagePackages(stagingOptions(fixture, { targets: [target] }));
+
+  const marker = path.join(fixture.outputRoot, ".complete");
+  assert.equal(await readFile(marker, "utf8"), completionMarkerContent);
+  await assertMode(marker, 0o644);
 });
 
 test("fails closed when syncing a copied file fails before marker publication", async () => {
@@ -1326,6 +1471,63 @@ test("final cohort rejects a tarball replaced after its individual hash", async 
   ]);
   assert.notEqual(capturedIdentity.ino, replacementIdentity.ino);
   assert.deepEqual(await readFile(captured), await readFile(tarball));
+});
+
+test("final cohort rejects an earlier tarball rewritten in place while a later tarball hashes", async () => {
+  const fixture = await packFixture();
+  const earlierTarball = path.join(
+    fixture.tarballRoot,
+    npmFilename(fixture.targets[0].packageName, PACKAGE_VERSION),
+  );
+  const laterTarball = path.join(
+    fixture.tarballRoot,
+    npmFilename("ai-cli-gateway", PACKAGE_VERSION),
+  );
+  const originalFstatSync = mutableFs.fstatSync;
+  const originalLstatSync = mutableFs.lstatSync;
+  const originalReadFileSync = mutableFs.readFileSync;
+  const originalReadSync = mutableFs.readSync;
+  const originalUtimesSync = mutableFs.utimesSync;
+  const originalWriteFileSync = mutableFs.writeFileSync;
+  let beforeRewrite;
+  let afterRewrite;
+  let originalContent;
+  let replacement;
+  let rewritten = false;
+
+  await withFsPatches(
+    {
+      readSync: (fd, ...argumentsAfterFd) => {
+        if (!rewritten) {
+          const opened = originalFstatSync(fd, { bigint: true });
+          const laterIdentity = originalLstatSync(laterTarball, { bigint: true });
+          if (
+            opened.dev === laterIdentity.dev &&
+            opened.ino === laterIdentity.ino
+          ) {
+            beforeRewrite = originalLstatSync(earlierTarball, { bigint: true });
+            originalContent = originalReadFileSync(earlierTarball);
+            replacement = Buffer.from(originalContent);
+            replacement[0] ^= 0xff;
+            originalWriteFileSync(earlierTarball, replacement);
+            const forcedTimestamp = new Date("2000-01-01T00:00:00.000Z");
+            originalUtimesSync(earlierTarball, forcedTimestamp, forcedTimestamp);
+            afterRewrite = originalLstatSync(earlierTarball, { bigint: true });
+            rewritten = true;
+          }
+        }
+        return originalReadSync(fd, ...argumentsAfterFd);
+      },
+    },
+    () => assertVerificationFailure(fixture.options),
+  );
+
+  assert.equal(rewritten, true);
+  assert.equal(beforeRewrite.dev, afterRewrite.dev);
+  assert.equal(beforeRewrite.ino, afterRewrite.ino);
+  assert.equal(beforeRewrite.size, afterRewrite.size);
+  assert.equal(originalContent.length, replacement.length);
+  assert.equal(originalContent.equals(replacement), false);
 });
 
 test("final cohort rejects a descriptor replaced after its prior read", async () => {
