@@ -3555,6 +3555,7 @@ func TestPublicPolicyContributionSecurityAndIgnoreBoundary(t *testing.T) {
 		"/config.toml", ".env", ".env.*", "!.env.example",
 		"/.codex/", "/.claude/", "/.gemini/", "auth.json", ".credentials.json",
 		"credentials.json", "oauth_creds.json", "google_accounts.json",
+		"/npm/node_modules/", "/npm/**/*.tgz", "/npm/.staging/",
 	}
 	gotLines := nonCommentLines(ignore)
 	if !reflect.DeepEqual(gotLines, wantLines) {
@@ -3566,6 +3567,8 @@ func TestPublicPolicyContributionSecurityAndIgnoreBoundary(t *testing.T) {
 	for _, forbidden := range []string{
 		"config.example.toml", "docs/getting-started", "docs/reference",
 		"docs/releases", "README", "settings.json", "internal/securitytest",
+		"npm/package.json", "npm/package-lock.json", "npm/launcher",
+		"npm/platforms", "npm/scripts", "npm/test",
 	} {
 		if strings.Contains(ignore, forbidden) {
 			t.Fatalf(".gitignore contains forbidden broad/public rule %q", forbidden)
@@ -4045,6 +4048,7 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	jobs := extractYAMLJobBlocks(t, workflow)
 	wantJobs := map[string]struct{}{
 		"lint": {}, "linux": {}, "macos": {}, "windows": {}, "cross-build": {}, "sdk-contract": {},
+		"npm-contract": {}, "npm-host-install": {},
 	}
 	gotJobs := make(map[string]struct{}, len(jobs))
 	for name := range jobs {
@@ -4057,6 +4061,9 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 		if !strings.Contains(block, "timeout-minutes:") {
 			t.Fatalf("CI job %q has no bounded timeout-minutes", name)
 		}
+	}
+	for _, name := range []string{"lint", "linux", "macos", "windows", "cross-build", "sdk-contract"} {
+		block := jobs[name]
 		requireContainsAll(t, "CI job "+name, block,
 			checkoutAction, setupGoAction,
 			"go-version-file: .go-version", "cache: true")
@@ -4112,6 +4119,24 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	requireContainsAll(t, "SDK contract job", jobs["sdk-contract"],
 		"runs-on: ubuntu-latest", "timeout-minutes: 12",
 		setupPythonAction, setupNodeAction)
+	requireContainsAll(t, "npm contract job", jobs["npm-contract"],
+		"runs-on: ubuntu-24.04", "timeout-minutes: 8", checkoutAction, setupNodeAction,
+		`node-version: ${{ matrix.node-version }}`, "package-manager-cache: false",
+		`- "22.14.0"`, `- "24.13.0"`,
+		"npm ci --ignore-scripts --prefix npm", "npm test --prefix npm")
+	requireContainsAll(t, "npm host-install job", jobs["npm-host-install"],
+		`runs-on: ${{ matrix.runner }}`, "timeout-minutes: 15", checkoutAction,
+		setupGoAction, setupNodeAction, "go-version-file: .go-version", "cache: false",
+		`node-version: "24.13.0"`, "package-manager-cache: false",
+		"runner: ubuntu-24.04", "target: linux-x64", "goos: linux", "goarch: amd64",
+		"runner: macos-15", "target: darwin-arm64", "goos: darwin", "goarch: arm64",
+		"runner: windows-2025", "target: win32-x64", "goos: windows",
+		"executable: ai-cli-gateway.exe", "CGO_ENABLED: 0", "TAG=v0.2.1",
+		"node npm/scripts/stage-packages.js", "node npm/scripts/verify-packages.js",
+		"--target \"${NPM_TARGET}\"", "--version 0.2.1",
+		"npm install --global --ignore-scripts --no-audit --no-fund",
+		`version_output="$("${SHIM}" version)"`,
+		`^ai-cli-gateway v0[.]2[.]1 [(][0-9a-f]{40}, [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z[)]$`)
 
 	if strings.Count(workflow, "-tags=live") != 1 ||
 		!strings.Contains(workflow, "go test -tags=live -run '^$' ./internal/provider/...") {
@@ -4122,6 +4147,7 @@ func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 		"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
 		"continue-on-error: true", "allow-failure", "actions/checkout@v6", "actions/setup-go@v6",
 		"actions/checkout@v7", "actions/setup-go@v7", "golangci/golangci-lint-action@v9",
+		"actions/setup-node@v7",
 		"d583c34f0599d37dbac4a198b9c83201be380893",
 	} {
 		if strings.Contains(workflow, forbidden) {
@@ -4630,6 +4656,57 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		},
 		{name: "npm lifecycle scripts enabled", mutate: replaceCIOnce("npm ci --ignore-scripts", "npm ci")},
 		{
+			name: "npm contract lifecycle scripts enabled",
+			mutate: replaceCIOnce(
+				"npm ci --ignore-scripts --prefix npm",
+				"npm ci --prefix npm",
+			),
+		},
+		{
+			name:   "npm contract Node floor loosened",
+			mutate: replaceCIOnce(`      - "22.14.0"`, `      - "22"`),
+		},
+		{
+			name: "npm host omitted",
+			mutate: replaceCIOnce(
+				"          - runner: windows-2025\n"+
+					"            target: win32-x64\n"+
+					"            goos: windows\n"+
+					"            goarch: amd64\n"+
+					"            executable: ai-cli-gateway.exe\n",
+				"",
+			),
+		},
+		{
+			name: "npm host receives a secret",
+			mutate: replaceCIOnce(
+				"        env:\n          CGO_ENABLED: 0\n",
+				"        env:\n          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}\n          CGO_ENABLED: 0\n",
+			),
+		},
+		{
+			name: "npm host continue-on-error bypass",
+			mutate: replaceCIOnce(
+				"  npm-host-install:\n    runs-on: ${{ matrix.runner }}\n",
+				"  npm-host-install:\n    runs-on: ${{ matrix.runner }}\n    continue-on-error: true\n",
+			),
+		},
+		{
+			name:   "npm host moving action tag",
+			mutate: replaceCINth(setupNodeAction, "actions/setup-node@v7", 3),
+		},
+		{
+			name: "npm host execution skipped",
+			mutate: replaceCIOnce(
+				`          version_output="$("${SHIM}" version)"`,
+				`          version_output="ai-cli-gateway v0.2.1 (0000000000000000000000000000000000000000, 2000-01-01T00:00:00Z)"`,
+			),
+		},
+		{
+			name:   "npm host release version changed",
+			mutate: replaceCIOnce("          TAG=v0.2.1\n", "          TAG=v0.2.2\n"),
+		},
+		{
 			name: "wrong npm prefix",
 			mutate: replaceCIOnce(
 				`npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"`,
@@ -4828,7 +4905,10 @@ func validateSDKCIWorkflowContract(workflow string) error {
 	}
 
 	wantActionsByJob := expectedCIJobActions()
-	for _, name := range []string{"lint", "linux", "macos", "windows", "cross-build", "sdk-contract"} {
+	for _, name := range []string{
+		"lint", "linux", "macos", "windows", "cross-build", "sdk-contract",
+		"npm-contract", "npm-host-install",
+	} {
 		job := jobs[name]
 		contract := contracts[name]
 		fields, parseErr := parseImmediateYAMLFields(job, 4)
@@ -5083,7 +5163,149 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 				),
 			},
 		},
+		"npm-contract": {
+			fields: map[string]string{
+				"runs-on": "ubuntu-24.04", "timeout-minutes": "8", "strategy": "", "steps": "",
+			},
+			strategy: []string{
+				"  matrix:",
+				"    node-version:",
+				`      - "22.14.0"`,
+				`      - "24.13.0"`,
+			},
+			steps: []string{
+				checkout,
+				yamlContractLines(
+					"- uses: "+setupNodeAction,
+					"  with:",
+					"    node-version: ${{ matrix.node-version }}",
+					"    package-manager-cache: false",
+				),
+				yamlContractLines(
+					"- name: Install npm contract dependencies",
+					"  run: npm ci --ignore-scripts --prefix npm",
+				),
+				yamlContractLines(
+					"- name: Test npm package contract",
+					"  run: npm test --prefix npm",
+				),
+			},
+		},
+		"npm-host-install": {
+			fields: map[string]string{
+				"runs-on": "${{ matrix.runner }}", "timeout-minutes": "15", "strategy": "", "steps": "",
+			},
+			strategy: []string{
+				"  fail-fast: false",
+				"  matrix:",
+				"    include:",
+				"      - runner: ubuntu-24.04",
+				"        target: linux-x64",
+				"        goos: linux",
+				"        goarch: amd64",
+				"        executable: ai-cli-gateway",
+				"      - runner: macos-15",
+				"        target: darwin-arm64",
+				"        goos: darwin",
+				"        goarch: arm64",
+				"        executable: ai-cli-gateway",
+				"      - runner: windows-2025",
+				"        target: win32-x64",
+				"        goos: windows",
+				"        goarch: amd64",
+				"        executable: ai-cli-gateway.exe",
+			},
+			steps: []string{
+				checkout,
+				yamlContractLines(
+					"- uses: "+setupGoAction,
+					"  with:",
+					"    go-version-file: .go-version",
+					"    cache: false",
+				),
+				yamlContractLines(
+					"- uses: "+setupNodeAction,
+					"  with:",
+					`    node-version: "24.13.0"`,
+					"    package-manager-cache: false",
+				),
+				npmHostInstallStepContract(),
+			},
+		},
 	}
+}
+
+func npmHostInstallStepContract() string {
+	return yamlContractLines(
+		"- name: Build, pack, install, and execute host package",
+		"  shell: bash",
+		"  env:",
+		"    CGO_ENABLED: 0",
+		"    GOOS: ${{ matrix.goos }}",
+		"    GOARCH: ${{ matrix.goarch }}",
+		"    NPM_TARGET: ${{ matrix.target }}",
+		"    NATIVE_EXECUTABLE: ${{ matrix.executable }}",
+		"  run: |",
+		"    set -euo pipefail",
+		"    umask 077",
+		"    TAG=v0.2.1",
+		`    TAG_COMMIT="${GITHUB_SHA}"`,
+		`    [[ "${TAG_COMMIT}" =~ ^[0-9a-f]{40}$ ]]`,
+		`    source_epoch="$(git show -s --format=%ct "${TAG_COMMIT}")"`,
+		`    [[ "${source_epoch}" =~ ^[0-9]+$ ]]`,
+		`    source_date="$(node -e 'process.stdout.write(new Date(Number(process.argv[1]) * 1000).toISOString().replace(".000Z", "Z"))' "${source_epoch}")"`,
+		`    [[ "${source_date}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]`,
+		"    canonical_child() {",
+		`      node -e 'const path = require("node:path"); process.stdout.write(path.resolve(process.argv[1], process.argv[2]));' "$1" "$2"`,
+		"    }",
+		`    NPM_JOB_PARENT="$(canonical_child "${RUNNER_TEMP}" npm-host-install)"`,
+		`    BINARY_ROOT="$(canonical_child "${NPM_JOB_PARENT}" binaries)"`,
+		`    BINARY_DIRECTORY="$(canonical_child "${BINARY_ROOT}" "${GOOS}_${GOARCH}")"`,
+		`    BINARY_PATH="$(canonical_child "${BINARY_DIRECTORY}" "${NATIVE_EXECUTABLE}")"`,
+		`    NPM_STAGING_ROOT="$(canonical_child "${NPM_JOB_PARENT}" staging)"`,
+		`    NPM_TARBALL_ROOT="$(canonical_child "${NPM_JOB_PARENT}" tarballs)"`,
+		`    NPM_INSTALL_PREFIX="$(canonical_child "${NPM_JOB_PARENT}" install)"`,
+		`    DESCRIPTOR="$(canonical_child "${NPM_TARBALL_ROOT}" packages.json)"`,
+		`    node -e 'const fs = require("node:fs"); for (const directory of process.argv.slice(1)) { if (fs.existsSync(directory)) process.exit(1); fs.mkdirSync(directory, { mode: 0o700 }); fs.chmodSync(directory, 0o700); const metadata = fs.lstatSync(directory); if (!metadata.isDirectory() || metadata.isSymbolicLink() || (process.platform !== "win32" && (metadata.mode & 0o777) !== 0o700) || (typeof process.getuid === "function" && metadata.uid !== process.getuid())) process.exit(1); }' \`,
+		`      "${NPM_JOB_PARENT}" \`,
+		`      "${BINARY_ROOT}" \`,
+		`      "${BINARY_DIRECTORY}" \`,
+		`      "${NPM_TARBALL_ROOT}" \`,
+		`      "${NPM_INSTALL_PREFIX}"`,
+		`    ldflags="-s -w -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Version=${TAG} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Commit=${TAG_COMMIT} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Date=${source_date}"`,
+		`    go build -trimpath -buildvcs=false -mod=readonly -ldflags "${ldflags}" \`,
+		`      -o "${BINARY_PATH}" ./cmd/ai-cli-gateway`,
+		`    node npm/scripts/stage-packages.js \`,
+		`      --repository-root "${GITHUB_WORKSPACE}" \`,
+		`      --binary-root "${BINARY_ROOT}" \`,
+		`      --output-root "${NPM_STAGING_ROOT}" \`,
+		`      --version 0.2.1 \`,
+		`      --target "${NPM_TARGET}"`,
+		`    node npm/scripts/verify-packages.js \`,
+		`      --staging-root "${NPM_STAGING_ROOT}" \`,
+		`      --tarball-root "${NPM_TARBALL_ROOT}" \`,
+		`      --descriptor "${DESCRIPTOR}" \`,
+		`      --version 0.2.1`,
+		"    package_filename() {",
+		`      node -e 'const fs = require("node:fs"); const packages = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const index = Number(process.argv[2]); const target = process.argv[3]; if (!Array.isArray(packages) || packages.length !== 2 || packages[0].name !== "ai-cli-gateway-" + target || packages[1].name !== "ai-cli-gateway" || (index !== 0 && index !== 1)) process.exit(1); process.stdout.write(packages[index].filename);' "${DESCRIPTOR}" "$1" "${NPM_TARGET}"`,
+		"    }",
+		`    NATIVE_FILENAME="$(package_filename 0)"`,
+		`    LAUNCHER_FILENAME="$(package_filename 1)"`,
+		`    NATIVE_TARBALL="$(canonical_child "${NPM_TARBALL_ROOT}" "${NATIVE_FILENAME}")"`,
+		`    LAUNCHER_TARBALL="$(canonical_child "${NPM_TARBALL_ROOT}" "${LAUNCHER_FILENAME}")"`,
+		`    npm install --global --ignore-scripts --no-audit --no-fund \`,
+		`      --prefix "${NPM_INSTALL_PREFIX}" "${NATIVE_TARBALL}" "${LAUNCHER_TARBALL}"`,
+		`    if [[ "${RUNNER_OS}" = Windows ]]; then`,
+		`      SHIM="${NPM_INSTALL_PREFIX}/ai-cli-gateway"`,
+		"    else",
+		`      SHIM="${NPM_INSTALL_PREFIX}/bin/ai-cli-gateway"`,
+		"    fi",
+		`    test -x "${SHIM}"`,
+		`    version_output="$("${SHIM}" version)"`,
+		`    version_pattern='^ai-cli-gateway v0[.]2[.]1 [(][0-9a-f]{40}, [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z[)]$'`,
+		`    [[ "${version_output}" =~ ${version_pattern} ]]`,
+		`    test "${version_output}" = "ai-cli-gateway ${TAG} (${TAG_COMMIT}, ${source_date})"`,
+	)
 }
 
 func expectedCIJobActions() map[string][]string {
@@ -5101,6 +5323,8 @@ func expectedCIJobActions() map[string][]string {
 			setupPythonAction,
 			setupNodeAction,
 		},
+		"npm-contract":     {checkoutAction, setupNodeAction},
+		"npm-host-install": {checkoutAction, setupGoAction, setupNodeAction},
 	}
 }
 
@@ -8578,12 +8802,15 @@ func TestMakefileExactVerificationChain(t *testing.T) {
 	targets, dependencies, recipes := parseMakefileTargets(t, makefile)
 	wantTargets := map[string]struct{}{
 		"fmt-check": {}, "vet": {}, "lint": {}, "test": {}, "race": {},
-		"integration": {}, "build": {}, "verify": {},
+		"integration": {}, "build": {}, "npm-test": {}, "npm-pack-check": {}, "verify": {},
 	}
 	if !reflect.DeepEqual(targets, wantTargets) {
 		t.Fatalf("Makefile targets = %v, want exact public targets %v", targets, wantTargets)
 	}
-	wantVerify := []string{"fmt-check", "vet", "lint", "test", "race", "integration", "build"}
+	wantVerify := []string{
+		"fmt-check", "vet", "lint", "npm-test", "npm-pack-check",
+		"test", "race", "integration", "build",
+	}
 	if !reflect.DeepEqual(dependencies["verify"], wantVerify) {
 		t.Fatalf("verify prerequisites = %q, want exact order %q", dependencies["verify"], wantVerify)
 	}
@@ -8592,7 +8819,10 @@ func TestMakefileExactVerificationChain(t *testing.T) {
 	}
 
 	phony := makefileDirectiveFields(makefile, ".PHONY:")
-	wantPhony := []string{"fmt-check", "vet", "lint", "test", "race", "integration", "build", "verify"}
+	wantPhony := []string{
+		"fmt-check", "vet", "lint", "test", "race", "integration", "build", "verify",
+		"npm-test", "npm-pack-check",
+	}
 	if !reflect.DeepEqual(phony, wantPhony) {
 		t.Fatalf(".PHONY = %q, want exact target order %q", phony, wantPhony)
 	}
@@ -8601,6 +8831,13 @@ func TestMakefileExactVerificationChain(t *testing.T) {
 	requireExactRecipe(t, recipes, "test", "go test ./...")
 	requireExactRecipe(t, recipes, "race", "go test -race ./...")
 	requireExactRecipe(t, recipes, "integration", "go test -tags=integration ./...")
+	if got, want := recipes["npm-test"], []string{
+		"npm ci --ignore-scripts --prefix npm",
+		"npm test --prefix npm",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Makefile npm-test recipe = %q, want exactly %q", got, want)
+	}
+	requireExactRecipe(t, recipes, "npm-pack-check", "node npm/scripts/verify-packages.js --source-check")
 
 	fmtRecipe := collapseWhitespace(strings.Join(recipes["fmt-check"], " "))
 	requireContainsAll(t, "fmt-check recipe", fmtRecipe,
@@ -8613,7 +8850,7 @@ func TestMakefileExactVerificationChain(t *testing.T) {
 	lower := strings.ToLower(makefile)
 	for _, forbidden := range []string{
 		"git init", "git add", "git commit", "git push", "go get", "curl ", "wget ",
-		"npm ", "npx ", "-tags=live", " codex ", " claude ", " gemini ",
+		"npx ", "-tags=live", " codex ", " claude ", " gemini ",
 	} {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("Makefile contains forbidden repository/network/provider action %q", strings.TrimSpace(forbidden))
@@ -8656,12 +8893,13 @@ func parseMakefileTargets(t *testing.T, document string) (
 }
 
 func makefileDirectiveFields(document, directive string) []string {
+	var result []string
 	for _, line := range strings.Split(document, "\n") {
 		if strings.HasPrefix(line, directive) {
-			return strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, directive)))
+			result = append(result, strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, directive)))...)
 		}
 	}
-	return nil
+	return result
 }
 
 func requireExactRecipe(t *testing.T, recipes map[string][]string, target, want string) {

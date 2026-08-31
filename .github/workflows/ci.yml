@@ -428,3 +428,131 @@ jobs:
             "${RUNNER_TEMP}/sdk-python/bin/python" \
             "${RUNNER_TEMP}/sdk-node/node" \
             "${RUNNER_TEMP}/sdk-javascript/main.mjs"
+
+  npm-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      matrix:
+        node-version:
+          - "22.14.0"
+          - "24.13.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+      - name: Install npm contract dependencies
+        run: npm ci --ignore-scripts --prefix npm
+      - name: Test npm package contract
+        run: npm test --prefix npm
+
+  npm-host-install:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+            goos: linux
+            goarch: amd64
+            executable: ai-cli-gateway
+          - runner: macos-15
+            target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            executable: ai-cli-gateway
+          - runner: windows-2025
+            target: win32-x64
+            goos: windows
+            goarch: amd64
+            executable: ai-cli-gateway.exe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: .go-version
+          cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24.13.0"
+          package-manager-cache: false
+      - name: Build, pack, install, and execute host package
+        shell: bash
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          NPM_TARGET: ${{ matrix.target }}
+          NATIVE_EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          TAG=v0.2.1
+          TAG_COMMIT="${GITHUB_SHA}"
+          [[ "${TAG_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          source_epoch="$(git show -s --format=%ct "${TAG_COMMIT}")"
+          [[ "${source_epoch}" =~ ^[0-9]+$ ]]
+          source_date="$(node -e 'process.stdout.write(new Date(Number(process.argv[1]) * 1000).toISOString().replace(".000Z", "Z"))' "${source_epoch}")"
+          [[ "${source_date}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+
+          canonical_child() {
+            node -e 'const path = require("node:path"); process.stdout.write(path.resolve(process.argv[1], process.argv[2]));' "$1" "$2"
+          }
+          NPM_JOB_PARENT="$(canonical_child "${RUNNER_TEMP}" npm-host-install)"
+          BINARY_ROOT="$(canonical_child "${NPM_JOB_PARENT}" binaries)"
+          BINARY_DIRECTORY="$(canonical_child "${BINARY_ROOT}" "${GOOS}_${GOARCH}")"
+          BINARY_PATH="$(canonical_child "${BINARY_DIRECTORY}" "${NATIVE_EXECUTABLE}")"
+          NPM_STAGING_ROOT="$(canonical_child "${NPM_JOB_PARENT}" staging)"
+          NPM_TARBALL_ROOT="$(canonical_child "${NPM_JOB_PARENT}" tarballs)"
+          NPM_INSTALL_PREFIX="$(canonical_child "${NPM_JOB_PARENT}" install)"
+          DESCRIPTOR="$(canonical_child "${NPM_TARBALL_ROOT}" packages.json)"
+
+          node -e 'const fs = require("node:fs"); for (const directory of process.argv.slice(1)) { if (fs.existsSync(directory)) process.exit(1); fs.mkdirSync(directory, { mode: 0o700 }); fs.chmodSync(directory, 0o700); const metadata = fs.lstatSync(directory); if (!metadata.isDirectory() || metadata.isSymbolicLink() || (process.platform !== "win32" && (metadata.mode & 0o777) !== 0o700) || (typeof process.getuid === "function" && metadata.uid !== process.getuid())) process.exit(1); }' \
+            "${NPM_JOB_PARENT}" \
+            "${BINARY_ROOT}" \
+            "${BINARY_DIRECTORY}" \
+            "${NPM_TARBALL_ROOT}" \
+            "${NPM_INSTALL_PREFIX}"
+
+          ldflags="-s -w -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Version=${TAG} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Commit=${TAG_COMMIT} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Date=${source_date}"
+          go build -trimpath -buildvcs=false -mod=readonly -ldflags "${ldflags}" \
+            -o "${BINARY_PATH}" ./cmd/ai-cli-gateway
+
+          node npm/scripts/stage-packages.js \
+            --repository-root "${GITHUB_WORKSPACE}" \
+            --binary-root "${BINARY_ROOT}" \
+            --output-root "${NPM_STAGING_ROOT}" \
+            --version 0.2.1 \
+            --target "${NPM_TARGET}"
+          node npm/scripts/verify-packages.js \
+            --staging-root "${NPM_STAGING_ROOT}" \
+            --tarball-root "${NPM_TARBALL_ROOT}" \
+            --descriptor "${DESCRIPTOR}" \
+            --version 0.2.1
+
+          package_filename() {
+            node -e 'const fs = require("node:fs"); const packages = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const index = Number(process.argv[2]); const target = process.argv[3]; if (!Array.isArray(packages) || packages.length !== 2 || packages[0].name !== "ai-cli-gateway-" + target || packages[1].name !== "ai-cli-gateway" || (index !== 0 && index !== 1)) process.exit(1); process.stdout.write(packages[index].filename);' "${DESCRIPTOR}" "$1" "${NPM_TARGET}"
+          }
+          NATIVE_FILENAME="$(package_filename 0)"
+          LAUNCHER_FILENAME="$(package_filename 1)"
+          NATIVE_TARBALL="$(canonical_child "${NPM_TARBALL_ROOT}" "${NATIVE_FILENAME}")"
+          LAUNCHER_TARBALL="$(canonical_child "${NPM_TARBALL_ROOT}" "${LAUNCHER_FILENAME}")"
+
+          npm install --global --ignore-scripts --no-audit --no-fund \
+            --prefix "${NPM_INSTALL_PREFIX}" "${NATIVE_TARBALL}" "${LAUNCHER_TARBALL}"
+
+          if [[ "${RUNNER_OS}" = Windows ]]; then
+            SHIM="${NPM_INSTALL_PREFIX}/ai-cli-gateway"
+          else
+            SHIM="${NPM_INSTALL_PREFIX}/bin/ai-cli-gateway"
+          fi
+          test -x "${SHIM}"
+          version_output="$("${SHIM}" version)"
+          version_pattern='^ai-cli-gateway v0[.]2[.]1 [(][0-9a-f]{40}, [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z[)]$'
+          [[ "${version_output}" =~ ${version_pattern} ]]
+          test "${version_output}" = "ai-cli-gateway ${TAG} (${TAG_COMMIT}, ${source_date})"
