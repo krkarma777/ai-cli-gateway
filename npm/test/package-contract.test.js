@@ -18,6 +18,32 @@ async function manifest(relative) {
   return JSON.parse(await readFile(path.join(npmRoot, relative, "package.json"), "utf8"));
 }
 
+test("packaged repository license is Apache-2.0 across all manifests", async () => {
+  const repositoryLicense = await readFile(path.join(npmRoot, "..", "LICENSE"), "utf8");
+  assert.match(
+    repositoryLicense,
+    /^\s*Apache License\s*\n\s*Version 2\.0, January 2004\s*\n\s*http:\/\/www\.apache\.org\/licenses\//,
+  );
+  assert.match(repositoryLicense, /TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION/);
+  assert.match(repositoryLicense, /END OF TERMS AND CONDITIONS/);
+
+  const packageManifests = [
+    await manifest("launcher"),
+    ...await Promise.all(
+      targets.map(([directory]) => manifest(path.join("platforms", directory))),
+    ),
+  ];
+  const declarations = packageManifests.map(({ name, license }) => ({ name, license }));
+  const expected = packageManifests.map(({ name }) => ({ name, license: "Apache-2.0" }));
+  assert.deepEqual(
+    declarations,
+    expected,
+    `npm package SPDX declarations:\n${declarations
+      .map(({ name, license }) => `${name}: ${String(license)}`)
+      .join("\n")}`,
+  );
+});
+
 test("launcher has five exact native optional dependencies and no scripts", async () => {
   const value = await manifest("launcher");
   assert.equal(value.name, "ai-cli-gateway");

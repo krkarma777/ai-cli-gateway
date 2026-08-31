@@ -2,7 +2,7 @@
   "name": "ai-cli-gateway",
   "version": "0.2.1",
   "description": "Run AI CLI Gateway through the matching native binary.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "ai-cli-gateway": "bin/ai-cli-gateway.js"

@@ -194,7 +194,7 @@ The launcher manifest must contain the exact five optional dependency entries:
   "name": "ai-cli-gateway",
   "version": "0.2.1",
   "description": "Run AI CLI Gateway through the matching native binary.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "ai-cli-gateway": "bin/ai-cli-gateway.js"
@@ -237,7 +237,7 @@ function nativeManifest(target) {
     name: target.packageName,
     version: "0.2.1",
     description: `Native AI CLI Gateway binary for ${target.platform}-${target.arch}.`,
-    license: "MIT",
+    license: "Apache-2.0",
     files: [`bin/${target.executable}`, "README.md", "LICENSE"],
     engines: { node: ">=22.14.0" },
     os: [target.platform],
@@ -961,7 +961,7 @@ ci: publish verified npm packages
 - Produces: current-version documentation without altering historical
   `docs/releases/v0.2.0.md`.
 
-- [ ] **Step 1: Change documentation contracts first**
+- [x] **Step 1: Change documentation contracts first**
 
 Add a v0.2.1 release-note contract requiring:
 
@@ -978,7 +978,7 @@ Update current README/getting-started expectations from v0.2.0 to v0.2.1.
 Retain a test proving the historical v0.2.0 release note remains tag-pinned and
 unchanged.
 
-- [ ] **Step 2: Run documentation contracts and verify RED**
+- [x] **Step 2: Run documentation contracts and verify RED**
 
 Run:
 
@@ -989,7 +989,7 @@ go test -count=1 ./internal/securitytest \
 
 Expected: FAIL because v0.2.1 documentation is absent.
 
-- [ ] **Step 3: Update the current installation path**
+- [x] **Step 3: Update the current installation path**
 
 README Quick Start begins with:
 
@@ -1008,7 +1008,7 @@ Create `docs/releases/v0.2.1.md` with sections: npm installation, supported
 targets, supply-chain equivalence and provenance, unchanged gateway runtime,
 downloads and verification, and exact tag-pinned links.
 
-- [ ] **Step 4: Run documentation contracts GREEN**
+- [x] **Step 4: Run documentation contracts GREEN**
 
 Run:
 
@@ -1019,7 +1019,7 @@ go test -count=1 ./internal/securitytest \
 
 Expected: current v0.2.1 and historical v0.2.0 contracts pass.
 
-- [ ] **Step 5: Commit documentation**
+- [x] **Step 5: Commit documentation**
 
 Commit message:
 
@@ -1039,7 +1039,7 @@ docs: add npm installation for v0.2.1
 - Consumes: complete implementation.
 - Produces: reviewable verification evidence and a PR-ready remote branch.
 
-- [ ] **Step 1: Run source and npm checks**
+- [x] **Step 1: Run source and npm checks**
 
 Run:
 
@@ -1053,7 +1053,7 @@ git diff --check
 
 Expected: all exit 0; npm installs no registry dependency.
 
-- [ ] **Step 2: Run focused security and release checks**
+- [x] **Step 2: Run focused security and release checks**
 
 Run:
 
@@ -1066,7 +1066,7 @@ actionlint -config-file /dev/null -shellcheck= -pyflakes= -no-color \
 
 Expected: all pass.
 
-- [ ] **Step 3: Run all Go gates**
+- [x] **Step 3: Run all Go gates**
 
 Run:
 

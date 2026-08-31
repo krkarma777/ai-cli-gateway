@@ -2,7 +2,7 @@
   "name": "ai-cli-gateway-linux-arm64",
   "version": "0.2.1",
   "description": "Native AI CLI Gateway binary for linux-arm64.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "files": [
     "bin/ai-cli-gateway",
     "README.md",
