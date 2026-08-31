@@ -24,7 +24,10 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { PACKAGE_VERSION, TARGETS } from "../scripts/package-config.js";
-import { stagePackages } from "../scripts/stage-packages.js";
+import {
+  stagedFileOpenFlags,
+  stagePackages,
+} from "../scripts/stage-packages.js";
 import { packAndVerify, sourceCheck } from "../scripts/verify-packages.js";
 
 const npmRoot = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
@@ -193,6 +196,18 @@ async function withFsPatches(patches, operation) {
     syncBuiltinESMExports();
   }
 }
+
+test("uses a writable staged-file handle only on Windows", () => {
+  assert.equal(stagedFileOpenFlags("win32"), constants.O_RDWR);
+  assert.equal(
+    stagedFileOpenFlags("linux"),
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  );
+  assert.equal(
+    stagedFileOpenFlags("darwin"),
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  );
+});
 
 test("stages all native packages followed by the launcher", async () => {
   const fixture = await stagingFixture();

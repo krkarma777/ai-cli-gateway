@@ -795,6 +795,13 @@ async function assertStagedRootStable(
   ]);
 }
 
+export function stagedFileOpenFlags(platform = process.platform) {
+  if (platform === "win32") {
+    return constants.O_RDWR;
+  }
+  return constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+}
+
 async function syncStagedFile(filename, expected) {
   const before = await lstat(filename, { bigint: true });
   if (
@@ -805,10 +812,7 @@ async function syncStagedFile(filename, expected) {
   ) {
     throw stagingError();
   }
-  const handle = await open(
-    filename,
-    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-  );
+  const handle = await open(filename, stagedFileOpenFlags());
   try {
     const opened = await handle.stat({ bigint: true });
     if (!sameFile(before, opened)) {
