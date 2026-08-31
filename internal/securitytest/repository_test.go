@@ -1636,13 +1636,26 @@ func validateExactDocumentationTable(document, heading string, expected []string
 	if err != nil {
 		return err
 	}
-	expectedSource := strings.Join(expected, "\n")
-	sealedSource := expectedSource + "\n\n"
-	if count := strings.Count(section, sealedSource); count != 1 {
-		return fmt.Errorf("section %q contains %d exact terminated target tables, want one", heading, count)
+	lines := strings.Split(section, "\n")
+	tableStarts := make([]int, 0, 1)
+	for start := 0; start+len(expected) <= len(lines); start++ {
+		if reflect.DeepEqual(lines[start:start+len(expected)], expected) {
+			tableStarts = append(tableStarts, start)
+		}
+	}
+	if len(tableStarts) != 1 {
+		return fmt.Errorf("section %q contains %d exact target tables, want one", heading, len(tableStarts))
+	}
+	tableStart := tableStarts[0]
+	tableEnd := tableStart + len(expected)
+	if tableStart == 0 || !isDocumentationGFMBlankLine(lines[tableStart-1]) {
+		return fmt.Errorf("section %q target table is missing its leading active blank boundary", heading)
+	}
+	if tableEnd == len(lines) || !isDocumentationGFMBlankLine(lines[tableEnd]) {
+		return fmt.Errorf("section %q target table is missing its trailing active blank boundary", heading)
 	}
 	pipeLines := make([]string, 0, len(expected))
-	for _, line := range strings.Split(section, "\n") {
+	for _, line := range lines {
 		if strings.Contains(line, "|") {
 			pipeLines = append(pipeLines, line)
 		}
@@ -1653,12 +1666,39 @@ func validateExactDocumentationTable(document, heading string, expected []string
 	return nil
 }
 
-func extractActiveTopLevelMarkdownSection(document, heading string) (string, error) {
-	normalized := strings.ReplaceAll(document, "\r\n", "\n")
-	wantHeading := "## " + heading
-	found := false
-	inSection := false
-	sectionLines := make([]string, 0)
+const documentationFenceBoundary = "\x00gfm-fence-boundary\x00"
+
+func isDocumentationGFMBlankLine(line string) bool {
+	return strings.Trim(line, " \t") == ""
+}
+
+func plainDocumentationHeadingIdentity(text string) (string, bool) {
+	var identity strings.Builder
+	pendingSpace := false
+	for _, character := range text {
+		if character == ' ' || character == '\t' {
+			pendingSpace = identity.Len() > 0
+			continue
+		}
+		allowed := character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			strings.ContainsRune(".,-()", character)
+		if !allowed {
+			return "", false
+		}
+		if pendingSpace {
+			identity.WriteByte(' ')
+			pendingSpace = false
+		}
+		identity.WriteRune(character)
+	}
+	return identity.String(), true
+}
+
+func activeDocumentationMarkdownLines(document string) ([]string, error) {
+	normalized := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(document)
+	activeLines := make([]string, 0)
 	var fenceMarker byte
 	fenceLength := 0
 	for _, line := range strings.Split(normalized, "\n") {
@@ -1671,39 +1711,463 @@ func extractActiveTopLevelMarkdownSection(document, heading string) (string, err
 		}
 		marker, length, _, opening, err := parseGFMFenceOpening(line)
 		if err != nil {
-			return "", fmt.Errorf("documentation fence: %w", err)
+			return nil, fmt.Errorf("documentation fence: %w", err)
 		}
 		if opening {
+			activeLines = append(activeLines, documentationFenceBoundary)
 			fenceMarker = marker
 			fenceLength = length
 			continue
 		}
 		if containsREADMERawHTMLConstruct(line) {
-			return "", errors.New("documentation contains raw HTML outside a GFM code fence")
+			return nil, errors.New("documentation contains raw HTML outside a GFM code fence")
 		}
-		if line == wantHeading {
-			if found {
-				return "", fmt.Errorf("document contains duplicate active %q section", heading)
+		activeLines = append(activeLines, line)
+	}
+	if fenceLength > 0 {
+		return nil, errors.New("documentation contains an unterminated GFM code fence")
+	}
+	return activeLines, nil
+}
+
+func extractActiveTopLevelMarkdownSection(document, heading string) (string, error) {
+	activeLines, err := activeDocumentationMarkdownLines(document)
+	if err != nil {
+		return "", err
+	}
+	blockContexts := classifyDocumentationBlockLines(activeLines)
+	wantHeading := "## " + heading
+	found := false
+	inSection := false
+	sectionLines := make([]string, 0)
+	for index, line := range activeLines {
+		level, text, atx := parseDocumentationATXHeading(line)
+		if atx {
+			identity, plain := plainDocumentationHeadingIdentity(text)
+			if !plain {
+				return "", fmt.Errorf("document contains non-plain active heading %q", line)
 			}
-			found = true
-			inSection = true
+			if identity == heading {
+				if line != wantHeading {
+					return "", fmt.Errorf("document contains noncanonical active %q heading", heading)
+				}
+				if found {
+					return "", fmt.Errorf("document contains duplicate active %q section", heading)
+				}
+				found = true
+				inSection = true
+				continue
+			}
+			if isDocumentationListContainedATXHeading(activeLines, blockContexts, index, line) {
+				if inSection {
+					sectionLines = append(sectionLines, line)
+				}
+				continue
+			}
+			if inSection && level <= 2 {
+				inSection = false
+				continue
+			}
+			if inSection {
+				sectionLines = append(sectionLines, line)
+			}
 			continue
 		}
-		if inSection && strings.HasPrefix(line, "## ") {
-			inSection = false
+
+		if level, setext := parseDocumentationSetextUnderline(line); setext &&
+			index > 0 && isDocumentationSetextHeadingText(blockContexts[index-1]) {
+			text := strings.Trim(activeLines[index-1], " \t")
+			identity, plain := plainDocumentationHeadingIdentity(text)
+			if !plain {
+				return "", fmt.Errorf("document contains non-plain active Setext heading %q", text)
+			}
+			if identity == heading {
+				return "", fmt.Errorf("document contains noncanonical active %q heading", heading)
+			}
+			if inSection && level <= 2 {
+				if last := len(sectionLines) - 1; last >= 0 && sectionLines[last] == activeLines[index-1] {
+					sectionLines = sectionLines[:last]
+				}
+				inSection = false
+			}
 			continue
 		}
+
 		if inSection {
 			sectionLines = append(sectionLines, line)
 		}
-	}
-	if fenceLength > 0 {
-		return "", errors.New("documentation contains an unterminated GFM code fence")
 	}
 	if !found {
 		return "", fmt.Errorf("document is missing active top-level %q section", heading)
 	}
 	return strings.Join(sectionLines, "\n"), nil
+}
+
+func parseDocumentationATXHeading(line string) (int, string, bool) {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || indent == len(line) || line[indent] != '#' {
+		return 0, "", false
+	}
+	end := indent
+	for end < len(line) && line[end] == '#' {
+		end++
+	}
+	level := end - indent
+	if level > 6 {
+		return 0, "", false
+	}
+	if end < len(line) && line[end] != ' ' && line[end] != '\t' {
+		return 0, "", false
+	}
+	text := strings.Trim(line[end:], " \t")
+	closing := len(text)
+	for closing > 0 && text[closing-1] == '#' {
+		closing--
+	}
+	if closing < len(text) && (closing == 0 || text[closing-1] == ' ' || text[closing-1] == '\t') {
+		if closing == 0 {
+			text = ""
+		} else {
+			text = strings.Trim(text[:closing-1], " \t")
+		}
+	}
+	return level, text, true
+}
+
+func parseDocumentationSetextUnderline(line string) (int, bool) {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || indent == len(line) || (line[indent] != '=' && line[indent] != '-') {
+		return 0, false
+	}
+	marker := line[indent]
+	end := indent
+	for end < len(line) && line[end] == marker {
+		end++
+	}
+	if strings.Trim(line[end:], " \t") != "" {
+		return 0, false
+	}
+	if marker == '=' {
+		return 1, true
+	}
+	return 2, true
+}
+
+type documentationBlockKind uint8
+
+const (
+	documentationBlockUnknown documentationBlockKind = iota
+	documentationBlockBlank
+	documentationBlockParagraph
+	documentationBlockListMarker
+	documentationBlockThematicBreak
+	documentationBlockATXHeading
+	documentationBlockSetextUnderline
+	documentationBlockQuote
+	documentationBlockIndentedCode
+	documentationBlockFence
+)
+
+type documentationListMarker struct {
+	contentIndent int
+	ordered       bool
+	start         int
+	hasContent    bool
+}
+
+type documentationBlockLineContext struct {
+	kind       documentationBlockKind
+	listMarker documentationListMarker
+}
+
+func classifyDocumentationBlockLines(lines []string) []documentationBlockLineContext {
+	contexts := make([]documentationBlockLineContext, len(lines))
+	paragraphOpen := false
+	for index, line := range lines {
+		switch {
+		case line == documentationFenceBoundary:
+			contexts[index].kind = documentationBlockFence
+			paragraphOpen = false
+		case isDocumentationGFMBlankLine(line):
+			contexts[index].kind = documentationBlockBlank
+			paragraphOpen = false
+		case isDocumentationATXHeadingLine(line):
+			contexts[index].kind = documentationBlockATXHeading
+			paragraphOpen = false
+		case isDocumentationBlockQuoteMarker(line):
+			contexts[index].kind = documentationBlockQuote
+			paragraphOpen = false
+		case isDocumentationSetextUnderlineAfterParagraph(line, paragraphOpen):
+			contexts[index].kind = documentationBlockSetextUnderline
+			paragraphOpen = false
+		case isDocumentationThematicBreak(line):
+			contexts[index].kind = documentationBlockThematicBreak
+			paragraphOpen = false
+		default:
+			marker, listMarker := parseDocumentationListMarker(line)
+			canInterruptParagraph := marker.hasContent && (!marker.ordered || marker.start == 1)
+			if listMarker && (!paragraphOpen || canInterruptParagraph) {
+				contexts[index] = documentationBlockLineContext{
+					kind:       documentationBlockListMarker,
+					listMarker: marker,
+				}
+				paragraphOpen = false
+				continue
+			}
+			if documentationLeadingSpaces(line) >= 4 && !paragraphOpen {
+				contexts[index].kind = documentationBlockIndentedCode
+				continue
+			}
+			contexts[index].kind = documentationBlockParagraph
+			paragraphOpen = true
+		}
+	}
+	return contexts
+}
+
+func isDocumentationATXHeadingLine(line string) bool {
+	_, _, atx := parseDocumentationATXHeading(line)
+	return atx
+}
+
+func isDocumentationBlockQuoteMarker(line string) bool {
+	indent := documentationLeadingSpaces(line)
+	return indent <= 3 && indent < len(line) && line[indent] == '>'
+}
+
+func isDocumentationSetextUnderlineAfterParagraph(line string, paragraphOpen bool) bool {
+	if !paragraphOpen {
+		return false
+	}
+	_, setext := parseDocumentationSetextUnderline(line)
+	return setext
+}
+
+func isDocumentationSetextHeadingText(context documentationBlockLineContext) bool {
+	return context.kind == documentationBlockParagraph
+}
+
+func isDocumentationListContainedATXHeading(
+	lines []string,
+	contexts []documentationBlockLineContext,
+	index int,
+	line string,
+) bool {
+	headingIndent := documentationLeadingSpaces(line)
+	if headingIndent == 0 || headingIndent > 3 || index == 0 {
+		return false
+	}
+	minimumIndent := headingIndent
+	blankSeen := false
+	for previous := index - 1; previous >= 0; previous-- {
+		context := contexts[previous]
+		switch context.kind {
+		case documentationBlockBlank:
+			if blankSeen {
+				return false
+			}
+			blankSeen = true
+		case documentationBlockListMarker:
+			return headingIndent >= context.listMarker.contentIndent &&
+				minimumIndent >= context.listMarker.contentIndent
+		case documentationBlockParagraph, documentationBlockIndentedCode:
+			indent := documentationLeadingSpaces(lines[previous])
+			if indent == 0 {
+				return false
+			}
+			if indent < minimumIndent {
+				minimumIndent = indent
+			}
+		case documentationBlockUnknown,
+			documentationBlockThematicBreak,
+			documentationBlockATXHeading,
+			documentationBlockSetextUnderline,
+			documentationBlockQuote,
+			documentationBlockFence:
+			return false
+		}
+	}
+	return false
+}
+
+func parseDocumentationListMarker(line string) (documentationListMarker, bool) {
+	if isDocumentationThematicBreak(line) {
+		return documentationListMarker{}, false
+	}
+	indent := documentationLeadingSpaces(line)
+	if indent > 3 || indent == len(line) {
+		return documentationListMarker{}, false
+	}
+	marker := documentationListMarker{}
+	cursor := indent
+	if line[cursor] == '-' || line[cursor] == '+' || line[cursor] == '*' {
+		cursor++
+	} else {
+		marker.ordered = true
+		digitStart := cursor
+		for cursor < len(line) && line[cursor] >= '0' && line[cursor] <= '9' && cursor-digitStart < 9 {
+			marker.start = marker.start*10 + int(line[cursor]-'0')
+			cursor++
+		}
+		if cursor == digitStart || cursor == len(line) || (line[cursor] != '.' && line[cursor] != ')') {
+			return documentationListMarker{}, false
+		}
+		cursor++
+	}
+	markerWidth := cursor - indent
+	if cursor == len(line) {
+		marker.contentIndent = indent + markerWidth + 1
+		return marker, true
+	}
+	spaceStart := cursor
+	for cursor < len(line) && line[cursor] == ' ' && cursor-spaceStart < 5 {
+		cursor++
+	}
+	spaces := cursor - spaceStart
+	if spaces < 1 || spaces > 4 {
+		return documentationListMarker{}, false
+	}
+	marker.contentIndent = indent + markerWidth + spaces
+	marker.hasContent = cursor < len(line)
+	return marker, true
+}
+
+func isDocumentationThematicBreak(line string) bool {
+	indent := documentationLeadingSpaces(line)
+	if indent > 3 || indent == len(line) {
+		return false
+	}
+	marker := line[indent]
+	if marker != '*' && marker != '-' && marker != '_' {
+		return false
+	}
+	count := 0
+	for cursor := indent; cursor < len(line); cursor++ {
+		switch line[cursor] {
+		case marker:
+			count++
+		case ' ', '\t':
+		default:
+			return false
+		}
+	}
+	return count >= 3
+}
+
+func documentationLeadingSpaces(line string) int {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	return indent
+}
+
+func TestDocumentationMarkdownHeadingParsing(t *testing.T) {
+	atxTests := []struct {
+		name      string
+		line      string
+		wantLevel int
+		wantText  string
+		want      bool
+	}{
+		{name: "H1", line: "# Other section", wantLevel: 1, wantText: "Other section", want: true},
+		{name: "indented H2", line: "   ## Other section", wantLevel: 2, wantText: "Other section", want: true},
+		{name: "tab separator", line: "##\tOther section", wantLevel: 2, wantText: "Other section", want: true},
+		{name: "closing hashes", line: " ## Other section ###  ", wantLevel: 2, wantText: "Other section", want: true},
+		{name: "empty H2", line: "##", wantLevel: 2, want: true},
+		{name: "H3 subsection", line: "### Child", wantLevel: 3, wantText: "Child", want: true},
+		{name: "four-space code", line: "    ## Other section"},
+		{name: "leading tab code", line: "\t## Other section"},
+		{name: "missing separator", line: "##Other section"},
+		{name: "seven markers", line: "####### Other section"},
+	}
+	for _, test := range atxTests {
+		t.Run("ATX "+test.name, func(t *testing.T) {
+			level, text, ok := parseDocumentationATXHeading(test.line)
+			if level != test.wantLevel || text != test.wantText || ok != test.want {
+				t.Fatalf("parseDocumentationATXHeading(%q) = (%d, %q, %v), want (%d, %q, %v)", test.line, level, text, ok, test.wantLevel, test.wantText, test.want)
+			}
+		})
+	}
+
+	setextTests := []struct {
+		name      string
+		line      string
+		wantLevel int
+		want      bool
+	}{
+		{name: "H1", line: "=============", wantLevel: 1, want: true},
+		{name: "H2", line: "-------------", wantLevel: 2, want: true},
+		{name: "three-space H2", line: "   ---\t", wantLevel: 2, want: true},
+		{name: "four-space code", line: "    ---"},
+		{name: "mixed markers", line: "--="},
+		{name: "empty", line: ""},
+	}
+	for _, test := range setextTests {
+		t.Run("Setext "+test.name, func(t *testing.T) {
+			level, ok := parseDocumentationSetextUnderline(test.line)
+			if level != test.wantLevel || ok != test.want {
+				t.Fatalf("parseDocumentationSetextUnderline(%q) = (%d, %v), want (%d, %v)", test.line, level, ok, test.wantLevel, test.want)
+			}
+		})
+	}
+	if !isDocumentationSetextHeadingText(classifyDocumentationBlockLines([]string{"\u00a0"})[0]) {
+		t.Fatal("NBSP is GFM Setext heading content, not a blank line")
+	}
+	t.Run("mixed line endings", func(t *testing.T) {
+		lines, err := activeDocumentationMarkdownLines("alpha\r\nbeta\rgamma\n")
+		if err != nil {
+			t.Fatalf("activeDocumentationMarkdownLines: %v", err)
+		}
+		want := []string{"alpha", "beta", "gamma", ""}
+		if !reflect.DeepEqual(lines, want) {
+			t.Fatalf("activeDocumentationMarkdownLines mixed line endings = %q, want %q", lines, want)
+		}
+	})
+}
+
+func TestDocumentationPlainHeadingIdentity(t *testing.T) {
+	allowed := []struct {
+		source string
+		want   string
+	}{
+		{source: "Install\t  with  npm", want: "Install with npm"},
+		{source: "AI CLI Gateway v0.2.1", want: "AI CLI Gateway v0.2.1"},
+		{source: "Optional-dependency recovery", want: "Optional-dependency recovery"},
+		{source: "Merge, dry run, Doctor, and recovery", want: "Merge, dry run, Doctor, and recovery"},
+		{source: "POSIX (macOS and Linux)", want: "POSIX (macOS and Linux)"},
+	}
+	for _, test := range allowed {
+		identity, ok := plainDocumentationHeadingIdentity(test.source)
+		if !ok || identity != test.want {
+			t.Errorf("plainDocumentationHeadingIdentity(%q) = (%q, %v), want (%q, true)", test.source, identity, ok, test.want)
+		}
+	}
+
+	forbidden := []string{
+		"Install with np&#109;",
+		`Install with np\m`,
+		"Install with `npm`",
+		"Install with *npm*",
+		"Install with _npm_",
+		"Install with ~~npm~~",
+		"[Install with npm](https://example.invalid)",
+		"<span>Install with npm</span>",
+		"!Install with npm",
+		"Install with café",
+		"Install with npm\x01",
+	}
+	for _, source := range forbidden {
+		if identity, ok := plainDocumentationHeadingIdentity(source); ok {
+			t.Errorf("plainDocumentationHeadingIdentity(%q) = (%q, true), want fail closed", source, identity)
+		}
+	}
 }
 
 func TestDocumentationNPMTargetTablesRejectExtraRows(t *testing.T) {
@@ -1820,6 +2284,412 @@ func TestDocumentationNPMTargetTablesRejectHiddenTables(t *testing.T) {
 					t.Fatal("exact target-table contract accepted an unterminated GFM fence")
 				}
 			})
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRequireLeadingBlankBoundary(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateExactDocumentationTable(test.document, test.heading, test.expected); err != nil {
+				t.Fatalf("baseline exact target table: %v", err)
+			}
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			predecessors := []struct {
+				name string
+				line string
+			}{
+				{name: "blockquote lazy continuation", line: "> other"},
+				{name: "list lazy continuation", line: "- other"},
+			}
+			for _, predecessor := range predecessors {
+				t.Run(predecessor.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, predecessor.line+"\n"+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a table without a leading active blank boundary")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectNonGFMBlankBoundaries(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateExactDocumentationTable(test.document, test.heading, test.expected); err != nil {
+				t.Fatalf("baseline exact target table: %v", err)
+			}
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			t.Run("blockquote lazy continuation through NBSP", func(t *testing.T) {
+				mutated := strings.Replace(test.document, tableSource, "> other\n\u00a0\n"+tableSource, 1)
+				if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+					t.Fatal("exact target-table contract accepted NBSP as a leading GFM blank boundary")
+				}
+			})
+			t.Run("trailing NBSP", func(t *testing.T) {
+				mutated := strings.Replace(test.document, tableSource, tableSource+"\n\u00a0", 1)
+				if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+					t.Fatal("exact target-table contract accepted NBSP as a trailing GFM blank boundary")
+				}
+			})
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectSplitTables(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateExactDocumentationTable(test.document, test.heading, test.expected); err != nil {
+				t.Fatalf("baseline exact target table: %v", err)
+			}
+			splits := []struct {
+				name   string
+				before string
+				after  string
+			}{
+				{name: "between header and delimiter", before: test.expected[0], after: test.expected[1]},
+				{name: "between target rows", before: test.expected[2], after: test.expected[3]},
+			}
+			for _, split := range splits {
+				t.Run(split.name, func(t *testing.T) {
+					adjacent := split.before + "\n" + split.after
+					if strings.Count(test.document, adjacent) != 1 {
+						t.Fatalf("split target %q is not unique", adjacent)
+					}
+					separated := split.before + "\n```text\nnon-table boundary\n```\n" + split.after
+					mutated := strings.Replace(test.document, adjacent, separated, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract rejoined table fragments across a GFM fence")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectHeadingRelocation(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			mutations := []struct {
+				name   string
+				prefix string
+			}{
+				{name: "one-space ATX H2", prefix: " ## Other section\n\n"},
+				{name: "tab-separated ATX H2", prefix: "##\tOther section\n\n"},
+				{name: "ATX H1", prefix: "# Other section\n\n"},
+				{name: "Setext H2", prefix: "Other section\n-------------\n\n"},
+				{name: "Setext H1", prefix: "Other section\n=============\n\n"},
+				{name: "lone-CR Setext H2", prefix: "Other section\r-------------\n\n"},
+			}
+			for _, mutation := range mutations {
+				t.Run(mutation.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, mutation.prefix+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a table relocated below an H1 or H2")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectNoncanonicalTargetHeadings(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			mutations := []struct {
+				name   string
+				prefix string
+			}{
+				{name: "duplicate canonical target", prefix: "## " + test.heading + "\n\n"},
+				{name: "indented target", prefix: " ## " + test.heading + "\n\n"},
+				{name: "tab-separated target", prefix: "##\t" + test.heading + "\n\n"},
+				{name: "closing hashes target", prefix: "## " + test.heading + " ##\n\n"},
+				{name: "H3 target", prefix: "### " + test.heading + "\n\n"},
+				{name: "Setext target", prefix: test.heading + "\n-------------\n\n"},
+			}
+			for _, mutation := range mutations {
+				t.Run(mutation.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, mutation.prefix+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a duplicate or noncanonical target heading")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectRenderedTargetHeadings(t *testing.T) {
+	tests := []struct {
+		name             string
+		document         string
+		heading          string
+		expected         []string
+		renderedVariants []struct {
+			name string
+			text string
+		}
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+			renderedVariants: []struct {
+				name string
+				text string
+			}{
+				{name: "double ASCII whitespace", text: "Install  with npm"},
+				{name: "emphasis", text: "Install with *npm*"},
+				{name: "code span", text: "Install with `npm`"},
+				{name: "link label", text: "[Install with npm](https://example.invalid)"},
+				{name: "character reference", text: "Install with np&#109;"},
+			},
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+			renderedVariants: []struct {
+				name string
+				text string
+			}{
+				{name: "double ASCII whitespace", text: "Supported  targets"},
+				{name: "emphasis", text: "Supported *targets*"},
+				{name: "code span", text: "Supported `targets`"},
+				{name: "link label", text: "[Supported targets](https://example.invalid)"},
+				{name: "character reference", text: "Supported target&#115;"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			for _, variant := range test.renderedVariants {
+				t.Run(variant.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, "### "+variant.text+"\n\n"+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a noncanonical heading with the target's rendered identity")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesRejectUnprovenListContexts(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	contexts := []struct {
+		name   string
+		prefix string
+	}{
+		{
+			name:   "thematic break does not prove a bullet list",
+			prefix: "* * *\n\n  ## Other section\n\n",
+		},
+		{
+			name:   "ordered start two cannot interrupt a paragraph",
+			prefix: "paragraph\n2. not a list\n\n   ## Other section\n\n",
+		},
+		{
+			name:   "unproven ordered marker remains Setext text",
+			prefix: "paragraph\n2. not a list\n---\n\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			for _, context := range contexts {
+				t.Run(context.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, context.prefix+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err == nil {
+						t.Fatal("exact target-table contract accepted a root table after an unproven list context")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDocumentationNPMTargetTablesAllowRootTableAfterListBlocks(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		heading  string
+		expected []string
+	}{
+		{
+			name:     "Getting Started",
+			document: readGettingStarted(t),
+			heading:  "Install with npm",
+			expected: gettingStartedNPMTargetTable(),
+		},
+		{
+			name:     "v0.2.1 release notes",
+			document: string(readRepositoryFile(t, "docs/releases/v0.2.1.md")),
+			heading:  "Supported targets",
+			expected: releaseNotesNPMTargetTable(),
+		},
+	}
+	contexts := []struct {
+		name   string
+		prefix string
+	}{
+		{name: "list item then thematic break", prefix: "- list item\n---\n\n"},
+		{name: "bullet list-contained ATX H2", prefix: "- list item\n\n  ## Nested heading\n\n"},
+		{name: "ordered list-contained ATX H2", prefix: "1. list item\n\n   ## Nested heading\n\n"},
+		{name: "list continuation before contained ATX H2", prefix: "- item\n  continuation\n\n  ## Nested heading\n\n"},
+		{name: "indented code then thematic break", prefix: "    code\n---\n\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tableSource := strings.Join(test.expected, "\n")
+			if strings.Count(test.document, tableSource) != 1 {
+				t.Fatal("exact target table source is not unique")
+			}
+			for _, context := range contexts {
+				t.Run(context.name, func(t *testing.T) {
+					mutated := strings.Replace(test.document, tableSource, context.prefix+tableSource, 1)
+					if err := validateExactDocumentationTable(mutated, test.heading, test.expected); err != nil {
+						t.Fatalf("exact target-table contract rejected a root table after a valid list block: %v", err)
+					}
+				})
+			}
 		})
 	}
 }
