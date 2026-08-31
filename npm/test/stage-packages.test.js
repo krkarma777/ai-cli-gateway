@@ -866,6 +866,91 @@ test("publishes the exact completion marker only on successful staging", async (
   await assertMode(marker, 0o644);
 });
 
+test("keeps a short marker write invalid when the next write fails", async () => {
+  const fixture = await stagingFixture();
+  const target = TARGETS[2];
+  const marker = path.join(fixture.outputRoot, ".complete");
+  const expected = Buffer.from(completionMarkerContent, "utf8");
+  const originalWriteSync = mutableFs.writeSync;
+  let markerWrites = 0;
+
+  await withFsPatches(
+    {
+      writeSync: (fd, buffer, offset, length, position) => {
+        if (Buffer.isBuffer(buffer) && buffer.equals(expected)) {
+          markerWrites += 1;
+          if (markerWrites === 1) {
+            const prefixLength = Math.max(1, Math.floor(length / 2));
+            return originalWriteSync(
+              fd,
+              buffer,
+              offset,
+              prefixLength,
+              position,
+            );
+          }
+          const error = new Error("injected completion-marker write failure");
+          error.code = "EIO";
+          throw error;
+        }
+        return originalWriteSync(fd, buffer, offset, length, position);
+      },
+    },
+    () =>
+      assertStagingFailure(
+        stagingOptions(fixture, { targets: [target] }),
+      ),
+  );
+
+  assert.equal(markerWrites, 2);
+  const partial = await readFile(marker);
+  assert.ok(partial.length > 0 && partial.length < expected.length);
+  assert.equal(partial.equals(expected), false);
+  await assertNoValidCompletionMarker(fixture.outputRoot);
+});
+
+test("accepts publication when marker close succeeds before reporting an error", async () => {
+  const fixture = await stagingFixture();
+  const target = TARGETS[2];
+  const marker = path.join(fixture.outputRoot, ".complete");
+  const originalCloseSync = mutableFs.closeSync;
+  const originalFstatSync = mutableFs.fstatSync;
+  const warnings = [];
+  const captureWarning = (warning) => warnings.push(warning);
+  let closedFd;
+  let staged;
+
+  process.on("warning", captureWarning);
+  try {
+    staged = await withFsPatches(
+      {
+        closeSync: (fd) => {
+          originalCloseSync(fd);
+          closedFd = fd;
+          const error = new Error("injected post-close marker error");
+          error.code = "EIO";
+          throw error;
+        },
+      },
+      () => stagePackages(stagingOptions(fixture, { targets: [target] })),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    process.off("warning", captureWarning);
+  }
+
+  assert.deepEqual(staged.map(({ name }) => name), [
+    target.packageName,
+    "ai-cli-gateway",
+  ]);
+  assert.equal(await readFile(marker, "utf8"), completionMarkerContent);
+  assert.throws(
+    () => originalFstatSync(closedFd),
+    (error) => error?.code === "EBADF",
+  );
+  assert.deepEqual(warnings, []);
+});
+
 test("fails closed when syncing a copied file fails before marker publication", async () => {
   const fixture = await stagingFixture();
   const target = TARGETS[2];
@@ -1825,6 +1910,44 @@ test("supports an absolute Node executable with one fixed absolute npm script pr
   ]);
   assert.equal(await pathExists(fixture.npmStartedMarker), true);
 });
+
+test(
+  "rejects unsafe npm scratch parents before scratch creation or npm execution",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    for (const [label, unsafeMode] of [
+      ["world-writable", 0o777],
+      ["sticky world-writable", 0o1777],
+      ["group-writable", 0o770],
+    ]) {
+      await t.test(label, async () => {
+        const fixture = await packFixture();
+        await chmod(fixture.fixtureRoot, unsafeMode);
+        let failure;
+
+        try {
+          await packAndVerify(fixture.options);
+        } catch (error) {
+          failure = error;
+        }
+
+        assert.equal(await pathExists(fixture.npmStartedMarker), false);
+        assert.equal(await pathExists(fixture.npmScratchMarker), false);
+        assert.equal(
+          (await readdir(fixture.fixtureRoot)).some((entry) =>
+            entry.startsWith(".npm-pack-home-")),
+          false,
+        );
+        assert.deepEqual(
+          failure === undefined
+            ? undefined
+            : { message: failure.message, name: failure.name },
+          { message: "npm package verification failed", name: "Error" },
+        );
+      });
+    }
+  },
+);
 
 test("retains the private npm scratch root after successful verification", async () => {
   const fixture = await packFixture();

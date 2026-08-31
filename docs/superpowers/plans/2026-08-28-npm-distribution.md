@@ -573,6 +573,13 @@ Expected: FAIL with `ERR_MODULE_NOT_FOUND` for
 > caller must likewise provide a trusted private temporary root; staging still
 > applies the canonical, non-link, stable-identity, and ownership checks that
 > Node exposes, but it does not infer ACL isolation from POSIX mode bits.
+> The verifier applies the same trust rule to the parent in which it creates
+> the retained npm scratch-home sibling of `tarballRoot`: on POSIX that parent
+> must be canonical, current-uid-owned, and have neither group-write nor
+> other-write permission, with no sticky-directory exception. Its identity,
+> type, ownership, and write-bit policy are rechecked before and after every npm
+> child and in the final verification window. On Windows the caller must supply
+> this trusted private parent because POSIX mode bits do not establish its ACL.
 >
 > Reviewer item 1 is accepted as a threat-boundary correction, not as a claim
 > of impossible same-uid resistance. Node has no portable `mkdirat`/`openat`

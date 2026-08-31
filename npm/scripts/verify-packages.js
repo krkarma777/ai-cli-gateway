@@ -114,6 +114,15 @@ function ownedByCurrentUser(metadata) {
   return typeof process.getuid !== "function" || metadata.uid === BigInt(process.getuid());
 }
 
+function privateNpmScratchParent(metadata) {
+  return (
+    metadata.isDirectory() &&
+    !metadata.isSymbolicLink() &&
+    ownedByCurrentUser(metadata) &&
+    (process.platform === "win32" || (metadata.mode & 0o022n) === 0n)
+  );
+}
+
 async function canonicalDirectory(directory, { privateRoot = false } = {}) {
   if (
     typeof directory !== "string" ||
@@ -748,6 +757,9 @@ async function programmaticNpmInvocation(npmExecutable, npmArguments) {
 async function createNpmHome(tarballRoot) {
   const parent = path.dirname(tarballRoot);
   const parentIdentity = await canonicalDirectory(parent);
+  if (!privateNpmScratchParent(parentIdentity)) {
+    throw verificationError();
+  }
   let root;
   try {
     root = await mkdtemp(path.join(parent, ".npm-pack-home-"));
@@ -865,9 +877,7 @@ async function assertNpmHomeStable(home) {
   const parentBefore = await lstat(home.parent, { bigint: true });
   if (
     !sameNode(home.parentIdentity, parentBefore) ||
-    parentBefore.isSymbolicLink() ||
-    !parentBefore.isDirectory() ||
-    !ownedByCurrentUser(parentBefore)
+    !privateNpmScratchParent(parentBefore)
   ) {
     throw verificationError();
   }
@@ -922,7 +932,7 @@ async function assertNpmHomeStable(home) {
     !sameNode(home.identity, rootAfter) ||
     !sameNode(home.parentIdentity, parentAfter) ||
     rootAfter.isSymbolicLink() ||
-    parentAfter.isSymbolicLink()
+    !privateNpmScratchParent(parentAfter)
   ) {
     throw verificationError();
   }
