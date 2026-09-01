@@ -7060,6 +7060,67 @@ func TestNPMReleaseWorkflowBashSyntax(t *testing.T) {
 	}
 }
 
+func TestNPMReleaseChecksumManifestV021(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("npm checksum manifest execution requires Bash")
+	}
+	workflow, err := parseClosedNPMReleaseWorkflow(readRepositoryFile(t, ".github/workflows/npm-release.yml"))
+	if err != nil {
+		t.Fatalf("parse closed npm release workflow: %v", err)
+	}
+	download, err := namedReleaseStep(workflow.Jobs["package"].Steps, "Download and verify immutable release assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebuild, err := namedReleaseStep(workflow.Jobs["package"].Steps, "Rebuild and compare release archives")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uniqueLine := func(script, prefix string) string {
+		t.Helper()
+		matches := make([]string, 0, 1)
+		for _, line := range trimmedShellLines(shellWithoutCommentOnlyLines(script)) {
+			if strings.HasPrefix(line, prefix) {
+				matches = append(matches, line)
+			}
+		}
+		if len(matches) != 1 {
+			t.Fatalf("npm checksum lines with prefix %q = %q, want one", prefix, matches)
+		}
+		return matches[0]
+	}
+	patternLine := uniqueLine(download.Run, "readonly checksum_pattern=")
+	digestLookup := uniqueLine(rebuild.Run, "expected_digest=")
+
+	const archive = "ai-cli-gateway_0.2.1_linux_amd64.tar.gz"
+	digest := strings.Repeat("a", 64)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "SHA256SUMS"), []byte(digest+" *"+archive+"\n"), 0o600); err != nil {
+		t.Fatalf("write binary checksum fixture: %v", err)
+	}
+	program := strings.Join([]string{
+		"set -euo pipefail",
+		patternLine,
+		`text_checksum_line="${DIGEST}  ${ARCHIVE}"`,
+		`if [[ "${text_checksum_line}" =~ ${checksum_pattern} ]]; then exit 1; fi`,
+		`checksum_line="${DIGEST} *${ARCHIVE}"`,
+		`[[ "${checksum_line}" =~ ${checksum_pattern} ]]`,
+		`test "${BASH_REMATCH[1]}" = "${DIGEST}"`,
+		`test "${BASH_REMATCH[2]}" = "${ARCHIVE}"`,
+		`asset_root="${ASSET_ROOT}"`,
+		`archive="${ARCHIVE}"`,
+		digestLookup,
+		`test "${expected_digest}" = "${DIGEST}"`,
+	}, "\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "/bin/bash", "-c", program) //nolint:gosec // Executes two exact repository-owned checksum lines against a test-owned manifest.
+	command.Env = append(os.Environ(), "ARCHIVE="+archive, "ASSET_ROOT="+root, "DIGEST="+digest)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("execute npm checksum manifest contract: %v\n%s", err, output)
+	}
+}
+
 func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 	document := string(readRepositoryFile(t, ".github/workflows/npm-release.yml"))
 	tests := []struct {
@@ -7104,6 +7165,8 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "canonical tag widened", mutate: replaceNPMReleaseOnce("test \"${INPUT_TAG}\" = v0.2.1", "[[ \"${INPUT_TAG}\" = v* ]]")},
 		{name: "asset allowlist weakened", mutate: replaceNPMReleaseOnce("          ai-cli-gateway_0.2.1_linux_arm64.tar.gz\n", "")},
 		{name: "asset digest weakened", mutate: replaceNPMReleaseOnce("^sha256:[0-9a-f]{64}$", "^sha256:")},
+		{name: "checksum binary marker removed", mutate: replaceNPMReleaseOnce(`^([0-9a-f]{64}) \*([A-Za-z0-9._-]+)$`, `^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$`)},
+		{name: "checksum lookup binary marker removed", mutate: replaceNPMReleaseOnce(`-v marker="*${archive}" '$2 == marker`, `-v name="${archive}" '$2 == name`)},
 		{name: "strict checksums removed", mutate: replaceNPMReleaseOnce("sha256sum --check --strict SHA256SUMS", "sha256sum --check SHA256SUMS")},
 		{name: "attestation predicate removed", mutate: replaceNPMReleaseOnce("              --predicate-type https://slsa.dev/provenance/v1 \\\n", "")},
 		{name: "attestation workflow changed", mutate: replaceNPMReleaseOnce("github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml", "github.com/attacker/workflow.yml")},
@@ -7411,6 +7474,9 @@ func validateNPMReleaseWorkflowContract(workflow npmReleaseWorkflowDocument) err
 	if err := validateNPMReleaseDispatchMetadataContract(packageJob); err != nil {
 		return err
 	}
+	if err := validateNPMReleaseChecksumManifestContract(packageJob); err != nil {
+		return err
+	}
 	if err := validateNPMReleaseArtifactDigestContract(publishJob); err != nil {
 		return err
 	}
@@ -7462,6 +7528,33 @@ func validateNPMReleaseDispatchMetadataContract(packageJob releaseWorkflowJob) e
 		`printf 'release_id=%s\n' "${release_id}"`,
 	); err != nil {
 		return fmt.Errorf("npm dispatch metadata order: %w", err)
+	}
+	return nil
+}
+
+func validateNPMReleaseChecksumManifestContract(packageJob releaseWorkflowJob) error {
+	download, err := namedReleaseStep(packageJob.Steps, "Download and verify immutable release assets")
+	if err != nil {
+		return err
+	}
+	downloadLines := trimmedShellLines(shellWithoutCommentOnlyLines(download.Run))
+	for _, line := range []string{
+		`readonly checksum_pattern='^([0-9a-f]{64}) \*([A-Za-z0-9._-]+)$'`,
+		`checksum_names+=("${BASH_REMATCH[2]}")`,
+	} {
+		if shellLineCount(downloadLines, line) != 1 {
+			return fmt.Errorf("npm checksum manifest line %q is not exact and unique", line)
+		}
+	}
+
+	rebuild, err := namedReleaseStep(packageJob.Steps, "Rebuild and compare release archives")
+	if err != nil {
+		return err
+	}
+	rebuildLines := trimmedShellLines(shellWithoutCommentOnlyLines(rebuild.Run))
+	const digestLookup = `expected_digest="$(awk -v marker="*${archive}" '$2 == marker && NF == 2 { print $1 }' "${asset_root}/SHA256SUMS")"`
+	if shellLineCount(rebuildLines, digestLookup) != 1 {
+		return errors.New("npm rebuilt archive digest lookup does not require the binary checksum marker")
 	}
 	return nil
 }
@@ -7645,8 +7738,8 @@ func validateNPMReleaseRunHashes(packageJob, publishJob releaseWorkflowJob) erro
 	want := map[string]string{
 		"package/Validate immutable release metadata":          "eba092f7faa1171107bf9a8ef91de7fb669bac3cdcd308d54f8ce60d387a1053",
 		"package/Validate toolchain and source":                "631712fb03df18ac2a9572c46e11d4c769477aa60f9d1a96fcee3fb3627770ad",
-		"package/Download and verify immutable release assets": "63da1cd453591d8674f6e4d04bbde51b886f0e8a7b182a3c30e8ad31fce79120",
-		"package/Rebuild and compare release archives":         "a29e7f9ab62446c35ba3ffce2606e723b5eb492b54afa15a0ec3fb1e3e8612d9",
+		"package/Download and verify immutable release assets": "9d6cc9385df0d7ee808f32e23e895a5638f3f65c52b26966a3216ed726e28709",
+		"package/Rebuild and compare release archives":         "312b6e71f564b31087d055ad988c05c8986dc7ce5303759055406866fb2688aa",
 		"package/Stage and inspect npm packages":               "8e9c66f39ec4ff6eaf541c414556bd22264707c12ccea2e23f7e701142c52726",
 		"package/Install and execute Linux x64 package":        "5f996fe5f6443404603107fe2e49e621fec165b9620db86b570d459c760be4e4",
 		"package/Validate artifact outputs":                    "6c1898c6abdc07af87012ddd3cbb076ffb6998f0a351ee17a0f9cf2378f37bc3",
