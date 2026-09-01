@@ -207,6 +207,34 @@ been published. That migration is deferred to a separate compatibility and
 operations decision; it is not required to correct the current metadata or
 the npm spam-detection false positive.
 
+## Windows Launcher Contract
+
+Windows x86-64 is a first-class release target, not a cross-compile-only
+artifact. `process.platform === "win32"` and `process.arch === "x64"` must
+select `ai-cli-gateway-win32-x64` and execute
+`bin/ai-cli-gateway.exe` from that exact matching package version.
+
+The existing `npm-host-install` CI matrix will remain the authoritative native
+launcher gate. Its `windows-2025` entry must build the real Go `.exe`, stage
+the Windows native package and launcher, pack both tarballs, install them with
+lifecycle scripts disabled, and execute the installed command. The gate will
+be extended inside the same job, without another runner or workflow, to prove:
+
+- the npm-generated `.cmd` shim starts the Node launcher and native `.exe`;
+- the npm-generated PowerShell shim starts the same launcher and `.exe`;
+- the exact version argument reaches the native command and stdout returns;
+- a deliberately invalid command preserves native exit code `2`, keeps stdout
+  empty, and returns only the documented usage on stderr.
+
+The ordinary Windows Go jobs continue covering native Job Objects, ACLs,
+reparse points, cancellation, cleanup, trimmed paths, and the Windows build.
+The npm launcher gate covers packaging and command dispatch; it does not
+duplicate the longer Go integration suite. A `0.2.2` release cannot proceed if
+either the native Windows tests or the Windows npm launcher gate fails.
+
+Windows ARM64 remains outside the supported five-target release matrix. No
+emulation result substitutes for the real `windows-2025` x86-64 launcher run.
+
 ## Version and Publication Flow
 
 The rollout has two ordered phases.
