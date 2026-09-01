@@ -574,3 +574,17 @@ jobs:
           version_pattern='^ai-cli-gateway v0[.]2[.]1 [(][0-9a-f]{40}, [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z[)]$'
           [[ "${version_output}" =~ ${version_pattern} ]]
           test "${version_output}" = "ai-cli-gateway ${TAG} (${TAG_COMMIT}, ${source_date})"
+      - name: Verify native Windows npm shims
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          EXPECTED_TAG: v0.2.1
+        run: |
+          $ErrorActionPreference = "Stop"
+          $InstallPrefix = [IO.Path]::GetFullPath(
+            (Join-Path $env:RUNNER_TEMP "npm-host-install/install")
+          )
+          ./npm/scripts/verify-windows-launcher.ps1 `
+            -InstallPrefix $InstallPrefix `
+            -ExpectedTag $env:EXPECTED_TAG `
+            -ExpectedCommit $env:GITHUB_SHA
