@@ -472,10 +472,7 @@ Run:
 
 ```bash
 node --test --test-concurrency=1 npm/test/package-contract.test.js
-node npm/scripts/verify-packages.js \
-  --source-check \
-  --repository-root "$PWD" \
-  --version 0.2.1
+node npm/scripts/verify-packages.js --source-check
 npm test --prefix npm
 git diff --check
 ```
@@ -809,10 +806,7 @@ Run:
 
 ```bash
 task_verify_root="$(mktemp -d /private/tmp/ai-cli-gateway-version-green.XXXXXX)"
-node npm/scripts/verify-packages.js \
-  --source-check \
-  --repository-root "$PWD" \
-  --version 0.2.2
+node npm/scripts/verify-packages.js --source-check
 node --test --test-concurrency=1 npm/test/package-contract.test.js npm/test/launcher.test.js
 GOCACHE="${task_verify_root}/gocache" \
 GOMODCACHE="${task_verify_root}/gomodcache" \
@@ -1054,10 +1048,7 @@ go vet ./...
 golangci-lint run ./...
 npm ci --ignore-scripts --prefix npm
 npm test --prefix npm
-node npm/scripts/verify-packages.js \
-  --source-check \
-  --repository-root "$PWD" \
-  --version 0.2.2
+node npm/scripts/verify-packages.js --source-check
 "${actionlint_bin}" \
   -config-file /dev/null \
   -shellcheck= \
