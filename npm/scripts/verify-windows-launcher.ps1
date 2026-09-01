@@ -17,8 +17,14 @@ $ErrorActionPreference = 'Stop'
 
 $ResolvedPrefix = [IO.Path]::GetFullPath($InstallPrefix)
 if (-not [IO.Path]::IsPathFullyQualified($InstallPrefix) -or
-    $ResolvedPrefix -cne $InstallPrefix -or
-    -not (Test-Path -LiteralPath $ResolvedPrefix -PathType Container)) {
+    $ResolvedPrefix -cne $InstallPrefix) {
+  throw 'windows launcher verification failed'
+}
+
+$RootItem = Get-Item -LiteralPath $ResolvedPrefix -Force
+if (-not $RootItem.PSIsContainer -or
+    ($RootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+    -not [string]::IsNullOrEmpty([string]$RootItem.LinkType)) {
   throw 'windows launcher verification failed'
 }
 
