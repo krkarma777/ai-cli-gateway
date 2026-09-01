@@ -36,10 +36,71 @@ foreach ($Shim in @($CmdShim, $PowerShellShim)) {
 
 function Get-EntrySnapshot {
   $Entries = [Collections.Generic.List[string]]::new()
-  foreach ($Item in Get-ChildItem -LiteralPath $ResolvedPrefix -Force -Recurse) {
-    $Kind = if ($Item.PSIsContainer) { 'directory' } else { 'file' }
+  $Pending = [Collections.Generic.Stack[string]]::new()
+  $Pending.Push($ResolvedPrefix)
+  while ($Pending.Count -ne 0) {
+    $CurrentPath = $Pending.Pop()
+    $Item = Get-Item -LiteralPath $CurrentPath -Force
+    if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        -not [string]::IsNullOrEmpty([string]$Item.LinkType)) {
+      throw 'windows launcher verification failed'
+    }
+
+    if ($Item.PSIsContainer) {
+      $Kind = 'directory'
+      foreach ($Child in Get-ChildItem -LiteralPath $Item.FullName -Force) {
+        $Pending.Push($Child.FullName)
+      }
+    } else {
+      $Kind = 'file'
+    }
+
     $RelativePath = [IO.Path]::GetRelativePath($ResolvedPrefix, $Item.FullName)
-    $Entries.Add($Kind + ':' + $RelativePath)
+    $RelativePathLength = ([int]$RelativePath.Length).ToString(
+      [Globalization.CultureInfo]::InvariantCulture
+    )
+    $Attributes = ([uint32]$Item.Attributes).ToString(
+      [Globalization.CultureInfo]::InvariantCulture
+    )
+    $CreationTimeUtcTicks = ([int64]$Item.CreationTimeUtc.Ticks).ToString(
+      [Globalization.CultureInfo]::InvariantCulture
+    )
+    $LastWriteTimeUtcTicks = ([int64]$Item.LastWriteTimeUtc.Ticks).ToString(
+      [Globalization.CultureInfo]::InvariantCulture
+    )
+    $Entry = @(
+      'kind=' + $Kind
+      'pathLength=' + $RelativePathLength
+      'path=' + $RelativePath
+      'attributes=' + $Attributes
+      'creationTimeUtcTicks=' + $CreationTimeUtcTicks
+      'lastWriteTimeUtcTicks=' + $LastWriteTimeUtcTicks
+    ) -join '|'
+
+    if ($Kind -ceq 'file') {
+      $SHA256 = [Security.Cryptography.SHA256]::Create()
+      $Stream = $null
+      try {
+        $Stream = [IO.File]::Open(
+          $Item.FullName,
+          [IO.FileMode]::Open,
+          [IO.FileAccess]::Read,
+          [IO.FileShare]::Read
+        )
+        $Length = ([int64]$Stream.Length).ToString(
+          [Globalization.CultureInfo]::InvariantCulture
+        )
+        $HashBytes = $SHA256.ComputeHash($Stream)
+        $Hash = [Convert]::ToHexString($HashBytes).ToLowerInvariant()
+      } finally {
+        if ($null -ne $Stream) {
+          $Stream.Dispose()
+        }
+        $SHA256.Dispose()
+      }
+      $Entry += '|length=' + $Length + '|sha256=' + $Hash
+    }
+    $Entries.Add($Entry)
   }
   $Entries.Sort([StringComparer]::Ordinal)
   return @($Entries)
@@ -48,14 +109,17 @@ function Get-EntrySnapshot {
 $ExpectedEntries = @(Get-EntrySnapshot)
 function Assert-EntrySnapshot {
   $ActualEntries = @(Get-EntrySnapshot)
-  $Differences = @(
-    Compare-Object `
-      -ReferenceObject $ExpectedEntries `
-      -DifferenceObject $ActualEntries `
-      -CaseSensitive
-  )
-  if ($Differences.Count -ne 0) {
+  if ($ActualEntries.Count -ne $ExpectedEntries.Count) {
     throw 'windows launcher verification failed'
+  }
+  for ($Index = 0; $Index -lt $ExpectedEntries.Count; $Index++) {
+    if (-not [string]::Equals(
+      $ExpectedEntries[$Index],
+      $ActualEntries[$Index],
+      [StringComparison]::Ordinal
+    )) {
+      throw 'windows launcher verification failed'
+    }
   }
 }
 
