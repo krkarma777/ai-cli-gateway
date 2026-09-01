@@ -10,7 +10,7 @@ It implements a focused **Responses API-compatible subset**, not full OpenAI API
 
 Your application calls one loopback endpoint. AI CLI Gateway routes the request to a configured Codex CLI, Claude Code, or Gemini CLI process and returns final text or locally validated JSON.
 
-[Get started](#quick-start) · [Read the full setup guide](docs/getting-started.md) · [See the API reference](docs/reference.md) · [Download v0.2.1](https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.2.1)
+[Get started](#quick-start) · [Read the full setup guide](docs/getting-started.md) · [See the API reference](docs/reference.md) · [Download v0.2.2](https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.2.2)
 
 ## From SDK to local CLI
 
@@ -52,7 +52,7 @@ The gateway must already be running, and `codex-local` must exist in your config
 
 AI CLI Gateway is designed for local or self-hosted use by one trusted OS identity. It is deliberately small: no web UI, database, or conversation store.
 
-## What v0.2.1 supports
+## What v0.2.2 supports
 
 | Area | Included |
 |---|---|
@@ -65,7 +65,7 @@ AI CLI Gateway is designed for local or self-hosted use by one trusted OS identi
 | Diagnostics | `doctor` checks configuration and provider readiness without inference |
 | Setup | guided interactive init plus strict flag-only automation |
 
-Not included in v0.2.1:
+Not included in v0.2.2:
 
 - SSE streaming;
 - tool or function-call round trips;
@@ -92,11 +92,11 @@ OpenAI SDK or HTTP client
 ## Quick Start
 
 ```console
-npm install --global ai-cli-gateway@0.2.1
+npm install --global ai-cli-gateway@0.2.2
 ai-cli-gateway version
 ```
 
-For a manual checksum-verified installation, immediately follow the [v0.2.1 archive procedure](docs/getting-started.md#advanced-recovery-and-service-deployment).
+For a manual checksum-verified installation, immediately follow the [v0.2.2 archive procedure](docs/getting-started.md#advanced-recovery-and-service-deployment).
 
 The npm package requires Node.js `>=22.14.0` and installs the matching native optional package without a lifecycle downloader. The complete [Getting Started guide](docs/getting-started.md) covers supported targets, provenance, updates, uninstall, and optional-dependency recovery.
 
@@ -218,7 +218,7 @@ Read [SECURITY.md](SECURITY.md) for private vulnerability reporting and the [ope
 
 ## Release integrity
 
-The v0.2.1 release provides seven downloadable assets:
+The v0.2.2 release provides seven downloadable assets:
 
 - five platform archives;
 - `SHA256SUMS`, covering every archive and the SBOM; and
@@ -237,7 +237,8 @@ Each npm native package contains a binary that is byte-for-byte identical to the
 | Run the official SDK examples | [JavaScript](examples/openai-sdk/javascript/main.mjs) or [Python](examples/openai-sdk/python/main.py) |
 | Report a vulnerability privately | [Security Policy](SECURITY.md) |
 | Build, test, or contribute | [Contributing](CONTRIBUTING.md) |
-| Review the current changes | [v0.2.1 release notes](docs/releases/v0.2.1.md) |
+| Review the current changes | [v0.2.2 release notes](docs/releases/v0.2.2.md) |
+| Review npm distribution history | [historical v0.2.1 release notes](docs/releases/v0.2.1.md) |
 | Review the guided-init release | [historical v0.2.0 release notes](docs/releases/v0.2.0.md) |
 | Review the original launch scope | [historical v0.1.0 release notes](https://github.com/krkarma777/ai-cli-gateway/releases/tag/v0.1.0) |
 

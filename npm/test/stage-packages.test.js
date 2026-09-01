@@ -495,7 +495,7 @@ test("rejects a source package version mismatch", async () => {
   const fixture = await stagingFixture();
   const manifestPath = path.join(fixture.repositoryRoot, "npm/platforms/linux-x64/package.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  manifest.version = "0.2.2";
+  manifest.version = `${PACKAGE_VERSION}-mismatch`;
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
   await assertStagingFailure(stagingOptions(fixture));

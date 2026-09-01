@@ -1,6 +1,6 @@
 {
   "name": "ai-cli-gateway",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Build AI MVPs with Codex CLI, Claude Code, and Gemini CLI through a local OpenAI Responses-compatible API.",
   "keywords": [
     "ai",
@@ -28,11 +28,11 @@
     "node": ">=22.14.0"
   },
   "optionalDependencies": {
-    "ai-cli-gateway-darwin-x64": "0.2.1",
-    "ai-cli-gateway-darwin-arm64": "0.2.1",
-    "ai-cli-gateway-linux-x64": "0.2.1",
-    "ai-cli-gateway-linux-arm64": "0.2.1",
-    "ai-cli-gateway-win32-x64": "0.2.1"
+    "ai-cli-gateway-darwin-x64": "0.2.2",
+    "ai-cli-gateway-darwin-arm64": "0.2.2",
+    "ai-cli-gateway-linux-x64": "0.2.2",
+    "ai-cli-gateway-linux-arm64": "0.2.2",
+    "ai-cli-gateway-win32-x64": "0.2.2"
   },
   "repository": {
     "type": "git",

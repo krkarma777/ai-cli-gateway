@@ -5,7 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const npmRoot = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
-const version = "0.2.1";
+const version = "0.2.2";
 const targets = [
   ["darwin-x64", "ai-cli-gateway-darwin-x64", "darwin", "x64"],
   ["darwin-arm64", "ai-cli-gateway-darwin-arm64", "darwin", "arm64"],

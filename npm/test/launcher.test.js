@@ -25,7 +25,7 @@ import {
   targetFor,
 } from "../launcher/lib/launcher.js";
 
-const launcherVersion = "0.2.1";
+const launcherVersion = "0.2.2";
 const temporaryRoots = [];
 const npmRoot = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const sourceLauncherRoot = path.join(npmRoot, "launcher");

@@ -1,4 +1,4 @@
-export const PACKAGE_VERSION = "0.2.1";
+export const PACKAGE_VERSION = "0.2.2";
 export const LAUNCHER_NAME = "ai-cli-gateway";
 export const NODE_RANGE = ">=22.14.0";
 export const TARGETS = Object.freeze([

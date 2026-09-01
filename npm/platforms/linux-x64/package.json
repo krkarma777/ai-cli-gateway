@@ -1,6 +1,6 @@
 {
   "name": "ai-cli-gateway-linux-x64",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Internal Linux x86-64 binary for AI CLI Gateway. Install the ai-cli-gateway package instead.",
   "keywords": [
     "ai-cli-gateway",
