@@ -1027,11 +1027,13 @@ export GOCACHE="${release_verify_root}/gocache"
 export GOMODCACHE="${release_verify_root}/gomodcache"
 export GOPATH="${release_verify_root}/gopath"
 export NPM_CONFIG_CACHE="${release_verify_root}/npm-cache"
+export GOLANGCI_LINT_CACHE="${release_verify_root}/golangci-lint-cache"
 mkdir -p \
   "$GOCACHE" \
   "$GOMODCACHE" \
   "$GOPATH" \
   "$NPM_CONFIG_CACHE" \
+  "$GOLANGCI_LINT_CACHE" \
   "${release_verify_root}/tools"
 install -d -m 0700 "${release_verify_root}/tarballs"
 GOBIN="${release_verify_root}/tools" \
