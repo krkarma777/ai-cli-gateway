@@ -1033,6 +1033,7 @@ mkdir -p \
   "$GOPATH" \
   "$NPM_CONFIG_CACHE" \
   "${release_verify_root}/tools"
+install -d -m 0700 "${release_verify_root}/tarballs"
 GOBIN="${release_verify_root}/tools" \
   go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 readonly actionlint_bin="${release_verify_root}/tools/actionlint"
