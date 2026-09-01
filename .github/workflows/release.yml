@@ -417,6 +417,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      actions: write
     steps:
       - name: Download immutable release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -570,3 +571,113 @@ jobs:
           live_commit="$(resolve_live_tag)" || exit 1
           test "${live_commit}" = "${TAG_COMMIT}"
           gh release edit "${TAG}" --repo "${repository}" --draft=false
+      - name: Dispatch immutable npm release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.package.outputs.tag }}
+          TAG_COMMIT: ${{ needs.package.outputs.tag_commit }}
+        run: |
+          set -euo pipefail
+          umask 077
+          readonly repository=krkarma777/ai-cli-gateway
+          readonly commit_pattern='^[0-9a-f]{40}$'
+          [[ "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "${TAG_COMMIT}" =~ ${commit_pattern} ]]
+          readonly VERSION="${TAG#v}"
+          [[ "${VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          command -v gh >/dev/null
+          command -v jq >/dev/null
+          command -v sort >/dev/null
+          command -v sleep >/dev/null
+          gh --version >/dev/null
+          jq --version >/dev/null
+          gh workflow run --help >/dev/null
+
+          resolve_live_tag() {
+            local ref_response object_type object_sha tag_response resolved
+            ref_response="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${repository}/git/ref/tags/${TAG}")" || return 1
+            jq -e --arg ref "refs/tags/${TAG}" '
+              type == "object" and
+              .ref == $ref and
+              (.object | type == "object") and
+              (.object.type == "commit" or .object.type == "tag") and
+              (.object.sha | type == "string" and test("^[0-9a-f]{40}$"))
+            ' >/dev/null <<<"${ref_response}" || return 1
+            object_type="$(jq -r '.object.type' <<<"${ref_response}")" || return 1
+            object_sha="$(jq -r '.object.sha' <<<"${ref_response}")" || return 1
+            if test "${object_type}" = commit; then
+              printf '%s\n' "${object_sha}"
+              return 0
+            fi
+            tag_response="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${repository}/git/tags/${object_sha}")" || return 1
+            jq -e --arg requested "${object_sha}" '
+              type == "object" and
+              .sha == $requested and
+              (.object | type == "object") and
+              .object.type == "commit" and
+              (.object.sha | type == "string" and test("^[0-9a-f]{40}$"))
+            ' >/dev/null <<<"${tag_response}" || return 1
+            resolved="$(jq -r '.object.sha' <<<"${tag_response}")" || return 1
+            [[ "${resolved}" =~ ${commit_pattern} ]] || return 1
+            printf '%s\n' "${resolved}"
+          }
+
+          live_commit="$(resolve_live_tag)"
+          test "${live_commit}" = "${TAG_COMMIT}"
+          release_response=
+          for attempt in 1 2 3 4 5; do
+            if candidate="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${repository}/releases/tags/${TAG}" 2>/dev/null)" &&
+              jq -e --arg tag "${TAG}" '
+                type == "object" and
+                (.id | type == "number" and . > 0 and floor == .) and
+                (.tag_name == $tag) and
+                (.draft == false) and
+                (.prerelease == false) and
+                (.immutable == true) and
+                (.published_at | type == "string" and length > 0) and
+                (.assets | type == "array" and length == 7) and
+                (.assets | all(.[];
+                  (.name | type == "string" and length > 0) and
+                  (.size | type == "number" and . > 0 and floor == .) and
+                  (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+                  (.state == "uploaded")
+                ))
+              ' >/dev/null 2>&1 <<<"${candidate}"; then
+              release_response="${candidate}"
+              break
+            fi
+            if test "${attempt}" = 5; then
+              printf '%s\n' npm_dispatch_preflight_invalid
+              exit 1
+            fi
+            sleep 2
+          done
+          test -n "${release_response}"
+          expected_assets="$(LC_ALL=C sort <<ASSETS
+          SHA256SUMS
+          ai-cli-gateway_${VERSION}_darwin_amd64.tar.gz
+          ai-cli-gateway_${VERSION}_darwin_arm64.tar.gz
+          ai-cli-gateway_${VERSION}_linux_amd64.tar.gz
+          ai-cli-gateway_${VERSION}_linux_arm64.tar.gz
+          ai-cli-gateway_${VERSION}_sbom.spdx.json
+          ai-cli-gateway_${VERSION}_windows_amd64.zip
+          ASSETS
+          )"
+          api_assets="$(jq -r '.assets[].name' <<<"${release_response}" | LC_ALL=C sort)"
+          test "${api_assets}" = "${expected_assets}"
+          live_commit="$(resolve_live_tag)"
+          test "${live_commit}" = "${TAG_COMMIT}"
+          gh workflow run npm-release.yml \
+            --repo "${repository}" \
+            --ref "${TAG}" \
+            -f "tag=${TAG}"
