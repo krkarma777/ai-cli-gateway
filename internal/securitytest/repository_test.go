@@ -7367,6 +7367,77 @@ func TestNPMReleaseWorkflowBashSyntax(t *testing.T) {
 	}
 }
 
+func TestNPMReleaseWorkflowOIDCParseFailuresAreSilent(t *testing.T) {
+	workflow, err := parseClosedNPMReleaseWorkflow(readRepositoryFile(t, ".github/workflows/npm-release.yml"))
+	if err != nil {
+		t.Fatalf("parse closed npm release workflow: %v", err)
+	}
+	identity, err := namedReleaseStep(workflow.Jobs["publish"].Steps, "Validate npm trusted-publishing identity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prefix = "set -euo pipefail\nnode --input-type=module <<'NODE'\n"
+	const suffix = "NODE\n"
+	if !strings.HasPrefix(identity.Run, prefix) || !strings.HasSuffix(identity.Run, suffix) {
+		t.Fatal("npm trusted-publishing identity step does not contain the closed Node heredoc")
+	}
+	program := strings.TrimSuffix(strings.TrimPrefix(identity.Run, prefix), suffix)
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("npm trusted-publishing identity execution requires Node.js")
+	}
+	tests := []struct {
+		name    string
+		prelude string
+	}{
+		{
+			name: "OIDC envelope JSON",
+			prelude: `globalThis.fetch = async () => ({
+  ok: true,
+  json: async () => {
+    throw new Error("OIDC_ENVELOPE_SECRET");
+  },
+});
+`,
+		},
+		{
+			name: "decoded JWT payload JSON",
+			prelude: `globalThis.fetch = async () => ({
+  ok: true,
+  json: async () => ({
+    value: "e30." + Buffer.from("OIDC_PAYLOAD_SECRET", "utf8").toString("base64url") + ".signature",
+  }),
+});
+`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, node, "--input-type=module")
+			command.Stdin = strings.NewReader(test.prelude + program)
+			command.Env = []string{
+				"EXPECTED_TAG=v0.2.2",
+				"ACTIONS_ID_TOKEN_REQUEST_URL=https://oidc.invalid/request",
+				"ACTIONS_ID_TOKEN_REQUEST_TOKEN=request-secret",
+				"GITHUB_SHA=" + strings.Repeat("a", 40),
+			}
+			output, commandErr := command.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatal("npm trusted-publishing identity parse failure timed out")
+			}
+			exitError, ok := commandErr.(*exec.ExitError)
+			if !ok || exitError.ExitCode() != 1 {
+				t.Fatal("npm trusted-publishing identity parse failure did not exit with status 1")
+			}
+			if len(output) != 0 {
+				t.Fatalf("npm trusted-publishing identity parse failure emitted %d bytes", len(output))
+			}
+		})
+	}
+}
+
 func TestNPMReleaseChecksumManifestV022(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("npm checksum manifest execution requires Bash")
@@ -7452,7 +7523,7 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "package timeout changed", mutate: replaceNPMReleaseOnce("    timeout-minutes: 25\n", "    timeout-minutes: 26\n")},
 		{name: "package permission widened", mutate: replaceNPMReleaseOnce("    permissions:\n      contents: read\n", "    permissions:\n      contents: read\n      id-token: write\n")},
 		{name: "publish dependency changed", mutate: replaceNPMReleaseOnce("    needs: package\n", "    needs: unexpected\n")},
-		{name: "publish permission removed", mutate: replaceNPMReleaseOnce("      id-token: write\n", "      id-token: read\n")},
+		{name: "publish id-token permission omitted", mutate: replaceNPMReleaseOnce("      id-token: write\n", "")},
 		{name: "moving checkout", mutate: replaceNPMReleaseOnce(checkoutAction, "actions/checkout@v7")},
 		{name: "moving setup go", mutate: replaceNPMReleaseOnce(setupGoAction, "actions/setup-go@v7")},
 		{name: "moving setup node", mutate: replaceNPMReleaseOnce(setupNodeAction, "actions/setup-node@v7")},
@@ -7493,6 +7564,8 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "publish scripts enabled", mutate: replaceNPMReleaseOnce("npm publish \"${tarball}\" --ignore-scripts --access public --provenance", "npm publish \"${tarball}\" --access public --provenance")},
 		{name: "publish provenance removed", mutate: replaceNPMReleaseOnce(" --access public --provenance", " --access public")},
 		{name: "OIDC workflow ref changed", mutate: replaceNPMReleaseOnce("workflow_ref: `krkarma777/ai-cli-gateway/.github/workflows/npm-release.yml@refs/tags/${tag}`", "workflow_ref: `krkarma777/ai-cli-gateway/.github/workflows/release.yml@refs/tags/${tag}`")},
+		{name: "OIDC envelope naked parsing restored", mutate: replaceNPMReleaseOnce("          let body;\n          try {\n            body = await response.json();\n          } catch {\n            process.exit(1);\n          }\n", "          const body = await response.json();\n")},
+		{name: "OIDC payload naked parsing restored", mutate: replaceNPMReleaseOnce("          let claims;\n          try {\n            claims = JSON.parse(Buffer.from(parts[1], \"base64url\").toString(\"utf8\"));\n          } catch {\n            process.exit(1);\n          }\n", "          const claims = JSON.parse(Buffer.from(parts[1], \"base64url\").toString(\"utf8\"));\n")},
 		{name: "trusted npm version assertion removed", mutate: replaceNPMReleaseOnce("          test \"$(npm --version)\" = 11.19.1\n", "")},
 		{name: "launcher moved first", mutate: moveNPMReleaseLauncherFirst},
 		{name: "post publish SRI removed", mutate: replaceNPMReleaseLast("            test \"${remote_integrity}\" = \"${integrities[${index}]}\"\n", "")},
@@ -7917,12 +7990,46 @@ func validateNPMReleaseTrustedPublishingContract(publishJob releaseWorkflowJob) 
 	if err != nil {
 		return err
 	}
+	parseGuards := []string{
+		strings.Join([]string{
+			"let body;",
+			"try {",
+			"  body = await response.json();",
+			"} catch {",
+			"  process.exit(1);",
+			"}",
+		}, "\n") + "\n",
+		strings.Join([]string{
+			"let claims;",
+			"try {",
+			`  claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));`,
+			"} catch {",
+			"  process.exit(1);",
+			"}",
+		}, "\n") + "\n",
+	}
+	withoutParseGuards := identity.Run
+	for _, guard := range parseGuards {
+		if strings.Count(withoutParseGuards, guard) != 1 {
+			return errors.New("npm trusted-publishing identity parsing lacks an exact silent failure guard")
+		}
+		withoutParseGuards = strings.Replace(withoutParseGuards, guard, "", 1)
+	}
+	for _, nakedParse := range []string{
+		"response.json()",
+		`JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"))`,
+	} {
+		if strings.Contains(withoutParseGuards, nakedParse) {
+			return fmt.Errorf("npm trusted-publishing identity contains parsing outside its silent guard: %q", nakedParse)
+		}
+	}
 	markers := []string{
 		`const tag = required("EXPECTED_TAG");`,
 		`const endpoint = new URL(required("ACTIONS_ID_TOKEN_REQUEST_URL"));`,
 		`endpoint.searchParams.set("audience", "npm:registry.npmjs.org");`,
 		"Authorization: `Bearer ${required(\"ACTIONS_ID_TOKEN_REQUEST_TOKEN\")}`,",
-		`const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));`,
+		`body = await response.json();`,
+		`claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));`,
 		`aud: "npm:registry.npmjs.org",`,
 		`repository: "krkarma777/ai-cli-gateway",`,
 		"workflow_ref: `krkarma777/ai-cli-gateway/.github/workflows/npm-release.yml@refs/tags/${tag}`,",
@@ -7941,7 +8048,7 @@ func validateNPMReleaseTrustedPublishingContract(publishJob releaseWorkflowJob) 
 			return fmt.Errorf("npm trusted-publishing identity marker %q is not exact and unique", marker)
 		}
 	}
-	for _, forbidden := range []string{"console.", "process.stdout", "process.stderr", "JSON.stringify(claims)", "JSON.stringify(body)"} {
+	for _, forbidden := range []string{"console.", "process.stdout", "process.stderr", "throw ", "catch (", "JSON.stringify(claims)", "JSON.stringify(body)"} {
 		if strings.Contains(identity.Run, forbidden) {
 			return fmt.Errorf("npm trusted-publishing identity validation may disclose identity material via %q", forbidden)
 		}
@@ -8169,7 +8276,7 @@ func validateNPMReleaseRunHashes(packageJob, publishJob releaseWorkflowJob) erro
 		"package/Install and execute Linux x64 package":        "6acd6664e272a588d165066438ae987e8f938e1ff51b622103f29e04fc9b16f4",
 		"package/Validate artifact outputs":                    "6c1898c6abdc07af87012ddd3cbb076ffb6998f0a351ee17a0f9cf2378f37bc3",
 		"publish/Install trusted-publishing npm CLI":           "7989c2a5f21dac45baf01968d09547fd2ab62ff90670921e97fc22e5cfaa5d77",
-		"publish/Validate npm trusted-publishing identity":     "f0119dfdc3c3f94ff24d0a7965b5c5c6e53e97441acc401ad5fc2d35dc8ba549",
+		"publish/Validate npm trusted-publishing identity":     "ee7d109933043308990f4ae6610614a0619849da793c75ae1f040624c5e528e2",
 		"publish/Validate artifact identity":                   "fe060a961e6dbcddee8a6e7a84987c841c2fde0f9a618448fc3560b07a41a262",
 		"publish/Validate and extract npm artifact":            "171d90d35ff1080606474af46ded34c6af4edb50628a47252de8d51a048303d5",
 		"publish/Publish verified npm packages":                "34ae19454d2feb2ce19b101b295aec33ec4004807f81b301170a5aa4daefdba2",
