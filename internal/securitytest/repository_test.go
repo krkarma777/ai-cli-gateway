@@ -5235,7 +5235,8 @@ func requireSystemdAssignment(t *testing.T, assignments map[string][]string, key
 
 func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	workflow := string(readRepositoryFile(t, ".github/workflows/ci.yml"))
-	if err := validateSDKCIWorkflowContract(workflow); err != nil {
+	windowsLauncherVerifier := string(readRepositoryFile(t, "npm/scripts/verify-windows-launcher.ps1"))
+	if err := validateSDKCIWorkflowContract(workflow, windowsLauncherVerifier); err != nil {
 		t.Fatalf("CI SDK contract: %v", err)
 	}
 	if strings.Contains(workflow, "pull_request_target") {
@@ -5519,7 +5520,8 @@ func isolatedInvocationEnvironmentNames(helper, executableLine string) ([]string
 
 func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 	workflow := string(readRepositoryFile(t, ".github/workflows/ci.yml"))
-	if err := validateSDKCIWorkflowContract(workflow); err != nil {
+	windowsLauncherVerifier := string(readRepositoryFile(t, "npm/scripts/verify-windows-launcher.ps1"))
+	if err := validateSDKCIWorkflowContract(workflow, windowsLauncherVerifier); err != nil {
 		t.Fatalf("base CI SDK contract must be valid before mutation checks: %v", err)
 	}
 
@@ -5933,6 +5935,27 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			mutate: replaceCIOnce("          TAG=v0.2.1\n", "          TAG=v0.2.2\n"),
 		},
 		{
+			name: "npm Windows launcher step removed",
+			mutate: func(document string) string {
+				step := "      " + strings.ReplaceAll(npmWindowsLauncherStepContract(), "\n", "\n      ") + "\n"
+				return strings.Replace(document, step, "", 1)
+			},
+		},
+		{
+			name: "npm Windows launcher condition widened",
+			mutate: replaceCIOnce(
+				"        if: runner.os == 'Windows'\n",
+				"        if: runner.os == 'Windows' || runner.os == 'Linux'\n",
+			),
+		},
+		{
+			name: "npm Windows launcher verifier renamed",
+			mutate: replaceCIOnce(
+				"./npm/scripts/verify-windows-launcher.ps1",
+				"./npm/scripts/verify-windows-shims.ps1",
+			),
+		},
+		{
 			name: "wrong npm prefix",
 			mutate: replaceCIOnce(
 				`npm ci --ignore-scripts --prefix "${RUNNER_TEMP}/sdk-javascript"`,
@@ -6086,14 +6109,66 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			if mutated == workflow {
 				t.Fatal("mutation did not change the workflow fixture")
 			}
-			if err := validateSDKCIWorkflowContract(mutated); err == nil {
+			if err := validateSDKCIWorkflowContract(mutated, windowsLauncherVerifier); err == nil {
 				t.Fatal("CI SDK contract accepted the mutation")
+			}
+		})
+	}
+
+	verifierTests := []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{
+			name: "Windows verifier omits cmd shim",
+			mutate: func(source string) string {
+				return strings.ReplaceAll(
+					source,
+					"Invoke-Shim 'cmd' $CmdShim",
+					"Invoke-Shim 'powershell' $PowerShellShim",
+				)
+			},
+		},
+		{
+			name: "Windows verifier omits PowerShell shim",
+			mutate: func(source string) string {
+				return strings.ReplaceAll(
+					source,
+					"Invoke-Shim 'powershell' $PowerShellShim",
+					"Invoke-Shim 'cmd' $CmdShim",
+				)
+			},
+		},
+		{
+			name: "Windows verifier accepts invalid command exit zero",
+			mutate: replaceCIOnce(
+				"$Result.Status -ne 2",
+				"$Result.Status -ne 0",
+			),
+		},
+		{
+			name: "Windows verifier omits file-set assertion",
+			mutate: replaceCIOnce(
+				"Assert-EntrySnapshot\n",
+				"",
+			),
+		},
+	}
+
+	for _, test := range verifierTests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := test.mutate(windowsLauncherVerifier)
+			if mutated == windowsLauncherVerifier {
+				t.Fatal("mutation did not change the Windows launcher verifier fixture")
+			}
+			if err := validateSDKCIWorkflowContract(workflow, mutated); err == nil {
+				t.Fatal("CI SDK contract accepted the Windows launcher verifier mutation")
 			}
 		})
 	}
 }
 
-func validateSDKCIWorkflowContract(workflow string) error {
+func validateSDKCIWorkflowContract(workflow, windowsLauncherVerifier string) error {
 	topLevelFields, err := parseImmediateYAMLFields(workflow, 0)
 	if err != nil {
 		return fmt.Errorf("top-level workflow: %w", err)
@@ -6179,6 +6254,9 @@ func validateSDKCIWorkflowContract(workflow string) error {
 				return fmt.Errorf("job %s strategy differs from the exact matrix contract", name)
 			}
 		}
+	}
+	if windowsLauncherVerifier != windowsLauncherVerifierContract() {
+		return errors.New("Windows npm launcher verifier differs from the closed source contract")
 	}
 	return nil
 }
@@ -6456,9 +6534,191 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 					"    package-manager-cache: false",
 				),
 				npmHostInstallStepContract(),
+				npmWindowsLauncherStepContract(),
 			},
 		},
 	}
+}
+
+func npmWindowsLauncherStepContract() string {
+	return yamlContractLines(
+		"- name: Verify native Windows npm shims",
+		"  if: runner.os == 'Windows'",
+		"  shell: pwsh",
+		"  env:",
+		"    EXPECTED_TAG: v0.2.1",
+		"  run: |",
+		`    $ErrorActionPreference = "Stop"`,
+		"    $InstallPrefix = [IO.Path]::GetFullPath(",
+		`      (Join-Path $env:RUNNER_TEMP "npm-host-install/install")`,
+		"    )",
+		"    ./npm/scripts/verify-windows-launcher.ps1 `",
+		"      -InstallPrefix $InstallPrefix `",
+		"      -ExpectedTag $env:EXPECTED_TAG `",
+		"      -ExpectedCommit $env:GITHUB_SHA",
+	)
+}
+
+func windowsLauncherVerifierContract() string {
+	return strings.Join([]string{
+		"[CmdletBinding()]",
+		"param(",
+		"  [Parameter(Mandatory = $true)]",
+		"  [string]$InstallPrefix,",
+		"",
+		"  [Parameter(Mandatory = $true)]",
+		`  [ValidatePattern('^v(?:0|[1-9][0-9]*)[.](?:0|[1-9][0-9]*)[.](?:0|[1-9][0-9]*)$')]`,
+		"  [string]$ExpectedTag,",
+		"",
+		"  [Parameter(Mandatory = $true)]",
+		`  [ValidatePattern('^[0-9a-f]{40}$')]`,
+		"  [string]$ExpectedCommit",
+		")",
+		"",
+		"Set-StrictMode -Version Latest",
+		"$ErrorActionPreference = 'Stop'",
+		"",
+		"$ResolvedPrefix = [IO.Path]::GetFullPath($InstallPrefix)",
+		"if (-not [IO.Path]::IsPathFullyQualified($InstallPrefix) -or",
+		"    $ResolvedPrefix -cne $InstallPrefix -or",
+		"    -not (Test-Path -LiteralPath $ResolvedPrefix -PathType Container)) {",
+		"  throw 'windows launcher verification failed'",
+		"}",
+		"",
+		"$CmdShim = Join-Path $ResolvedPrefix 'ai-cli-gateway.cmd'",
+		"$PowerShellShim = Join-Path $ResolvedPrefix 'ai-cli-gateway.ps1'",
+		"$CmdPath = [IO.Path]::GetFullPath($env:ComSpec)",
+		"$PowerShellPath = [IO.Path]::GetFullPath((Get-Process -Id $PID).Path)",
+		"foreach ($Shim in @($CmdShim, $PowerShellShim)) {",
+		"  $Item = Get-Item -LiteralPath $Shim -Force",
+		"  if ($Item.PSIsContainer -or",
+		"      -not [string]::IsNullOrEmpty([string]$Item.LinkType)) {",
+		"    throw 'windows launcher verification failed'",
+		"  }",
+		"}",
+		"",
+		"function Get-EntrySnapshot {",
+		"  $Entries = [Collections.Generic.List[string]]::new()",
+		"  foreach ($Item in Get-ChildItem -LiteralPath $ResolvedPrefix -Force -Recurse) {",
+		"    $Kind = if ($Item.PSIsContainer) { 'directory' } else { 'file' }",
+		"    $RelativePath = [IO.Path]::GetRelativePath($ResolvedPrefix, $Item.FullName)",
+		"    $Entries.Add($Kind + ':' + $RelativePath)",
+		"  }",
+		"  $Entries.Sort([StringComparer]::Ordinal)",
+		"  return @($Entries)",
+		"}",
+		"",
+		"$ExpectedEntries = @(Get-EntrySnapshot)",
+		"function Assert-EntrySnapshot {",
+		"  $ActualEntries = @(Get-EntrySnapshot)",
+		"  $Differences = @(",
+		"    Compare-Object `",
+		"      -ReferenceObject $ExpectedEntries `",
+		"      -DifferenceObject $ActualEntries `",
+		"      -CaseSensitive",
+		"  )",
+		"  if ($Differences.Count -ne 0) {",
+		"    throw 'windows launcher verification failed'",
+		"  }",
+		"}",
+		"",
+		"function Invoke-Shim(",
+		"  [ValidateSet('cmd', 'powershell')]",
+		"  [string]$Kind,",
+		"  [string]$Shim,",
+		"  [string]$Argument",
+		") {",
+		"  $StartInfo = [Diagnostics.ProcessStartInfo]::new()",
+		"  $StartInfo.UseShellExecute = $false",
+		"  $StartInfo.CreateNoWindow = $true",
+		"  $StartInfo.RedirectStandardOutput = $true",
+		"  $StartInfo.RedirectStandardError = $true",
+		"  if ($Kind -ceq 'cmd') {",
+		"    $StartInfo.FileName = $CmdPath",
+		"    foreach ($Value in @('/d', '/s', '/c', 'call', $Shim, $Argument)) {",
+		"      $StartInfo.ArgumentList.Add($Value)",
+		"    }",
+		"  } else {",
+		"    $StartInfo.FileName = $PowerShellPath",
+		"    foreach ($Value in @(",
+		"      '-NoLogo',",
+		"      '-NoProfile',",
+		"      '-NonInteractive',",
+		"      '-File',",
+		"      $Shim,",
+		"      $Argument",
+		"    )) {",
+		"      $StartInfo.ArgumentList.Add($Value)",
+		"    }",
+		"  }",
+		"",
+		"  $Process = [Diagnostics.Process]::new()",
+		"  $Process.StartInfo = $StartInfo",
+		"  try {",
+		"    if (-not $Process.Start()) {",
+		"      throw 'windows launcher verification failed'",
+		"    }",
+		"    $StdoutTask = $Process.StandardOutput.ReadToEndAsync()",
+		"    $StderrTask = $Process.StandardError.ReadToEndAsync()",
+		"    $Process.WaitForExit()",
+		"    $Stdout = $StdoutTask.GetAwaiter().GetResult().Replace(\"`r`n\", \"`n\")",
+		"    $Stderr = $StderrTask.GetAwaiter().GetResult().Replace(\"`r`n\", \"`n\")",
+		"    return [PSCustomObject]@{",
+		"      Status = $Process.ExitCode",
+		"      Stdout = $Stdout",
+		"      Stderr = $Stderr",
+		"    }",
+		"  } finally {",
+		"    $Process.Dispose()",
+		"  }",
+		"}",
+		"",
+		"function Assert-VersionResult([PSCustomObject]$Result) {",
+		"  if ($Result.Status -ne 0 -or $Result.Stderr -cne '') {",
+		"    throw 'windows launcher verification failed'",
+		"  }",
+		"  $Value = $Result.Stdout.TrimEnd(\"`r\", \"`n\")",
+		"  $Pattern = '^ai-cli-gateway ' +",
+		"    [Regex]::Escape($ExpectedTag) +",
+		"    ' [(]' +",
+		"    [Regex]::Escape($ExpectedCommit) +",
+		"    ', [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z[)]$'",
+		"  if ($Value -cnotmatch $Pattern) {",
+		"    throw 'windows launcher verification failed'",
+		"  }",
+		"  return $Value",
+		"}",
+		"",
+		"$CmdVersionResult = Invoke-Shim 'cmd' $CmdShim 'version'",
+		"Assert-EntrySnapshot",
+		"$CmdVersion = Assert-VersionResult $CmdVersionResult",
+		"$PowerShellVersionResult = Invoke-Shim 'powershell' $PowerShellShim 'version'",
+		"Assert-EntrySnapshot",
+		"$PowerShellVersion = Assert-VersionResult $PowerShellVersionResult",
+		"if ($CmdVersion -cne $PowerShellVersion) {",
+		"  throw 'windows launcher verification failed'",
+		"}",
+		"",
+		"function Assert-InvalidResult([PSCustomObject]$Result) {",
+		"  $Usage = \"usage:`n\" +",
+		"    \"  ai-cli-gateway version`n\" +",
+		"    \"  ai-cli-gateway init [OPTIONS]`n\" +",
+		"    \"  ai-cli-gateway serve [--config PATH]`n\" +",
+		"    \"  ai-cli-gateway doctor [--config PATH] [--json]`n\"",
+		"  if ($Result.Status -ne 2 -or",
+		"      $Result.Stdout -cne '' -or",
+		"      $Result.Stderr -cne $Usage) {",
+		"    throw 'windows launcher verification failed'",
+		"  }",
+		"}",
+		"",
+		"$CmdInvalidResult = Invoke-Shim 'cmd' $CmdShim '__launcher_exit_probe__'",
+		"Assert-EntrySnapshot",
+		"Assert-InvalidResult $CmdInvalidResult",
+		"$PowerShellInvalidResult = Invoke-Shim 'powershell' $PowerShellShim '__launcher_exit_probe__'",
+		"Assert-EntrySnapshot",
+		"Assert-InvalidResult $PowerShellInvalidResult",
+	}, "\n") + "\n"
 }
 
 func npmHostInstallStepContract() string {
@@ -6792,7 +7052,7 @@ func validateYAMLStepFields(step string) error {
 	}
 	fieldPattern := regexp.MustCompile(`^([A-Za-z0-9_-]+):(?:\s*(.*))?$`)
 	allowedFields := map[string]struct{}{
-		"name": {}, "uses": {}, "with": {}, "env": {}, "shell": {}, "run": {},
+		"name": {}, "uses": {}, "if": {}, "with": {}, "env": {}, "shell": {}, "run": {},
 	}
 	fields := make(map[string]struct{})
 	addField := func(fieldLine string) error {
