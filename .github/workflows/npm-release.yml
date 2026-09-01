@@ -178,7 +178,7 @@ jobs:
           umask 077
           readonly repository=krkarma777/ai-cli-gateway
           readonly asset_root="${RUNNER_TEMP}/immutable-release-assets"
-          readonly checksum_pattern='^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$'
+          readonly checksum_pattern='^([0-9a-f]{64}) \*([A-Za-z0-9._-]+)$'
           test "${TAG}" = v0.2.1
           test "${VERSION}" = 0.2.1
           [[ "${TAG_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
@@ -336,7 +336,7 @@ jobs:
             --source-epoch "${source_epoch}"
 
           while IFS= read -r archive; do
-            expected_digest="$(awk -v name="${archive}" '$2 == name && NF == 2 { print $1 }' "${asset_root}/SHA256SUMS")"
+            expected_digest="$(awk -v marker="*${archive}" '$2 == marker && NF == 2 { print $1 }' "${asset_root}/SHA256SUMS")"
             [[ "${expected_digest}" =~ ^[0-9a-f]{64}$ ]]
             actual_digest="$(sha256sum -- "${rebuilt_root}/${archive}" | awk '{print $1}')"
             test "${actual_digest}" = "${expected_digest}"
