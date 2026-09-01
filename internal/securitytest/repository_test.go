@@ -6194,6 +6194,58 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			),
 		},
 		{
+			name: "Windows verifier omits root guard",
+			mutate: replaceCIOnce(
+				"$RootItem = Get-Item -LiteralPath $ResolvedPrefix -Force\n"+
+					"if (-not $RootItem.PSIsContainer -or\n"+
+					"    ($RootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or\n"+
+					"    -not [string]::IsNullOrEmpty([string]$RootItem.LinkType)) {\n"+
+					"  throw 'windows launcher verification failed'\n"+
+					"}\n\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier bypasses root container requirement",
+			mutate: replaceCIOnce(
+				"if (-not $RootItem.PSIsContainer -or",
+				"if ($false -or",
+			),
+		},
+		{
+			name: "Windows verifier bypasses root reparse attribute rejection",
+			mutate: replaceCIOnce(
+				"    ($RootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or",
+				"    $false -or",
+			),
+		},
+		{
+			name: "Windows verifier bypasses root link-type rejection",
+			mutate: replaceCIOnce(
+				"    -not [string]::IsNullOrEmpty([string]$RootItem.LinkType)) {",
+				"    $false) {",
+			),
+		},
+		{
+			name: "Windows verifier moves root guard after first child access",
+			mutate: func(source string) string {
+				guard := strings.Join([]string{
+					"$RootItem = Get-Item -LiteralPath $ResolvedPrefix -Force",
+					"if (-not $RootItem.PSIsContainer -or",
+					"    ($RootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or",
+					"    -not [string]::IsNullOrEmpty([string]$RootItem.LinkType)) {",
+					"  throw 'windows launcher verification failed'",
+					"}",
+				}, "\n") + "\n\n"
+				withoutGuard := strings.Replace(source, guard, "", 1)
+				if withoutGuard == source {
+					return source
+				}
+				childAccess := "  $Item = Get-Item -LiteralPath $Shim -Force\n"
+				return strings.Replace(withoutGuard, childAccess, childAccess+guard, 1)
+			},
+		},
+		{
 			name: "Windows verifier bypasses file content hashing",
 			mutate: replaceCIOnce(
 				"$HashBytes = $SHA256.ComputeHash($Stream)",
@@ -6212,6 +6264,27 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			mutate: replaceCIOnce(
 				"$Entry += '|length=' + $Length + '|sha256=' + $Hash",
 				"$Entry += '|sha256=' + $Hash",
+			),
+		},
+		{
+			name: "Windows verifier omits entry kind",
+			mutate: replaceCIOnce(
+				"      'kind=' + $Kind\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier omits relative path length",
+			mutate: replaceCIOnce(
+				"      'pathLength=' + $RelativePathLength\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier omits relative path",
+			mutate: replaceCIOnce(
+				"      'path=' + $RelativePath\n",
+				"",
 			),
 		},
 		{
@@ -6268,6 +6341,30 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			),
 		},
 		{
+			name: "Windows verifier replaces guarded stack with recursive traversal",
+			mutate: func(source string) string {
+				mutated := strings.Replace(
+					source,
+					"  $Pending = [Collections.Generic.Stack[string]]::new()\n"+
+						"  $Pending.Push($ResolvedPrefix)\n"+
+						"  while ($Pending.Count -ne 0) {\n"+
+						"    $CurrentPath = $Pending.Pop()\n"+
+						"    $Item = Get-Item -LiteralPath $CurrentPath -Force\n",
+					"  foreach ($Item in Get-ChildItem -LiteralPath $ResolvedPrefix -Force -Recurse) {\n",
+					1,
+				)
+				return strings.Replace(
+					mutated,
+					"      $Kind = 'directory'\n"+
+						"      foreach ($Child in Get-ChildItem -LiteralPath $Item.FullName -Force) {\n"+
+						"        $Pending.Push($Child.FullName)\n"+
+						"      }\n",
+					"      $Kind = 'directory'\n",
+					1,
+				)
+			},
+		},
+		{
 			name: "Windows verifier uses culture-sensitive numeric formatting",
 			mutate: replaceCIOnce(
 				"[Globalization.CultureInfo]::InvariantCulture",
@@ -6286,6 +6383,22 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			mutate: replaceCIOnce(
 				"[StringComparison]::Ordinal",
 				"[StringComparison]::CurrentCulture",
+			),
+		},
+		{
+			name: "Windows verifier omits snapshot entry count check",
+			mutate: replaceCIOnce(
+				"  if ($ActualEntries.Count -ne $ExpectedEntries.Count) {\n"+
+					"    throw 'windows launcher verification failed'\n"+
+					"  }\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier bypasses ordinal entry equality",
+			mutate: replaceCIOnce(
+				"    if (-not [string]::Equals(",
+				"    if ($false -and [string]::Equals(",
 			),
 		},
 		{
@@ -6743,8 +6856,14 @@ func windowsLauncherVerifierContract() string {
 		"",
 		"$ResolvedPrefix = [IO.Path]::GetFullPath($InstallPrefix)",
 		"if (-not [IO.Path]::IsPathFullyQualified($InstallPrefix) -or",
-		"    $ResolvedPrefix -cne $InstallPrefix -or",
-		"    -not (Test-Path -LiteralPath $ResolvedPrefix -PathType Container)) {",
+		"    $ResolvedPrefix -cne $InstallPrefix) {",
+		"  throw 'windows launcher verification failed'",
+		"}",
+		"",
+		"$RootItem = Get-Item -LiteralPath $ResolvedPrefix -Force",
+		"if (-not $RootItem.PSIsContainer -or",
+		"    ($RootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or",
+		"    -not [string]::IsNullOrEmpty([string]$RootItem.LinkType)) {",
 		"  throw 'windows launcher verification failed'",
 		"}",
 		"",
