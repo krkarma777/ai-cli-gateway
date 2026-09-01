@@ -1,6 +1,6 @@
 # npm Package Discoverability Design
 
-**Status:** Approved in conversation on 2026-09-01; awaiting written-spec review
+**Status:** Approved in conversation on 2026-09-01, including the Windows launcher extension
 
 ## Context
 
@@ -255,10 +255,19 @@ tarball, and publish the original launcher tarball last. No `0.2.1` artifact
 or metadata is regenerated.
 
 Once all six packages exist, configure each package to trust the repository's
-exact npm publication workflow, verify the relationships with a supported npm
-CLI, require two-factor authentication while disallowing token publication,
-then remove the GitHub bootstrap secret and revoke the bootstrap token. The
-next release must not depend on the one-time publication token.
+exact `npm-release.yml` workflow and verify the relationships with a supported
+npm CLI. The release workflow starts `npm-release.yml` as a separate
+`workflow_dispatch` run rather than a reusable `workflow_call`, so the npm
+publisher identity is the dispatched workflow itself. The npm publish job must
+assert that exact GitHub OIDC `workflow_ref` before it contacts the registry.
+
+The `v0.2.2` workflow contains no token environment and must prove all six
+publishes through OIDC while the bootstrap token still exists only as an
+unused recovery option. After the OIDC cohort and provenance verify, require
+two-factor authentication while disallowing token publication, remove the
+GitHub bootstrap secret, and revoke the bootstrap token. This follows npm's
+safe migration order without making the next release depend on the one-time
+token.
 
 ### Publish the discoverability correction as `0.2.2`
 
@@ -368,5 +377,8 @@ state, not treated as evidence that verified metadata is missing.
 - [npm package.json fields](https://docs.npmjs.com/files/package.json/)
 - [npm package search behavior](https://docs.npmjs.com/searching-for-and-choosing-packages-to-download/)
 - [npm package README files](https://docs.npmjs.com/about-package-readme-files/)
+- [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/)
+- [GitHub OIDC workflow claims](https://docs.github.com/en/actions/reference/security/oidc)
+- [setup-node trusted-publisher guidance](https://github.com/actions/setup-node/blob/main/docs/advanced-usage.md#publishing-to-npm-with-trusted-publisher-oidc)
 - [esbuild platform optional dependencies](https://github.com/evanw/esbuild/blob/main/npm/esbuild/package.json)
 - [Rollup native package architecture](https://github.com/rollup/rollup/blob/master/ARCHITECTURE.md)
