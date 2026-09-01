@@ -47,7 +47,7 @@ func TestGatewayRealFakeCLITextAndStructuredRouting(t *testing.T) {
 		{core.ProviderCodex, codex.New(), "text"},
 		{core.ProviderClaude, claude.New(), "claude-json"},
 		{core.ProviderGemini, gemini.New(), "gemini-json"},
-	}, integrationProcessLimits(), integrationSchedulerLimits())
+	}, processLimitsWith(integrationDeadline, 64*1024, 64*1024), integrationSchedulerLimits())
 	defer harness.close(t)
 
 	for _, alias := range []string{"codex-model", "claude-model", "gemini-model"} {
@@ -70,7 +70,7 @@ func TestGatewayRealFakeCLITextAndStructuredRouting(t *testing.T) {
 
 	structuredHarness := newIntegrationHarness(t, executable, []integrationProvider{
 		{core.ProviderCodex, codex.New(), "codex-json"},
-	}, integrationProcessLimits(), integrationSchedulerLimits())
+	}, processLimitsWith(integrationDeadline, 64*1024, 64*1024), integrationSchedulerLimits())
 	defer structuredHarness.close(t)
 	structured, err := structuredHarness.gateway.Respond(context.Background(), core.Request{
 		ModelAlias: "codex-model", Input: "private structured prompt",
