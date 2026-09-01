@@ -37,6 +37,16 @@ func TestCreatePrivateDirectoriesBuildsComponentsAndNeverRepairsUnsafeOnes(t *te
 		if err := os.Mkdir(unsafe, 0o755); err != nil { // #nosec G301 -- intentionally unsafe fixture.
 			t.Fatalf("Mkdir: %v", err)
 		}
+		if err := os.Chmod(unsafe, 0o755); err != nil { // #nosec G302 -- intentionally unsafe fixture.
+			t.Fatalf("Chmod: %v", err)
+		}
+		fixtureInfo, err := os.Stat(unsafe)
+		if err != nil {
+			t.Fatalf("Stat: %v", err)
+		}
+		if got := fixtureInfo.Mode().Perm(); got != 0o755 {
+			t.Fatalf("unsafe directory mode = %04o, want 0755", got)
+		}
 		if err := NewWriter().createPrivateDirectories(
 			context.Background(),
 			[]string{unsafe, filepath.Join(unsafe, "child")},

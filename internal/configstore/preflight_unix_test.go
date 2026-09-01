@@ -218,6 +218,16 @@ func TestPreflightRejectsChangedBaseUnsafeArtifactsAndCollisions(t *testing.T) {
 		if err := os.Mkdir(home, 0o755); err != nil { // #nosec G301 -- intentionally unsafe fixture.
 			t.Fatalf("Mkdir: %v", err)
 		}
+		if err := os.Chmod(home, 0o755); err != nil { // #nosec G302 -- intentionally unsafe fixture.
+			t.Fatalf("Chmod: %v", err)
+		}
+		fixtureInfo, err := os.Stat(home)
+		if err != nil {
+			t.Fatalf("Stat: %v", err)
+		}
+		if got := fixtureInfo.Mode().Perm(); got != 0o755 {
+			t.Fatalf("unsafe provider home mode = %04o, want 0755", got)
+		}
 		base, err := NewWriter().Load(context.Background(), configPath)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
