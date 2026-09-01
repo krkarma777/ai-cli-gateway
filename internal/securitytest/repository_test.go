@@ -7427,8 +7427,8 @@ func TestNPMReleaseWorkflowOIDCParseFailuresAreSilent(t *testing.T) {
 			if ctx.Err() != nil {
 				t.Fatal("npm trusted-publishing identity parse failure timed out")
 			}
-			exitError, ok := commandErr.(*exec.ExitError)
-			if !ok || exitError.ExitCode() != 1 {
+			var exitError *exec.ExitError
+			if !errors.As(commandErr, &exitError) || exitError.ExitCode() != 1 {
 				t.Fatal("npm trusted-publishing identity parse failure did not exit with status 1")
 			}
 			if len(output) != 0 {
@@ -12623,14 +12623,14 @@ func hasSecretAssignment(relative string, contents []byte) bool {
 	uppercaseOnly := extension == ".go"
 	for _, line := range strings.Split(string(contents), "\n") {
 		key, value, ok := splitSecretAssignment(line, allowQuotedKey)
-		if ok && (!uppercaseOnly || key == strings.ToUpper(key)) && isSecretName(key) && !isAllowedSecretAssignmentPlaceholder(relative, key, value) {
+		if ok && (!uppercaseOnly || key == strings.ToUpper(key)) && isSecretName(key) && !isAllowedSecretAssignmentPlaceholder(value) {
 			return true
 		}
 	}
 	return false
 }
 
-func isAllowedSecretAssignmentPlaceholder(relative, key, value string) bool {
+func isAllowedSecretAssignmentPlaceholder(value string) bool {
 	return isAllowedPlaceholder(value)
 }
 
