@@ -1,4 +1,4 @@
-# ai-cli-gateway-linux-arm64
+# @krkarma777/ai-cli-gateway-linux-arm64
 
 > Internal platform package for Linux ARM64. Install `ai-cli-gateway` instead.
 

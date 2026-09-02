@@ -28,11 +28,11 @@
     "node": ">=22.14.0"
   },
   "optionalDependencies": {
-    "ai-cli-gateway-darwin-x64": "0.2.1",
-    "ai-cli-gateway-darwin-arm64": "0.2.1",
-    "ai-cli-gateway-linux-x64": "0.2.1",
-    "ai-cli-gateway-linux-arm64": "0.2.1",
-    "ai-cli-gateway-win32-x64": "0.2.1"
+    "@krkarma777/ai-cli-gateway-darwin-x64": "0.2.1",
+    "@krkarma777/ai-cli-gateway-darwin-arm64": "0.2.1",
+    "@krkarma777/ai-cli-gateway-linux-x64": "0.2.1",
+    "@krkarma777/ai-cli-gateway-linux-arm64": "0.2.1",
+    "@krkarma777/ai-cli-gateway-win32-x64": "0.2.1"
   },
   "repository": {
     "type": "git",

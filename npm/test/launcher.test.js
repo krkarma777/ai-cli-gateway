@@ -192,11 +192,11 @@ async function assertInvalidNative(fixture) {
 }
 
 test("selects all five exact platform packages", () => {
-  assert.equal(targetFor("darwin", "x64").packageName, "ai-cli-gateway-darwin-x64");
-  assert.equal(targetFor("darwin", "arm64").packageName, "ai-cli-gateway-darwin-arm64");
-  assert.equal(targetFor("linux", "x64").packageName, "ai-cli-gateway-linux-x64");
-  assert.equal(targetFor("linux", "arm64").packageName, "ai-cli-gateway-linux-arm64");
-  assert.equal(targetFor("win32", "x64").packageName, "ai-cli-gateway-win32-x64");
+  assert.equal(targetFor("darwin", "x64").packageName, "@krkarma777/ai-cli-gateway-darwin-x64");
+  assert.equal(targetFor("darwin", "arm64").packageName, "@krkarma777/ai-cli-gateway-darwin-arm64");
+  assert.equal(targetFor("linux", "x64").packageName, "@krkarma777/ai-cli-gateway-linux-x64");
+  assert.equal(targetFor("linux", "arm64").packageName, "@krkarma777/ai-cli-gateway-linux-arm64");
+  assert.equal(targetFor("win32", "x64").packageName, "@krkarma777/ai-cli-gateway-win32-x64");
   assert.equal(targetFor("freebsd", "x64"), undefined);
 });
 

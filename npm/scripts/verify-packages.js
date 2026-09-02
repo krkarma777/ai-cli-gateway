@@ -36,6 +36,7 @@ import {
   PACKAGE_VERSION,
   TARGETS,
 } from "./package-config.js";
+import { npmTarballFilename } from "./package-name.js";
 
 const VERIFICATION_FAILURE = "npm package verification failed";
 const FILE_TYPE_MASK = 0o170000n;
@@ -51,7 +52,7 @@ const LAUNCHER_ENTRY_CONTENT = Buffer.from(
   "utf8",
 );
 const LAUNCHER_IMPLEMENTATION_SHA512 =
-  "a547259ed0358f3fe873eaac1144feb499217b068ee4b969dbe0a2e47e6fec1c1185f073001cd4f5af7ef28b531da9c86ff965efd4dbc5f2a8bdc5c54bca1990";
+  "d61fd93466ac3c55b636301e58dbf4c79197419afd8a918e31e8b47087625d7fda874ac9d47e44392b4666ada0f2fadb6992e6b5cafd79102710ae4451ea89e1";
 const PACK_OPTION_KEYS = new Set([
   "stagingRoot",
   "tarballRoot",
@@ -1141,7 +1142,7 @@ async function hashRegularTarball(filename) {
 }
 
 function expectedFilename(name, version) {
-  return `${name}-${version}.tgz`;
+  return npmTarballFilename(name, version);
 }
 
 function validatePackFiles(value, target, stagedMetadata) {

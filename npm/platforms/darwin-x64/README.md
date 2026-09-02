@@ -1,4 +1,4 @@
-# ai-cli-gateway-darwin-x64
+# @krkarma777/ai-cli-gateway-darwin-x64
 
 > Internal platform package for macOS Intel. Install `ai-cli-gateway` instead.
 

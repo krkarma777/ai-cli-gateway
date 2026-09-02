@@ -24,6 +24,7 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { PACKAGE_VERSION, TARGETS } from "../scripts/package-config.js";
+import { npmTarballFilename } from "../scripts/package-name.js";
 import {
   stagedFileOpenFlags,
   stagePackages,
@@ -263,11 +264,11 @@ test("stages all native packages followed by the launcher", async () => {
   assert.deepEqual(
     staged.map(({ name }) => name),
     [
-      "ai-cli-gateway-darwin-x64",
-      "ai-cli-gateway-darwin-arm64",
-      "ai-cli-gateway-linux-x64",
-      "ai-cli-gateway-linux-arm64",
-      "ai-cli-gateway-win32-x64",
+      "@krkarma777/ai-cli-gateway-darwin-x64",
+      "@krkarma777/ai-cli-gateway-darwin-arm64",
+      "@krkarma777/ai-cli-gateway-linux-x64",
+      "@krkarma777/ai-cli-gateway-linux-arm64",
+      "@krkarma777/ai-cli-gateway-win32-x64",
       "ai-cli-gateway",
     ],
   );
@@ -1189,7 +1190,7 @@ test("stage CLI accepts the exact target-selecting shape", async () => {
 });
 
 function npmFilename(name, version) {
-  return `${name}-${version}.tgz`;
+  return npmTarballFilename(name, version);
 }
 
 function expectedPackageFiles(target) {
@@ -1302,7 +1303,10 @@ function visit(directory, prefix = "") {
 }
 visit(packageRoot);
 
-const filename = manifest.name + "-" + manifest.version + ".tgz";
+const filenameName = manifest.name.startsWith("@")
+  ? manifest.name.slice(1).replace("/", "-")
+  : manifest.name;
+const filename = filenameName + "-" + manifest.version + ".tgz";
 const tarball = Buffer.from("verified fake tarball for " + manifest.name + "\\n");
 const tarballPath = path.join(args[4], filename);
 if (mutation === "replace-earlier-tarball") {

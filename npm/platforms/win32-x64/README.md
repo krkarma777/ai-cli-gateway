@@ -1,4 +1,4 @@
-# ai-cli-gateway-win32-x64
+# @krkarma777/ai-cli-gateway-win32-x64
 
 > Internal platform package for Windows x86-64. Install `ai-cli-gateway` instead.
 

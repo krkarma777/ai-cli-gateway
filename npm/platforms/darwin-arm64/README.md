@@ -1,4 +1,4 @@
-# ai-cli-gateway-darwin-arm64
+# @krkarma777/ai-cli-gateway-darwin-arm64
 
 > Internal platform package for macOS Apple silicon. Install `ai-cli-gateway` instead.
 

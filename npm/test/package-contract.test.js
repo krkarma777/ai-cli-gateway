@@ -7,11 +7,11 @@ import { fileURLToPath } from "node:url";
 const npmRoot = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const version = "0.2.1";
 const targets = [
-  ["darwin-x64", "ai-cli-gateway-darwin-x64", "darwin", "x64"],
-  ["darwin-arm64", "ai-cli-gateway-darwin-arm64", "darwin", "arm64"],
-  ["linux-x64", "ai-cli-gateway-linux-x64", "linux", "x64"],
-  ["linux-arm64", "ai-cli-gateway-linux-arm64", "linux", "arm64"],
-  ["win32-x64", "ai-cli-gateway-win32-x64", "win32", "x64"],
+  ["darwin-x64", "@krkarma777/ai-cli-gateway-darwin-x64", "darwin", "x64"],
+  ["darwin-arm64", "@krkarma777/ai-cli-gateway-darwin-arm64", "darwin", "arm64"],
+  ["linux-x64", "@krkarma777/ai-cli-gateway-linux-x64", "linux", "x64"],
+  ["linux-arm64", "@krkarma777/ai-cli-gateway-linux-arm64", "linux", "arm64"],
+  ["win32-x64", "@krkarma777/ai-cli-gateway-win32-x64", "win32", "x64"],
 ];
 const launcherDescription =
   "Build AI MVPs with Codex CLI, Claude Code, and Gemini CLI through a local OpenAI Responses-compatible API.";
