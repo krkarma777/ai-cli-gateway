@@ -7867,7 +7867,10 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "publish provenance removed", mutate: replaceNPMReleaseOnce(" --access public --provenance", " --access public")},
 		{name: "launcher moved first", mutate: moveNPMReleaseLauncherFirst},
 		{name: "post publish SRI removed", mutate: replaceNPMReleaseLast("            test \"${remote_integrity}\" = \"${integrities[${index}]}\"\n", "")},
-		{name: "bootstrap token renamed", mutate: replaceNPMReleaseOnce("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n", "          NODE_AUTH_TOKEN: ${{ secrets.OTHER_TOKEN }}\n")},
+		{name: "static npm token injected", mutate: replaceNPMReleaseOnce(
+			"        env:\n          EXPECTED_ARTIFACT_DIGEST: ${{ needs.package.outputs.artifact_digest }}\n",
+			"        env:\n          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n          EXPECTED_ARTIFACT_DIGEST: ${{ needs.package.outputs.artifact_digest }}\n",
+		)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -8417,9 +8420,9 @@ func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) err
 		{name: "Validate and extract npm artifact", shell: "bash", env: map[string]string{
 			"EXPECTED_ARTIFACT_DIGEST": "${{ needs.package.outputs.artifact_digest }}",
 		}},
-		{name: "Publish verified npm packages", shell: "bash", env: map[string]string{ //nolint:gosec // This is a GitHub secret reference, not secret material.
-			"NODE_AUTH_TOKEN": "${{ secrets.NPM_TOKEN }}", "EXPECTED_ARTIFACT_DIGEST": "${{ needs.package.outputs.artifact_digest }}",
-			"NPM_CONFIG_REGISTRY": "https://registry.npmjs.org/",
+		{name: "Publish verified npm packages", shell: "bash", env: map[string]string{
+			"EXPECTED_ARTIFACT_DIGEST": "${{ needs.package.outputs.artifact_digest }}",
+			"NPM_CONFIG_REGISTRY":      "https://registry.npmjs.org/",
 		}},
 	}
 	validate := func(label string, steps []releaseWorkflowStep, wants []shape) error {
@@ -12215,21 +12218,16 @@ func TestSecretAssignmentPlaceholderAllowlist(t *testing.T) {
 	}
 }
 
-func TestNPMBootstrapSecretPlaceholderAllowlist(t *testing.T) {
+func TestNPMTokenAssignmentsAreNeverAllowed(t *testing.T) {
 	const workflowPath = ".github/workflows/npm-release.yml"
 	const assignment = "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n"
-
-	allowedRoot := t.TempDir()
-	writeFixtureFile(t, allowedRoot, workflowPath, []byte(assignment))
-	if err := scanRepository(allowedRoot); err != nil {
-		t.Fatalf("exact npm bootstrap secret placeholder was rejected: %v", err)
-	}
 
 	tests := []struct {
 		name     string
 		relative string
 		contents string
 	}{
+		{name: "former workflow exception", relative: workflowPath, contents: assignment},
 		{name: "other path", relative: ".github/workflows/other.yml", contents: assignment},
 		{name: "other key", relative: workflowPath, contents: "NPM_TOKEN: ${{ secrets.NPM_TOKEN }}\n"},
 		{name: "other secret", relative: workflowPath, contents: "NODE_AUTH_TOKEN: ${{ secrets.OTHER_TOKEN }}\n"},
@@ -12851,20 +12849,15 @@ func hasSecretAssignment(relative string, contents []byte) bool {
 	uppercaseOnly := extension == ".go"
 	for _, line := range strings.Split(string(contents), "\n") {
 		key, value, ok := splitSecretAssignment(line, allowQuotedKey)
-		if ok && (!uppercaseOnly || key == strings.ToUpper(key)) && isSecretName(key) && !isAllowedSecretAssignmentPlaceholder(relative, key, value) {
+		if ok && (!uppercaseOnly || key == strings.ToUpper(key)) && isSecretName(key) && !isAllowedSecretAssignmentPlaceholder(value) {
 			return true
 		}
 	}
 	return false
 }
 
-func isAllowedSecretAssignmentPlaceholder(relative, key, value string) bool {
-	if isAllowedPlaceholder(value) {
-		return true
-	}
-	return filepath.ToSlash(relative) == ".github/workflows/npm-release.yml" &&
-		strings.TrimSpace(key) == "NODE_AUTH_TOKEN" &&
-		strings.TrimSpace(value) == "${{ secrets.NPM_TOKEN }}"
+func isAllowedSecretAssignmentPlaceholder(value string) bool {
+	return isAllowedPlaceholder(value)
 }
 
 func splitSecretAssignment(line string, allowQuotedKey bool) (string, string, bool) {
