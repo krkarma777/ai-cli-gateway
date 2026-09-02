@@ -7797,9 +7797,12 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "wrong node version", mutate: replaceNPMReleaseOnce("          node-version: \"24.13.0\"\n", "          node-version: latest\n")},
 		{name: "dispatch event guard removed", mutate: replaceNPMReleaseOnce("          test \"${EVENT_NAME}\" = workflow_dispatch\n", "")},
 		{name: "dispatch repository guard removed", mutate: replaceNPMReleaseOnce("          test \"${EVENT_REPOSITORY}\" = \"${repository}\"\n", "")},
-		{name: "recovery branch widened", mutate: replaceNPMReleaseOnce("refs/heads/main) readonly source_mode=recovery ;;", "refs/heads/*) readonly source_mode=recovery ;;")},
-		{name: "recovery main head guard removed", mutate: replaceNPMReleaseOnce("            test \"${live_main}\" = \"${EVENT_SHA}\"\n", "")},
-		{name: "tag source SHA guard removed", mutate: replaceNPMReleaseOnce("            test \"${EVENT_SHA}\" = \"${tag_commit}\"\n", "")},
+		{name: "recovery branch widened", mutate: replaceNPMReleaseOnce("          test \"${EVENT_REF}\" = refs/heads/main\n", "          [[ \"${EVENT_REF}\" = refs/heads/* ]]\n")},
+		{name: "recovery main head guard removed", mutate: replaceNPMReleaseOnce("          test \"${live_main}\" = \"${EVENT_SHA}\"\n", "")},
+		{name: "package commit output removed", mutate: replaceNPMReleaseOnce("            printf 'package_commit=%s\\n' \"${EVENT_SHA}\"\n", "")},
+		{name: "checkout restored to tag", mutate: replaceNPMReleaseOnce("          ref: ${{ steps.metadata.outputs.package_commit }}\n", "          ref: ${{ steps.metadata.outputs.tag_commit }}\n")},
+		{name: "package source SHA guard removed", mutate: replaceNPMReleaseOnce("          test \"$(git rev-parse HEAD)\" = \"${PACKAGE_COMMIT}\"\n", "")},
+		{name: "tag ancestor guard removed", mutate: replaceNPMReleaseOnce("          git merge-base --is-ancestor \"${TAG_COMMIT}\" \"${PACKAGE_COMMIT}\"\n", "")},
 		{name: "release lookup changed to id input", mutate: replaceNPMReleaseOnce("releases/tags/${INPUT_TAG}", "releases/${INPUT_TAG}")},
 		{name: "immutable guard removed", mutate: replaceNPMReleaseOnce("            (.immutable == true) and\n", "")},
 		{name: "repository authority changed", mutate: replaceNPMReleaseOnce("readonly repository=krkarma777/ai-cli-gateway", "readonly repository=attacker/ai-cli-gateway")},
@@ -7811,9 +7814,17 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "strict checksums removed", mutate: replaceNPMReleaseOnce("sha256sum --check --strict SHA256SUMS", "sha256sum --check SHA256SUMS")},
 		{name: "attestation predicate removed", mutate: replaceNPMReleaseOnce("              --predicate-type https://slsa.dev/provenance/v1 \\\n", "")},
 		{name: "attestation workflow changed", mutate: replaceNPMReleaseOnce("github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml", "github.com/attacker/workflow.yml")},
+		{name: "release source path changed", mutate: replaceNPMReleaseOnce("          readonly release_source=\"${RUNNER_TEMP}/npm-v0.2.1-release-source\"\n", "          readonly release_source=\"${GITHUB_WORKSPACE}\"\n")},
+		{name: "detached release worktree removed", mutate: replaceNPMReleaseOnce("          git worktree add --detach \"${release_source}\" \"${TAG_COMMIT}\"\n", "")},
+		{name: "release worktree SHA guard removed", mutate: replaceNPMReleaseOnce("          test \"$(git -C \"${release_source}\" rev-parse HEAD)\" = \"${TAG_COMMIT}\"\n", "")},
+		{name: "release worktree clean guard removed", mutate: replaceNPMReleaseOnce("          test -z \"$(git -C \"${release_source}\" status --porcelain)\"\n", "")},
+		{name: "releasepack built from package source", mutate: replaceNPMReleaseOnce("          CGO_ENABLED=0 go -C \"${release_source}\" build -trimpath -buildvcs=false -mod=readonly \\\n", "          CGO_ENABLED=0 go build -trimpath -buildvcs=false -mod=readonly \\\n")},
+		{name: "native binary built from package source", mutate: replaceNPMReleaseOnce("            CGO_ENABLED=0 GOOS=\"${goos}\" GOARCH=\"${goarch}\" go -C \"${release_source}\" build \\\n", "            CGO_ENABLED=0 GOOS=\"${goos}\" GOARCH=\"${goarch}\" go build \\\n")},
+		{name: "releasepack repository root changed", mutate: replaceNPMReleaseOnce("            --repository-root \"${release_source}\" \\\n", "            --repository-root \"${GITHUB_WORKSPACE}\" \\\n")},
 		{name: "deterministic build flag removed", mutate: replaceNPMReleaseOnce("-trimpath -buildvcs=false -mod=readonly -ldflags", "-mod=readonly -ldflags")},
 		{name: "archive comparison removed", mutate: replaceNPMReleaseOnce("          test \"${actual_digest}\" = \"${expected_digest}\"\n", "")},
 		{name: "npm verifier removed", mutate: replaceNPMReleaseOnce("          node npm/scripts/verify-packages.js \\\n", "          true # node npm/scripts/verify-packages.js \\\n")},
+		{name: "npm staging repository changed", mutate: replaceNPMReleaseOnce("            --repository-root \"${GITHUB_WORKSPACE}\" \\\n            --binary-root", "            --repository-root \"${release_source}\" \\\n            --binary-root")},
 		{name: "linux execution removed", mutate: replaceNPMReleaseOnce("          test \"${version_output}\" = \"ai-cli-gateway ${TAG} (${TAG_COMMIT}, ${SOURCE_DATE})\"\n", "")},
 		{name: "artifact overwrite enabled", mutate: replaceNPMReleaseOnce("          overwrite: false\n", "          overwrite: true\n")},
 		{name: "artifact retention widened", mutate: replaceNPMReleaseOnce("          retention-days: 1\n", "          retention-days: 30\n")},
@@ -7824,6 +7835,7 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "downloaded descriptor lstat removed", mutate: replaceNPMReleaseOnce("          const descriptorMetadata = lstatSync(descriptorPath);\n", "")},
 		{name: "tarball rehash removed", mutate: replaceNPMReleaseOnce("            test \"${actual_integrity}\" = \"${integrities[${index}]}\"\n", "")},
 		{name: "structured E404 parser removed", mutate: replaceNPMReleaseOnce("          const failure = JSON.parse(readFileSync(process.argv[2], \"utf8\"));\n", "          const failure = { error: { code: \"E404\" } };\n")},
+		{name: "scoped registry encoding removed", mutate: replaceNPMReleaseOnce("          const registryName = packageName.replace(\"/\", \"%2f\");\n", "          const registryName = packageName;\n")},
 		{name: "registry absence widened", mutate: replaceNPMReleaseOnce("grep -Fx 'npm error code E404'", "grep -F 'npm error'")},
 		{name: "publish scripts enabled", mutate: replaceNPMReleaseOnce("npm publish \"${tarball}\" --ignore-scripts --access public --provenance", "npm publish \"${tarball}\" --access public --provenance")},
 		{name: "publish provenance removed", mutate: replaceNPMReleaseOnce(" --access public --provenance", " --access public")},
@@ -7867,22 +7879,22 @@ func replaceNPMReleaseLast(old, replacement string) func(string) string {
 func moveNPMReleaseLauncherFirst(document string) string {
 	nativeFirst := strings.Join([]string{
 		"          packages=(",
-		"            ai-cli-gateway-darwin-x64",
-		"            ai-cli-gateway-darwin-arm64",
-		"            ai-cli-gateway-linux-x64",
-		"            ai-cli-gateway-linux-arm64",
-		"            ai-cli-gateway-win32-x64",
+		"            @krkarma777/ai-cli-gateway-darwin-x64",
+		"            @krkarma777/ai-cli-gateway-darwin-arm64",
+		"            @krkarma777/ai-cli-gateway-linux-x64",
+		"            @krkarma777/ai-cli-gateway-linux-arm64",
+		"            @krkarma777/ai-cli-gateway-win32-x64",
 		"            ai-cli-gateway",
 		"          )",
 	}, "\n") + "\n"
 	launcherFirst := strings.Join([]string{
 		"          packages=(",
 		"            ai-cli-gateway",
-		"            ai-cli-gateway-darwin-x64",
-		"            ai-cli-gateway-darwin-arm64",
-		"            ai-cli-gateway-linux-x64",
-		"            ai-cli-gateway-linux-arm64",
-		"            ai-cli-gateway-win32-x64",
+		"            @krkarma777/ai-cli-gateway-darwin-x64",
+		"            @krkarma777/ai-cli-gateway-darwin-arm64",
+		"            @krkarma777/ai-cli-gateway-linux-x64",
+		"            @krkarma777/ai-cli-gateway-linux-arm64",
+		"            @krkarma777/ai-cli-gateway-win32-x64",
 		"          )",
 	}, "\n") + "\n"
 	return strings.Replace(document, nativeFirst, launcherFirst, 1)
@@ -8121,7 +8133,7 @@ func validateNPMReleaseWorkflowContract(workflow npmReleaseWorkflowDocument) err
 	if err := validateNPMReleaseArtifactDigestContract(publishJob); err != nil {
 		return err
 	}
-	if err := validateNPMReleaseCohortAndE404Contracts(publishJob); err != nil {
+	if err := validateNPMReleaseCohortAndE404Contracts(packageJob, publishJob); err != nil {
 		return err
 	}
 	return validateNPMReleaseRunHashes(packageJob, publishJob)
@@ -8137,14 +8149,14 @@ func validateNPMReleaseDispatchMetadataContract(packageJob releaseWorkflowJob) e
 	wantUnique := []string{
 		`test "${EVENT_NAME}" = workflow_dispatch`,
 		`test "${EVENT_REPOSITORY}" = "${repository}"`,
-		`"refs/tags/${INPUT_TAG}") readonly source_mode=tag ;;`,
-		`refs/heads/main) readonly source_mode=recovery ;;`,
+		`test "${EVENT_REF}" = refs/heads/main`,
+		`test "${INPUT_TAG}" = v0.2.1`,
 		`tag_commit="$(resolve_live_tag)"`,
-		`test "${EVENT_SHA}" = "${tag_commit}"`,
 		`test "${live_main}" = "${EVENT_SHA}"`,
 		`printf 'tag=%s\n' "${INPUT_TAG}"`,
 		`printf 'version=%s\n' "${INPUT_TAG#v}"`,
 		`printf 'tag_commit=%s\n' "${tag_commit}"`,
+		`printf 'package_commit=%s\n' "${EVENT_SHA}"`,
 		`printf 'release_id=%s\n' "${release_id}"`,
 	}
 	for _, line := range wantUnique {
@@ -8152,20 +8164,20 @@ func validateNPMReleaseDispatchMetadataContract(packageJob releaseWorkflowJob) e
 			return fmt.Errorf("npm dispatch metadata line %q is not exact and unique", line)
 		}
 	}
-	if shellLineCount(lines, `test "${INPUT_TAG}" = v0.2.1`) != 2 {
-		return errors.New("npm dispatch metadata must bind both the workflow and recovery path to v0.2.1")
+	if strings.Contains(script, `case "${EVENT_REF}" in`) || strings.Contains(script, "source_mode") {
+		return errors.New("npm dispatch metadata must accept only an exact main ref")
 	}
 	if strings.Count(script, `releases/tags/${INPUT_TAG}`) != 1 || strings.Contains(script, "github.event.release") {
 		return errors.New("npm dispatch metadata must query one tag-derived release without release-event authority")
 	}
 	if err := requireOrderedMarkers(script,
 		`test "${EVENT_NAME}" = workflow_dispatch`,
-		`case "${EVENT_REF}" in`,
+		`test "${EVENT_REF}" = refs/heads/main`,
 		`tag_commit="$(resolve_live_tag)"`,
-		`if test "${source_mode}" = tag; then`,
-		`test "${EVENT_SHA}" = "${tag_commit}"`,
+		`"repos/${repository}/git/ref/heads/main"`,
 		`test "${live_main}" = "${EVENT_SHA}"`,
 		`releases/tags/${INPUT_TAG}`,
+		`printf 'package_commit=%s\n' "${EVENT_SHA}"`,
 		`printf 'release_id=%s\n' "${release_id}"`,
 	); err != nil {
 		return fmt.Errorf("npm dispatch metadata order: %w", err)
@@ -8222,10 +8234,40 @@ func validateNPMReleaseArtifactDigestContract(publishJob releaseWorkflowJob) err
 	return nil
 }
 
-func validateNPMReleaseCohortAndE404Contracts(publishJob releaseWorkflowJob) error {
+func validateNPMReleaseCohortAndE404Contracts(packageJob, publishJob releaseWorkflowJob) error {
+	stage, err := namedReleaseStep(packageJob.Steps, "Stage and inspect npm packages")
+	if err != nil {
+		return err
+	}
 	publish, err := namedReleaseStep(publishJob.Steps, "Publish verified npm packages")
 	if err != nil {
 		return err
+	}
+	cohort := strings.Join([]string{
+		`const packages = [`,
+		`  ["@krkarma777/ai-cli-gateway-darwin-x64", "krkarma777-ai-cli-gateway-darwin-x64-0.2.1.tgz"],`,
+		`  ["@krkarma777/ai-cli-gateway-darwin-arm64", "krkarma777-ai-cli-gateway-darwin-arm64-0.2.1.tgz"],`,
+		`  ["@krkarma777/ai-cli-gateway-linux-x64", "krkarma777-ai-cli-gateway-linux-x64-0.2.1.tgz"],`,
+		`  ["@krkarma777/ai-cli-gateway-linux-arm64", "krkarma777-ai-cli-gateway-linux-arm64-0.2.1.tgz"],`,
+		`  ["@krkarma777/ai-cli-gateway-win32-x64", "krkarma777-ai-cli-gateway-win32-x64-0.2.1.tgz"],`,
+		`  ["ai-cli-gateway", "ai-cli-gateway-0.2.1.tgz"],`,
+		`];`,
+	}, "\n")
+	if strings.Count(stage.Run, cohort) != 1 || strings.Count(publish.Run, cohort) != 1 {
+		return errors.New("npm package and publish validation must use the exact scoped native-first cohort")
+	}
+	publicationOrder := strings.Join([]string{
+		"packages=(",
+		"  @krkarma777/ai-cli-gateway-darwin-x64",
+		"  @krkarma777/ai-cli-gateway-darwin-arm64",
+		"  @krkarma777/ai-cli-gateway-linux-x64",
+		"  @krkarma777/ai-cli-gateway-linux-arm64",
+		"  @krkarma777/ai-cli-gateway-win32-x64",
+		"  ai-cli-gateway",
+		")",
+	}, "\n")
+	if strings.Count(publish.Run, publicationOrder) != 1 {
+		return errors.New("npm publication order must be the exact scoped native-first cohort with launcher last")
 	}
 	for _, required := range []string{
 		`const descriptorPath = path.join(root, "packages.json");`,
@@ -8235,6 +8277,8 @@ func validateNPMReleaseCohortAndE404Contracts(publishJob releaseWorkflowJob) err
 		`JSON.stringify(Object.keys(failure)) !== JSON.stringify(["error"])`,
 		`JSON.stringify(Object.keys(failure.error).sort()) !== JSON.stringify(["code", "detail", "summary"])`,
 		`failure.error.code !== "E404"`,
+		`const registryName = packageName.replace("/", "%2f");`,
+		`!failure.error.summary.startsWith(` + "`Not Found - GET https://registry.npmjs.org/${registryName} - `" + `)`,
 		`grep -Fx 'npm error code E404'`,
 	} {
 		if !strings.Contains(publish.Run, required) {
@@ -8268,7 +8312,7 @@ func validateNPMReleaseActions(packageJob, publishJob releaseWorkflowJob) error 
 		return fmt.Errorf("npm release step counts package=%d publish=%d", len(packageJob.Steps), len(publishJob.Steps))
 	}
 	if !reflect.DeepEqual(packageJob.Steps[1].With, map[string]string{
-		"persist-credentials": "false", "fetch-depth": "0", "ref": "${{ steps.metadata.outputs.tag_commit }}",
+		"persist-credentials": "false", "fetch-depth": "0", "ref": "${{ steps.metadata.outputs.package_commit }}",
 	}) || !reflect.DeepEqual(packageJob.Steps[2].With, map[string]string{"go-version": "1.26.5", "cache": "false"}) ||
 		!reflect.DeepEqual(packageJob.Steps[3].With, map[string]string{"node-version": "24.13.0", "package-manager-cache": "false"}) {
 		return errors.New("npm package checkout or tool setup inputs differ from the closed contract")
@@ -8280,11 +8324,11 @@ func validateNPMReleaseActions(packageJob, publishJob releaseWorkflowJob) error 
 	}
 	upload := packageJob.Steps[9]
 	wantUploadPath := strings.Join([]string{
-		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-darwin-x64-0.2.1.tgz",
-		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-darwin-arm64-0.2.1.tgz",
-		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-linux-x64-0.2.1.tgz",
-		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-linux-arm64-0.2.1.tgz",
-		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-win32-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/krkarma777-ai-cli-gateway-darwin-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/krkarma777-ai-cli-gateway-darwin-arm64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/krkarma777-ai-cli-gateway-linux-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/krkarma777-ai-cli-gateway-linux-arm64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/krkarma777-ai-cli-gateway-win32-x64-0.2.1.tgz",
 		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-0.2.1.tgz",
 		"${{ runner.temp }}/npm-package-work/tarballs/packages.json",
 	}, "\n") + "\n"
@@ -8321,6 +8365,7 @@ func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) err
 		{uses: setupNodeAction},
 		{name: "Validate toolchain and source", shell: "bash", env: map[string]string{
 			"TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
+			"PACKAGE_COMMIT": "${{ steps.metadata.outputs.package_commit }}",
 		}},
 		{name: "Download and verify immutable release assets", shell: "bash", env: map[string]string{ //nolint:gosec // This is GitHub's documented token expression, not a credential.
 			"GH_TOKEN": "${{ github.token }}", "TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
@@ -8372,21 +8417,66 @@ func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) err
 	if err := validate("package", packageJob.Steps, wantPackage); err != nil {
 		return err
 	}
-	return validate("publish", publishJob.Steps, wantPublish)
+	if err := validate("publish", publishJob.Steps, wantPublish); err != nil {
+		return err
+	}
+	source, err := namedReleaseStep(packageJob.Steps, "Validate toolchain and source")
+	if err != nil {
+		return err
+	}
+	if err := requireOrderedMarkers(source.Run,
+		`test "$(git rev-parse HEAD)" = "${PACKAGE_COMMIT}"`,
+		`test "$(git rev-parse "${TAG}^{commit}")" = "${TAG_COMMIT}"`,
+		`git merge-base --is-ancestor "${TAG_COMMIT}" "${PACKAGE_COMMIT}"`,
+		`node npm/scripts/verify-packages.js --source-check`,
+	); err != nil {
+		return fmt.Errorf("npm package source validation order: %w", err)
+	}
+	rebuild, err := namedReleaseStep(packageJob.Steps, "Rebuild and compare release archives")
+	if err != nil {
+		return err
+	}
+	if err := requireOrderedMarkers(rebuild.Run,
+		`readonly release_source="${RUNNER_TEMP}/npm-v0.2.1-release-source"`,
+		`test ! -e "${release_source}"`,
+		`git worktree add --detach "${release_source}" "${TAG_COMMIT}"`,
+		`test "$(git -C "${release_source}" rev-parse HEAD)" = "${TAG_COMMIT}"`,
+		`test -z "$(git -C "${release_source}" status --porcelain)"`,
+		`CGO_ENABLED=0 go -C "${release_source}" build -trimpath -buildvcs=false -mod=readonly`,
+		`CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go -C "${release_source}" build`,
+		`--repository-root "${release_source}"`,
+	); err != nil {
+		return fmt.Errorf("npm immutable release source order: %w", err)
+	}
+	stage, err := namedReleaseStep(packageJob.Steps, "Stage and inspect npm packages")
+	if err != nil {
+		return err
+	}
+	if strings.Contains(stage.Run, "release_source") || strings.Contains(stage.Run, "TAG_COMMIT") {
+		return errors.New("npm staging must not consume the detached immutable-tag source")
+	}
+	if err := requireOrderedMarkers(stage.Run,
+		`node npm/scripts/stage-packages.js`,
+		`--repository-root "${GITHUB_WORKSPACE}"`,
+		`node npm/scripts/verify-packages.js`,
+	); err != nil {
+		return fmt.Errorf("npm recovery source staging order: %w", err)
+	}
+	return nil
 }
 
 func validateNPMReleaseRunHashes(packageJob, publishJob releaseWorkflowJob) error {
 	want := map[string]string{
-		"package/Validate immutable release metadata":          "eba092f7faa1171107bf9a8ef91de7fb669bac3cdcd308d54f8ce60d387a1053",
-		"package/Validate toolchain and source":                "631712fb03df18ac2a9572c46e11d4c769477aa60f9d1a96fcee3fb3627770ad",
+		"package/Validate immutable release metadata":          "3c23daeef736eadaadfe78149ca43507bab7021d46bf5ddbcae3753680b10529",
+		"package/Validate toolchain and source":                "8cbbcdf468dd77c484ea07de97ec51fe1b40d92ab4a04cae57816a41005731c3",
 		"package/Download and verify immutable release assets": "9d6cc9385df0d7ee808f32e23e895a5638f3f65c52b26966a3216ed726e28709",
-		"package/Rebuild and compare release archives":         "312b6e71f564b31087d055ad988c05c8986dc7ce5303759055406866fb2688aa",
-		"package/Stage and inspect npm packages":               "8e9c66f39ec4ff6eaf541c414556bd22264707c12ccea2e23f7e701142c52726",
-		"package/Install and execute Linux x64 package":        "5f996fe5f6443404603107fe2e49e621fec165b9620db86b570d459c760be4e4",
+		"package/Rebuild and compare release archives":         "0e2b00a44e4177aaba1538fec235c67c8060a0e8eec4078eb302aefb56e1d2b5",
+		"package/Stage and inspect npm packages":               "f3680c95ffd7f5eed998c5494593e465a2c99b7b0db5cd20f1b4a1b4e3ef4e37",
+		"package/Install and execute Linux x64 package":        "23f135257ca4d034fbcf5927becd7e2473c7c5b2a10b436020ba15e9d59c6e26",
 		"package/Validate artifact outputs":                    "6c1898c6abdc07af87012ddd3cbb076ffb6998f0a351ee17a0f9cf2378f37bc3",
 		"publish/Validate artifact identity":                   "fe060a961e6dbcddee8a6e7a84987c841c2fde0f9a618448fc3560b07a41a262",
-		"publish/Validate and extract npm artifact":            "627bfa6ce348696aa11792e517f1757f37de235bb806744ec6be2abc22d0a9d6",
-		"publish/Publish verified npm packages":                "bf40d47e14a5b60cecf8bf8f51bb5043671a8a691d8bd25c5004067f18dd4ded",
+		"publish/Validate and extract npm artifact":            "36492a809b9a2a1dcb5627c0cfbd6273ded1a8766a13754886de1fe68ccab7a3",
+		"publish/Publish verified npm packages":                "df9a667c5eb6aa44087278f844460fce6a85383c320204a6a0cc99c24fbfa850",
 	}
 	for label, job := range map[string]releaseWorkflowJob{"package": packageJob, "publish": publishJob} {
 		for _, step := range job.Steps {
