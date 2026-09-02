@@ -1,7 +1,13 @@
 {
   "name": "ai-cli-gateway-win32-x64",
   "version": "0.2.1",
-  "description": "Native AI CLI Gateway binary for win32-x64.",
+  "description": "Internal Windows x86-64 binary for AI CLI Gateway. Install the ai-cli-gateway package instead.",
+  "keywords": [
+    "ai-cli-gateway",
+    "native-binary",
+    "win32",
+    "x64"
+  ],
   "license": "Apache-2.0",
   "files": [
     "bin/ai-cli-gateway.exe",

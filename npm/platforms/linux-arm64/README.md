@@ -1,3 +1,16 @@
 # ai-cli-gateway-linux-arm64
 
-This package contains the native AI CLI Gateway binary for the `linux-arm64` target (`GOOS=linux`, `GOARCH=arm64`). It is installed through `ai-cli-gateway` and must not be installed or used directly.
+> Internal platform package for Linux ARM64. Install `ai-cli-gateway` instead.
+
+```console
+npm install --global ai-cli-gateway
+```
+
+Target: `linux-arm64` (`npm os=linux`, `npm cpu=arm64`, `GOOS=linux`, `GOARCH=arm64`).
+
+This native binary is installed automatically through an exact optional dependency of the main launcher. Do not install or invoke this package directly.
+
+No standalone JavaScript API is provided.
+
+- [Main npm package](https://www.npmjs.com/package/ai-cli-gateway)
+- [GitHub repository](https://github.com/krkarma777/ai-cli-gateway)
