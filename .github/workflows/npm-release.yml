@@ -542,7 +542,6 @@ jobs:
       - name: Publish verified npm packages
         shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package.outputs.artifact_digest }}
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
         run: |
