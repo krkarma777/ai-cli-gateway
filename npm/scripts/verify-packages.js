@@ -23,11 +23,20 @@ import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import {
+  LAUNCHER_DESCRIPTION,
+  LAUNCHER_KEYWORDS,
+  launcherReadme,
+  nativeDescription,
+  nativeKeywords,
+  nativeReadme,
+} from "./package-copy.js";
+import {
   LAUNCHER_NAME,
   NODE_RANGE,
   PACKAGE_VERSION,
   TARGETS,
 } from "./package-config.js";
+import { npmTarballFilename } from "./package-name.js";
 
 const VERIFICATION_FAILURE = "npm package verification failed";
 const FILE_TYPE_MASK = 0o170000n;
@@ -43,7 +52,7 @@ const LAUNCHER_ENTRY_CONTENT = Buffer.from(
   "utf8",
 );
 const LAUNCHER_IMPLEMENTATION_SHA512 =
-  "a547259ed0358f3fe873eaac1144feb499217b068ee4b969dbe0a2e47e6fec1c1185f073001cd4f5af7ef28b531da9c86ff965efd4dbc5f2a8bdc5c54bca1990";
+  "d61fd93466ac3c55b636301e58dbf4c79197419afd8a918e31e8b47087625d7fda874ac9d47e44392b4666ada0f2fadb6992e6b5cafd79102710ae4451ea89e1";
 const PACK_OPTION_KEYS = new Set([
   "stagingRoot",
   "tarballRoot",
@@ -347,7 +356,8 @@ function expectedLauncherManifest(version) {
   return {
     name: LAUNCHER_NAME,
     version,
-    description: "Run AI CLI Gateway through the matching native binary.",
+    description: LAUNCHER_DESCRIPTION,
+    keywords: [...LAUNCHER_KEYWORDS],
     license: "Apache-2.0",
     type: "module",
     bin: { "ai-cli-gateway": "bin/ai-cli-gateway.js" },
@@ -367,7 +377,8 @@ function expectedNativeManifest(target, version) {
   return {
     name: target.packageName,
     version,
-    description: `Native AI CLI Gateway binary for ${target.key}.`,
+    description: nativeDescription(target),
+    keywords: nativeKeywords(target),
     license: "Apache-2.0",
     files: [`bin/${target.executable}`, "README.md", "LICENSE"],
     engines: { node: NODE_RANGE },
@@ -381,30 +392,6 @@ function expectedNativeManifest(target, version) {
     bugs: { url: "https://github.com/krkarma777/ai-cli-gateway/issues" },
     publishConfig: { ...COMMON_PUBLISH_CONFIG },
   };
-}
-
-function launcherReadme() {
-  return `# AI CLI Gateway
-
-Install the launcher globally:
-
-\`\`\`sh
-npm install --global ai-cli-gateway
-\`\`\`
-
-The launcher supports these five native targets:
-
-${TARGETS.map((target) => `- \`${target.key}\` via \`${target.packageName}\``).join("\n")}
-
-Node.js \`${NODE_RANGE}\` is required. Installation uses npm's host-specific optional dependencies and performs no lifecycle downloads; the public packages define no lifecycle scripts.
-`;
-}
-
-function nativeReadme(target) {
-  return `# ${target.packageName}
-
-This package contains the native AI CLI Gateway binary for the \`${target.key}\` target (\`GOOS=${target.goos}\`, \`GOARCH=${target.goarch}\`). It is installed through \`ai-cli-gateway\` and must not be installed or used directly.
-`;
 }
 
 async function parsedManifest(filename, expected, expectedMetadata) {
@@ -475,7 +462,7 @@ async function validatePackageRoot(packageRoot, target, version) {
   );
   if (
     readme.content.toString("utf8") !==
-    (target === undefined ? launcherReadme() : nativeReadme(target))
+    (target === undefined ? launcherReadme(NODE_RANGE) : nativeReadme(target))
   ) {
     throw verificationError();
   }
@@ -557,7 +544,7 @@ async function validateSourcePackageRoot(packageRoot, target, version) {
   );
   if (
     readme.content.toString("utf8") !==
-    (target === undefined ? launcherReadme() : nativeReadme(target))
+    (target === undefined ? launcherReadme(NODE_RANGE) : nativeReadme(target))
   ) {
     throw verificationError();
   }
@@ -1155,7 +1142,7 @@ async function hashRegularTarball(filename) {
 }
 
 function expectedFilename(name, version) {
-  return `${name}-${version}.tgz`;
+  return npmTarballFilename(name, version);
 }
 
 function validatePackFiles(value, target, stagedMetadata) {

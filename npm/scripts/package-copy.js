@@ -1,4 +1,49 @@
-# AI CLI Gateway
+export const LAUNCHER_DESCRIPTION =
+  "Build AI MVPs with Codex CLI, Claude Code, and Gemini CLI through a local OpenAI Responses-compatible API.";
+
+export const LAUNCHER_KEYWORDS = Object.freeze([
+  "ai",
+  "ai-cli",
+  "ai-gateway",
+  "llm-gateway",
+  "openai",
+  "openai-compatible",
+  "responses-api",
+  "codex-cli",
+  "claude-code",
+  "gemini-cli",
+  "local-ai",
+  "ai-mvp",
+  "structured-output",
+  "json-schema",
+]);
+
+const PLATFORM_LABELS = Object.freeze({
+  "darwin-x64": "macOS Intel",
+  "darwin-arm64": "macOS Apple silicon",
+  "linux-x64": "Linux x86-64",
+  "linux-arm64": "Linux ARM64",
+  "win32-x64": "Windows x86-64",
+});
+
+function platformLabel(target) {
+  const label = PLATFORM_LABELS[target.key];
+  if (label === undefined) {
+    throw new Error("unknown npm package target");
+  }
+  return label;
+}
+
+export function nativeDescription(target) {
+  return `Internal ${platformLabel(target)} binary for AI CLI Gateway. Install the ai-cli-gateway package instead.`;
+}
+
+export function nativeKeywords(target) {
+  return ["ai-cli-gateway", "native-binary", target.platform, target.arch];
+}
+
+export function launcherReadme(nodeRange) {
+  return `# AI CLI Gateway
 
 Build AI MVPs with Codex CLI, Claude Code, and Gemini CLI through a local OpenAI Responses-compatible API.
 
@@ -6,24 +51,24 @@ AI CLI Gateway turns locally authenticated AI CLIs into a focused Responses API-
 
 ## Install
 
-```console
+\`\`\`console
 npm install --global ai-cli-gateway
 ai-cli-gateway version
-```
+\`\`\`
 
-Node.js `>=22.14.0` is required.
+Node.js \`${nodeRange}\` is required.
 
 ## Quick start
 
 1. Install and authenticate Codex CLI, Claude Code, or Gemini CLI with the provider's own tooling.
-2. Run `ai-cli-gateway init` and configure at least one model alias.
-3. Run `ai-cli-gateway serve`.
+2. Run \`ai-cli-gateway init\` and configure at least one model alias.
+3. Run \`ai-cli-gateway serve\`.
 
-The listener defaults to `http://127.0.0.1:8080`.
+The listener defaults to \`http://127.0.0.1:8080\`.
 
 ## Connect with the OpenAI JavaScript SDK
 
-```js
+\`\`\`js
 import OpenAI from "openai";
 
 const client = new OpenAI({
@@ -43,13 +88,13 @@ const response = await client.responses.create({
 });
 
 console.log(response.output_text);
-```
+\`\`\`
 
 ## What it supports
 
 - Codex CLI, Claude Code, and Gemini CLI
 - macOS Intel and Apple silicon, Linux x86-64 and ARM64, and Windows x86-64
-- `POST /v1/responses` and `GET /v1/models`
+- \`POST /v1/responses\` and \`GET /v1/models\`
 - final non-streaming text
 - strict JSON Schema structured output validated locally
 - operator-configured model aliases
@@ -74,3 +119,26 @@ The launcher installs one host-specific optional dependency. Public packages def
 - [Security Policy](https://github.com/krkarma777/ai-cli-gateway/blob/main/SECURITY.md)
 - [GitHub Releases](https://github.com/krkarma777/ai-cli-gateway/releases)
 - [GitHub repository](https://github.com/krkarma777/ai-cli-gateway)
+`;
+}
+
+export function nativeReadme(target) {
+  const label = platformLabel(target);
+  return `# ${target.packageName}
+
+> Internal platform package for ${label}. Install \`ai-cli-gateway\` instead.
+
+\`\`\`console
+npm install --global ai-cli-gateway
+\`\`\`
+
+Target: \`${target.key}\` (\`npm os=${target.platform}\`, \`npm cpu=${target.arch}\`, \`GOOS=${target.goos}\`, \`GOARCH=${target.goarch}\`).
+
+This native binary is installed automatically through an exact optional dependency of the main launcher. Do not install or invoke this package directly.
+
+No standalone JavaScript API is provided.
+
+- [Main npm package](https://www.npmjs.com/package/ai-cli-gateway)
+- [GitHub repository](https://github.com/krkarma777/ai-cli-gateway)
+`;
+}

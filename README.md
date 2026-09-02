@@ -98,7 +98,7 @@ ai-cli-gateway version
 
 For a manual checksum-verified installation, immediately follow the [v0.2.1 archive procedure](docs/getting-started.md#advanced-recovery-and-service-deployment).
 
-The npm package requires Node.js `>=22.14.0` and installs the matching native optional package without a lifecycle downloader. The complete [Getting Started guide](docs/getting-started.md) covers supported targets, provenance, updates, uninstall, and optional-dependency recovery.
+The npm launcher requires Node.js `>=22.14.0`. The five scoped platform packages are optional internal implementation packages; users install only `ai-cli-gateway`. npm installs the matching native optional package without a lifecycle downloader. The complete [Getting Started guide](docs/getting-started.md) covers supported targets, provenance, updates, uninstall, and optional-dependency recovery.
 
 ### 1. Install and authenticate a provider CLI
 

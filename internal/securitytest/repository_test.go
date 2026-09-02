@@ -1507,7 +1507,7 @@ func TestDocumentationCurrentOnboardingUsesV021(t *testing.T) {
 	}
 }
 
-func TestReadmeNPMInstallV021Contract(t *testing.T) {
+func TestREADMENPMInstallV021Contract(t *testing.T) {
 	readme := string(readRepositoryFile(t, "README.md"))
 	quickStart, err := extractTopLevelMarkdownSection(readme, "Quick Start")
 	if err != nil {
@@ -1521,6 +1521,10 @@ func TestReadmeNPMInstallV021Contract(t *testing.T) {
 	if !strings.HasPrefix(quickStart, wantBeginning) {
 		t.Fatal("README Quick Start does not begin with the exact npm install/version commands followed immediately by the manual checksum path")
 	}
+	requireContainsAll(t, "README npm installation", quickStart,
+		"platform packages are optional internal implementation packages",
+		"users install only `ai-cli-gateway`",
+	)
 }
 
 func TestGettingStartedNPMInstallV021Contract(t *testing.T) {
@@ -1531,6 +1535,8 @@ func TestGettingStartedNPMInstallV021Contract(t *testing.T) {
 	}
 	requireContainsAll(t, "Getting Started npm installation", installation,
 		"Node.js `>=22.14.0`",
+		"platform packages are optional internal implementation packages",
+		"users install only `ai-cli-gateway`",
 		"no lifecycle scripts", "does not download an executable",
 		"byte-for-byte identical", "npm provenance", "GitHub build-provenance",
 		"`npm audit signatures` verifies downloaded packages' registry signatures and provenance attestations.",
@@ -1572,6 +1578,8 @@ func TestReleaseNotesV021Contract(t *testing.T) {
 	}
 	requireContainsAll(t, "docs/releases/v0.2.1.md", notes,
 		"npm install --global ai-cli-gateway@0.2.1", "Node.js `>=22.14.0`",
+		"platform packages are optional internal implementation packages",
+		"users install only `ai-cli-gateway`",
 		"no lifecycle scripts", "does not download an executable",
 		"byte-for-byte identical", "npm provenance", "GitHub build-provenance attestations",
 		"five platform archives", "SPDX SBOM", "SHA256SUMS",
@@ -1596,14 +1604,32 @@ func TestReleaseNotesV021Contract(t *testing.T) {
 	}
 
 	expectedLinks := []string{
-		"[Getting Started](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/docs/getting-started.md)",
+		"[Getting Started](../getting-started.md)",
 		"[API and Operations Reference](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/docs/reference.md)",
 		"[Security Policy](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/SECURITY.md)",
 	}
-	requireContainsAll(t, "docs/releases/v0.2.1.md tag-pinned documentation links", notes, expectedLinks...)
+	requireContainsAll(t, "docs/releases/v0.2.1.md current setup and tag-pinned runtime/security links", notes, expectedLinks...)
 	markdownLinkPattern := regexp.MustCompile(`\[[^]]+\]\([^)]+\)`)
 	if links := markdownLinkPattern.FindAllString(notes, -1); !reflect.DeepEqual(links, expectedLinks) {
-		t.Fatalf("docs/releases/v0.2.1.md links = %v, want exact tag-pinned links %v", links, expectedLinks)
+		t.Fatalf("docs/releases/v0.2.1.md links = %v, want exact current setup and tag-pinned runtime/security links %v", links, expectedLinks)
+	}
+}
+
+func TestReleaseDocumentationRejectsAbandonedNPMNames(t *testing.T) {
+	oldNames := []string{
+		"ai-cli-gateway-darwin-x64",
+		"ai-cli-gateway-darwin-arm64",
+		"ai-cli-gateway-linux-x64",
+		"ai-cli-gateway-linux-arm64",
+		"ai-cli-gateway-win32-x64",
+	}
+	for _, filename := range []string{"README.md", "docs/getting-started.md", "docs/releases/v0.2.1.md"} {
+		document := string(readRepositoryFile(t, filename))
+		for _, oldName := range oldNames {
+			if strings.Contains(document, "`"+oldName+"`") {
+				t.Fatalf("%s retains abandoned npm package %q", filename, oldName)
+			}
+		}
 	}
 }
 
@@ -1611,11 +1637,11 @@ func gettingStartedNPMTargetTable() []string {
 	return []string{
 		"| Host | npm target | Native package |",
 		"|---|---|---|",
-		"| macOS Intel | `darwin-x64` | `ai-cli-gateway-darwin-x64` |",
-		"| macOS Apple silicon | `darwin-arm64` | `ai-cli-gateway-darwin-arm64` |",
-		"| Linux x86-64 | `linux-x64` | `ai-cli-gateway-linux-x64` |",
-		"| Linux ARM64 | `linux-arm64` | `ai-cli-gateway-linux-arm64` |",
-		"| Windows x86-64 | `win32-x64` | `ai-cli-gateway-win32-x64` |",
+		"| macOS Intel | `darwin-x64` | `@krkarma777/ai-cli-gateway-darwin-x64` |",
+		"| macOS Apple silicon | `darwin-arm64` | `@krkarma777/ai-cli-gateway-darwin-arm64` |",
+		"| Linux x86-64 | `linux-x64` | `@krkarma777/ai-cli-gateway-linux-x64` |",
+		"| Linux ARM64 | `linux-arm64` | `@krkarma777/ai-cli-gateway-linux-arm64` |",
+		"| Windows x86-64 | `win32-x64` | `@krkarma777/ai-cli-gateway-win32-x64` |",
 	}
 }
 
@@ -1623,11 +1649,11 @@ func releaseNotesNPMTargetTable() []string {
 	return []string{
 		"| npm target | Native package | npm host constraint |",
 		"|---|---|---|",
-		"| `darwin-x64` | `ai-cli-gateway-darwin-x64` | `darwin` / `x64` |",
-		"| `darwin-arm64` | `ai-cli-gateway-darwin-arm64` | `darwin` / `arm64` |",
-		"| `linux-x64` | `ai-cli-gateway-linux-x64` | `linux` / `x64` |",
-		"| `linux-arm64` | `ai-cli-gateway-linux-arm64` | `linux` / `arm64` |",
-		"| `win32-x64` | `ai-cli-gateway-win32-x64` | `win32` / `x64` |",
+		"| `darwin-x64` | `@krkarma777/ai-cli-gateway-darwin-x64` | `darwin` / `x64` |",
+		"| `darwin-arm64` | `@krkarma777/ai-cli-gateway-darwin-arm64` | `darwin` / `arm64` |",
+		"| `linux-x64` | `@krkarma777/ai-cli-gateway-linux-x64` | `linux` / `x64` |",
+		"| `linux-arm64` | `@krkarma777/ai-cli-gateway-linux-arm64` | `linux` / `arm64` |",
+		"| `win32-x64` | `@krkarma777/ai-cli-gateway-win32-x64` | `win32` / `x64` |",
 	}
 }
 
@@ -5235,7 +5261,8 @@ func requireSystemdAssignment(t *testing.T, assignments map[string][]string, key
 
 func TestWorkflowMultiPlatformReleaseContract(t *testing.T) {
 	workflow := string(readRepositoryFile(t, ".github/workflows/ci.yml"))
-	if err := validateSDKCIWorkflowContract(workflow); err != nil {
+	windowsLauncherVerifier := string(readRepositoryFile(t, "npm/scripts/verify-windows-launcher.ps1"))
+	if err := validateSDKCIWorkflowContract(workflow, windowsLauncherVerifier); err != nil {
 		t.Fatalf("CI SDK contract: %v", err)
 	}
 	if strings.Contains(workflow, "pull_request_target") {
@@ -5519,7 +5546,8 @@ func isolatedInvocationEnvironmentNames(helper, executableLine string) ([]string
 
 func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 	workflow := string(readRepositoryFile(t, ".github/workflows/ci.yml"))
-	if err := validateSDKCIWorkflowContract(workflow); err != nil {
+	windowsLauncherVerifier := string(readRepositoryFile(t, "npm/scripts/verify-windows-launcher.ps1"))
+	if err := validateSDKCIWorkflowContract(workflow, windowsLauncherVerifier); err != nil {
 		t.Fatalf("base CI SDK contract must be valid before mutation checks: %v", err)
 	}
 
@@ -5901,6 +5929,20 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			mutate: replaceCINth(setupNodeAction, "actions/setup-node@v7", 3),
 		},
 		{
+			name: "npm host checkout made shallow",
+			mutate: replaceCIOnce(
+				"          fetch-depth: 0\n",
+				"          fetch-depth: 1\n",
+			),
+		},
+		{
+			name: "npm host checkout ref made mutable",
+			mutate: replaceCIOnce(
+				"          ref: ${{ github.sha }}\n",
+				"          ref: main\n",
+			),
+		},
+		{
 			name: "npm host execution skipped",
 			mutate: replaceCIOnce(
 				`          version_output="$("${SHIM}" version)"`,
@@ -5931,6 +5973,76 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 		{
 			name:   "npm host release version changed",
 			mutate: replaceCIOnce("          TAG=v0.2.1\n", "          TAG=v0.2.2\n"),
+		},
+		{
+			name: "npm host immutable commit replaced with recovery commit",
+			mutate: replaceCIOnce(
+				"          TAG_COMMIT=7d5cf2911b3394e564842697b03b1fc9a1162630\n",
+				"          TAG_COMMIT=\"${GITHUB_SHA}\"\n",
+			),
+		},
+		{
+			name: "npm host tag resolution check removed",
+			mutate: replaceCIOnce(
+				`          test "$(git -C "${GITHUB_WORKSPACE}" rev-parse --verify "refs/tags/${TAG}^{commit}")" = "${TAG_COMMIT}"`+"\n",
+				"",
+			),
+		},
+		{
+			name: "npm host detached worktree disabled",
+			mutate: replaceCIOnce(
+				`          git -C "${GITHUB_WORKSPACE}" worktree add --detach "${RELEASE_SOURCE}" "${TAG_COMMIT}"`,
+				`          git -C "${GITHUB_WORKSPACE}" worktree add "${RELEASE_SOURCE}" "${TAG_COMMIT}"`,
+			),
+		},
+		{
+			name: "npm host build uses recovery source",
+			mutate: replaceCIOnce(
+				`          go -C "${RELEASE_SOURCE}" build -trimpath`,
+				`          go -C "${GITHUB_WORKSPACE}" build -trimpath`,
+			),
+		},
+		{
+			name: "npm host build date uses recovery source",
+			mutate: replaceCIOnce(
+				`          source_epoch="$(git -C "${RELEASE_SOURCE}" show -s --format=%ct HEAD)"`,
+				`          source_epoch="$(git -C "${GITHUB_WORKSPACE}" show -s --format=%ct HEAD)"`,
+			),
+		},
+		{
+			name: "npm Windows launcher step removed",
+			mutate: func(document string) string {
+				step := "      " + strings.ReplaceAll(npmWindowsLauncherStepContract(), "\n", "\n      ") + "\n"
+				return strings.Replace(document, step, "", 1)
+			},
+		},
+		{
+			name: "npm Windows launcher condition widened",
+			mutate: replaceCIOnce(
+				"        if: runner.os == 'Windows'\n",
+				"        if: runner.os == 'Windows' || runner.os == 'Linux'\n",
+			),
+		},
+		{
+			name: "npm Windows launcher verifier renamed",
+			mutate: replaceCIOnce(
+				"./npm/scripts/verify-windows-launcher.ps1",
+				"./npm/scripts/verify-windows-shims.ps1",
+			),
+		},
+		{
+			name: "npm Windows launcher expected commit made mutable",
+			mutate: replaceCIOnce(
+				"          EXPECTED_COMMIT: 7d5cf2911b3394e564842697b03b1fc9a1162630\n",
+				"          EXPECTED_COMMIT: ${{ github.sha }}\n",
+			),
+		},
+		{
+			name: "npm Windows launcher commit argument rebound",
+			mutate: replaceCIOnce(
+				"            -ExpectedCommit $env:EXPECTED_COMMIT\n",
+				"            -ExpectedCommit $env:GITHUB_SHA\n",
+			),
 		},
 		{
 			name: "wrong npm prefix",
@@ -6086,14 +6198,295 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			if mutated == workflow {
 				t.Fatal("mutation did not change the workflow fixture")
 			}
-			if err := validateSDKCIWorkflowContract(mutated); err == nil {
+			if err := validateSDKCIWorkflowContract(mutated, windowsLauncherVerifier); err == nil {
 				t.Fatal("CI SDK contract accepted the mutation")
+			}
+		})
+	}
+
+	verifierTests := []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{
+			name: "Windows verifier omits cmd shim",
+			mutate: func(source string) string {
+				return strings.ReplaceAll(
+					source,
+					"Invoke-Shim 'cmd' $CmdShim",
+					"Invoke-Shim 'powershell' $PowerShellShim",
+				)
+			},
+		},
+		{
+			name: "Windows verifier omits PowerShell shim",
+			mutate: func(source string) string {
+				return strings.ReplaceAll(
+					source,
+					"Invoke-Shim 'powershell' $PowerShellShim",
+					"Invoke-Shim 'cmd' $CmdShim",
+				)
+			},
+		},
+		{
+			name: "Windows verifier accepts invalid command exit zero",
+			mutate: replaceCIOnce(
+				"$Result.Status -ne 2",
+				"$Result.Status -ne 0",
+			),
+		},
+		{
+			name: "Windows verifier omits root guard",
+			mutate: replaceCIOnce(
+				"$RootItem = Get-Item -LiteralPath $ResolvedPrefix -Force\n"+
+					"if (-not $RootItem.PSIsContainer -or\n"+
+					"    ($RootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or\n"+
+					"    -not [string]::IsNullOrEmpty([string]$RootItem.LinkType)) {\n"+
+					"  throw 'windows launcher verification failed'\n"+
+					"}\n\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier bypasses root container requirement",
+			mutate: replaceCIOnce(
+				"if (-not $RootItem.PSIsContainer -or",
+				"if ($false -or",
+			),
+		},
+		{
+			name: "Windows verifier bypasses root reparse attribute rejection",
+			mutate: replaceCIOnce(
+				"    ($RootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or",
+				"    $false -or",
+			),
+		},
+		{
+			name: "Windows verifier bypasses root link-type rejection",
+			mutate: replaceCIOnce(
+				"    -not [string]::IsNullOrEmpty([string]$RootItem.LinkType)) {",
+				"    $false) {",
+			),
+		},
+		{
+			name: "Windows verifier moves root guard after first child access",
+			mutate: func(source string) string {
+				guard := strings.Join([]string{
+					"$RootItem = Get-Item -LiteralPath $ResolvedPrefix -Force",
+					"if (-not $RootItem.PSIsContainer -or",
+					"    ($RootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or",
+					"    -not [string]::IsNullOrEmpty([string]$RootItem.LinkType)) {",
+					"  throw 'windows launcher verification failed'",
+					"}",
+				}, "\n") + "\n\n"
+				withoutGuard := strings.Replace(source, guard, "", 1)
+				if withoutGuard == source {
+					return source
+				}
+				childAccess := "  $Item = Get-Item -LiteralPath $Shim -Force\n"
+				return strings.Replace(withoutGuard, childAccess, childAccess+guard, 1)
+			},
+		},
+		{
+			name: "Windows verifier bypasses file content hashing",
+			mutate: replaceCIOnce(
+				"$HashBytes = $SHA256.ComputeHash($Stream)",
+				"$HashBytes = [byte[]]::new(32)",
+			),
+		},
+		{
+			name: "Windows verifier substitutes non-SHA-256 digest",
+			mutate: replaceCIOnce(
+				"$SHA256 = [Security.Cryptography.SHA256]::Create()",
+				"$SHA256 = [Security.Cryptography.MD5]::Create()",
+			),
+		},
+		{
+			name: "Windows verifier omits file length",
+			mutate: replaceCIOnce(
+				"$Entry += '|length=' + $Length + '|sha256=' + $Hash",
+				"$Entry += '|sha256=' + $Hash",
+			),
+		},
+		{
+			name: "Windows verifier omits entry kind",
+			mutate: replaceCIOnce(
+				"      'kind=' + $Kind\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier omits relative path length",
+			mutate: replaceCIOnce(
+				"      'pathLength=' + $RelativePathLength\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier omits relative path",
+			mutate: replaceCIOnce(
+				"      'path=' + $RelativePath\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier omits stable attributes",
+			mutate: replaceCIOnce(
+				"  'attributes=' + $Attributes\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier omits creation timestamp",
+			mutate: replaceCIOnce(
+				"  'creationTimeUtcTicks=' + $CreationTimeUtcTicks\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier omits last-write timestamp",
+			mutate: replaceCIOnce(
+				"  'lastWriteTimeUtcTicks=' + $LastWriteTimeUtcTicks\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier substitutes last-access timestamp",
+			mutate: replaceCIOnce(
+				"$Item.LastWriteTimeUtc.Ticks",
+				"$Item.LastAccessTimeUtc.Ticks",
+			),
+		},
+		{
+			name: "Windows verifier bypasses reparse attribute rejection",
+			mutate: replaceCIOnce(
+				"if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or",
+				"if ($false -or",
+			),
+		},
+		{
+			name: "Windows verifier bypasses link-type rejection",
+			mutate: replaceCIOnce(
+				"    if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or\n"+
+					"        -not [string]::IsNullOrEmpty([string]$Item.LinkType)) {",
+				"    if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or\n"+
+					"        $false) {",
+			),
+		},
+		{
+			name: "Windows verifier omits installation root metadata",
+			mutate: replaceCIOnce(
+				"  $Pending.Push($ResolvedPrefix)",
+				"  foreach ($Child in Get-ChildItem -LiteralPath $ResolvedPrefix -Force) {\n"+
+					"    $Pending.Push($Child.FullName)\n"+
+					"  }",
+			),
+		},
+		{
+			name: "Windows verifier replaces guarded stack with recursive traversal",
+			mutate: func(source string) string {
+				mutated := strings.Replace(
+					source,
+					"  $Pending = [Collections.Generic.Stack[string]]::new()\n"+
+						"  $Pending.Push($ResolvedPrefix)\n"+
+						"  while ($Pending.Count -ne 0) {\n"+
+						"    $CurrentPath = $Pending.Pop()\n"+
+						"    $Item = Get-Item -LiteralPath $CurrentPath -Force\n",
+					"  foreach ($Item in Get-ChildItem -LiteralPath $ResolvedPrefix -Force -Recurse) {\n",
+					1,
+				)
+				return strings.Replace(
+					mutated,
+					"      $Kind = 'directory'\n"+
+						"      foreach ($Child in Get-ChildItem -LiteralPath $Item.FullName -Force) {\n"+
+						"        $Pending.Push($Child.FullName)\n"+
+						"      }\n",
+					"      $Kind = 'directory'\n",
+					1,
+				)
+			},
+		},
+		{
+			name: "Windows verifier uses culture-sensitive numeric formatting",
+			mutate: replaceCIOnce(
+				"[Globalization.CultureInfo]::InvariantCulture",
+				"[Globalization.CultureInfo]::CurrentCulture",
+			),
+		},
+		{
+			name: "Windows verifier uses culture-sensitive sorting",
+			mutate: replaceCIOnce(
+				"$Entries.Sort([StringComparer]::Ordinal)",
+				"$Entries.Sort()",
+			),
+		},
+		{
+			name: "Windows verifier uses culture-sensitive snapshot comparison",
+			mutate: replaceCIOnce(
+				"[StringComparison]::Ordinal",
+				"[StringComparison]::CurrentCulture",
+			),
+		},
+		{
+			name: "Windows verifier omits snapshot entry count check",
+			mutate: replaceCIOnce(
+				"  if ($ActualEntries.Count -ne $ExpectedEntries.Count) {\n"+
+					"    throw 'windows launcher verification failed'\n"+
+					"  }\n",
+				"",
+			),
+		},
+		{
+			name: "Windows verifier bypasses ordinal entry equality",
+			mutate: replaceCIOnce(
+				"    if (-not [string]::Equals(",
+				"    if ($false -and [string]::Equals(",
+			),
+		},
+		{
+			name: "Windows verifier omits cmd version integrity assertion",
+			mutate: replaceCIOnce(
+				"$CmdVersionResult = Invoke-Shim 'cmd' $CmdShim 'version'\nAssert-EntrySnapshot\n",
+				"$CmdVersionResult = Invoke-Shim 'cmd' $CmdShim 'version'\n",
+			),
+		},
+		{
+			name: "Windows verifier omits PowerShell version integrity assertion",
+			mutate: replaceCIOnce(
+				"$PowerShellVersionResult = Invoke-Shim 'powershell' $PowerShellShim 'version'\nAssert-EntrySnapshot\n",
+				"$PowerShellVersionResult = Invoke-Shim 'powershell' $PowerShellShim 'version'\n",
+			),
+		},
+		{
+			name: "Windows verifier omits cmd invalid-command integrity assertion",
+			mutate: replaceCIOnce(
+				"$CmdInvalidResult = Invoke-Shim 'cmd' $CmdShim '__launcher_exit_probe__'\nAssert-EntrySnapshot\n",
+				"$CmdInvalidResult = Invoke-Shim 'cmd' $CmdShim '__launcher_exit_probe__'\n",
+			),
+		},
+		{
+			name: "Windows verifier omits PowerShell invalid-command integrity assertion",
+			mutate: replaceCIOnce(
+				"$PowerShellInvalidResult = Invoke-Shim 'powershell' $PowerShellShim '__launcher_exit_probe__'\nAssert-EntrySnapshot\n",
+				"$PowerShellInvalidResult = Invoke-Shim 'powershell' $PowerShellShim '__launcher_exit_probe__'\n",
+			),
+		},
+	}
+
+	for _, test := range verifierTests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := test.mutate(windowsLauncherVerifier)
+			if mutated == windowsLauncherVerifier {
+				t.Fatal("mutation did not change the Windows launcher verifier fixture")
+			}
+			if err := validateSDKCIWorkflowContract(workflow, mutated); err == nil {
+				t.Fatal("CI SDK contract accepted the Windows launcher verifier mutation")
 			}
 		})
 	}
 }
 
-func validateSDKCIWorkflowContract(workflow string) error {
+func validateSDKCIWorkflowContract(workflow, windowsLauncherVerifier string) error {
 	topLevelFields, err := parseImmediateYAMLFields(workflow, 0)
 	if err != nil {
 		return fmt.Errorf("top-level workflow: %w", err)
@@ -6180,6 +6573,9 @@ func validateSDKCIWorkflowContract(workflow string) error {
 			}
 		}
 	}
+	if windowsLauncherVerifier != windowsLauncherVerifierContract() {
+		return errors.New("Windows npm launcher verifier differs from the closed source contract")
+	}
 	return nil
 }
 
@@ -6191,6 +6587,14 @@ type ciWorkflowJobContract struct {
 
 func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 	checkout := "- uses: " + checkoutAction
+	npmHostCheckout := yamlContractLines(
+		"- uses: "+checkoutAction,
+		"  with:",
+		"    persist-credentials: false",
+		"    fetch-depth: 0",
+		"    fetch-tags: true",
+		"    ref: ${{ github.sha }}",
+	)
 	setupGo := yamlContractLines(
 		"- uses: "+setupGoAction,
 		"  with:",
@@ -6442,7 +6846,7 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 				"        executable: ai-cli-gateway.exe",
 			},
 			steps: []string{
-				checkout,
+				npmHostCheckout,
 				yamlContractLines(
 					"- uses: "+setupGoAction,
 					"  with:",
@@ -6456,9 +6860,262 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 					"    package-manager-cache: false",
 				),
 				npmHostInstallStepContract(),
+				npmWindowsLauncherStepContract(),
 			},
 		},
 	}
+}
+
+func npmWindowsLauncherStepContract() string {
+	return yamlContractLines(
+		"- name: Verify native Windows npm shims",
+		"  if: runner.os == 'Windows'",
+		"  shell: pwsh",
+		"  env:",
+		"    EXPECTED_TAG: v0.2.1",
+		"    EXPECTED_COMMIT: 7d5cf2911b3394e564842697b03b1fc9a1162630",
+		"  run: |",
+		`    $ErrorActionPreference = "Stop"`,
+		"    $InstallPrefix = [IO.Path]::GetFullPath(",
+		`      (Join-Path $env:RUNNER_TEMP "npm-host-install/install")`,
+		"    )",
+		"    ./npm/scripts/verify-windows-launcher.ps1 `",
+		"      -InstallPrefix $InstallPrefix `",
+		"      -ExpectedTag $env:EXPECTED_TAG `",
+		"      -ExpectedCommit $env:EXPECTED_COMMIT",
+	)
+}
+
+func windowsLauncherVerifierContract() string {
+	return strings.Join([]string{
+		"[CmdletBinding()]",
+		"param(",
+		"  [Parameter(Mandatory = $true)]",
+		"  [string]$InstallPrefix,",
+		"",
+		"  [Parameter(Mandatory = $true)]",
+		`  [ValidatePattern('^v(?:0|[1-9][0-9]*)[.](?:0|[1-9][0-9]*)[.](?:0|[1-9][0-9]*)$')]`,
+		"  [string]$ExpectedTag,",
+		"",
+		"  [Parameter(Mandatory = $true)]",
+		`  [ValidatePattern('^[0-9a-f]{40}$')]`,
+		"  [string]$ExpectedCommit",
+		")",
+		"",
+		"Set-StrictMode -Version Latest",
+		"$ErrorActionPreference = 'Stop'",
+		"",
+		"$ResolvedPrefix = [IO.Path]::GetFullPath($InstallPrefix)",
+		"if (-not [IO.Path]::IsPathFullyQualified($InstallPrefix) -or",
+		"    $ResolvedPrefix -cne $InstallPrefix) {",
+		"  throw 'windows launcher verification failed'",
+		"}",
+		"",
+		"$RootItem = Get-Item -LiteralPath $ResolvedPrefix -Force",
+		"if (-not $RootItem.PSIsContainer -or",
+		"    ($RootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or",
+		"    -not [string]::IsNullOrEmpty([string]$RootItem.LinkType)) {",
+		"  throw 'windows launcher verification failed'",
+		"}",
+		"",
+		"$CmdShim = Join-Path $ResolvedPrefix 'ai-cli-gateway.cmd'",
+		"$PowerShellShim = Join-Path $ResolvedPrefix 'ai-cli-gateway.ps1'",
+		"$CmdPath = [IO.Path]::GetFullPath($env:ComSpec)",
+		"$PowerShellPath = [IO.Path]::GetFullPath((Get-Process -Id $PID).Path)",
+		"foreach ($Shim in @($CmdShim, $PowerShellShim)) {",
+		"  $Item = Get-Item -LiteralPath $Shim -Force",
+		"  if ($Item.PSIsContainer -or",
+		"      -not [string]::IsNullOrEmpty([string]$Item.LinkType)) {",
+		"    throw 'windows launcher verification failed'",
+		"  }",
+		"}",
+		"",
+		"function Get-EntrySnapshot {",
+		"  $Entries = [Collections.Generic.List[string]]::new()",
+		"  $Pending = [Collections.Generic.Stack[string]]::new()",
+		"  $Pending.Push($ResolvedPrefix)",
+		"  while ($Pending.Count -ne 0) {",
+		"    $CurrentPath = $Pending.Pop()",
+		"    $Item = Get-Item -LiteralPath $CurrentPath -Force",
+		"    if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or",
+		"        -not [string]::IsNullOrEmpty([string]$Item.LinkType)) {",
+		"      throw 'windows launcher verification failed'",
+		"    }",
+		"",
+		"    if ($Item.PSIsContainer) {",
+		"      $Kind = 'directory'",
+		"      foreach ($Child in Get-ChildItem -LiteralPath $Item.FullName -Force) {",
+		"        $Pending.Push($Child.FullName)",
+		"      }",
+		"    } else {",
+		"      $Kind = 'file'",
+		"    }",
+		"",
+		"    $RelativePath = [IO.Path]::GetRelativePath($ResolvedPrefix, $Item.FullName)",
+		"    $RelativePathLength = ([int]$RelativePath.Length).ToString(",
+		"      [Globalization.CultureInfo]::InvariantCulture",
+		"    )",
+		"    $Attributes = ([uint32]$Item.Attributes).ToString(",
+		"      [Globalization.CultureInfo]::InvariantCulture",
+		"    )",
+		"    $CreationTimeUtcTicks = ([int64]$Item.CreationTimeUtc.Ticks).ToString(",
+		"      [Globalization.CultureInfo]::InvariantCulture",
+		"    )",
+		"    $LastWriteTimeUtcTicks = ([int64]$Item.LastWriteTimeUtc.Ticks).ToString(",
+		"      [Globalization.CultureInfo]::InvariantCulture",
+		"    )",
+		"    $Entry = @(",
+		"      'kind=' + $Kind",
+		"      'pathLength=' + $RelativePathLength",
+		"      'path=' + $RelativePath",
+		"      'attributes=' + $Attributes",
+		"      'creationTimeUtcTicks=' + $CreationTimeUtcTicks",
+		"      'lastWriteTimeUtcTicks=' + $LastWriteTimeUtcTicks",
+		"    ) -join '|'",
+		"",
+		"    if ($Kind -ceq 'file') {",
+		"      $SHA256 = [Security.Cryptography.SHA256]::Create()",
+		"      $Stream = $null",
+		"      try {",
+		"        $Stream = [IO.File]::Open(",
+		"          $Item.FullName,",
+		"          [IO.FileMode]::Open,",
+		"          [IO.FileAccess]::Read,",
+		"          [IO.FileShare]::Read",
+		"        )",
+		"        $Length = ([int64]$Stream.Length).ToString(",
+		"          [Globalization.CultureInfo]::InvariantCulture",
+		"        )",
+		"        $HashBytes = $SHA256.ComputeHash($Stream)",
+		"        $Hash = [Convert]::ToHexString($HashBytes).ToLowerInvariant()",
+		"      } finally {",
+		"        if ($null -ne $Stream) {",
+		"          $Stream.Dispose()",
+		"        }",
+		"        $SHA256.Dispose()",
+		"      }",
+		"      $Entry += '|length=' + $Length + '|sha256=' + $Hash",
+		"    }",
+		"    $Entries.Add($Entry)",
+		"  }",
+		"  $Entries.Sort([StringComparer]::Ordinal)",
+		"  return @($Entries)",
+		"}",
+		"",
+		"$ExpectedEntries = @(Get-EntrySnapshot)",
+		"function Assert-EntrySnapshot {",
+		"  $ActualEntries = @(Get-EntrySnapshot)",
+		"  if ($ActualEntries.Count -ne $ExpectedEntries.Count) {",
+		"    throw 'windows launcher verification failed'",
+		"  }",
+		"  for ($Index = 0; $Index -lt $ExpectedEntries.Count; $Index++) {",
+		"    if (-not [string]::Equals(",
+		"      $ExpectedEntries[$Index],",
+		"      $ActualEntries[$Index],",
+		"      [StringComparison]::Ordinal",
+		"    )) {",
+		"      throw 'windows launcher verification failed'",
+		"    }",
+		"  }",
+		"}",
+		"",
+		"function Invoke-Shim(",
+		"  [ValidateSet('cmd', 'powershell')]",
+		"  [string]$Kind,",
+		"  [string]$Shim,",
+		"  [string]$Argument",
+		") {",
+		"  $StartInfo = [Diagnostics.ProcessStartInfo]::new()",
+		"  $StartInfo.UseShellExecute = $false",
+		"  $StartInfo.CreateNoWindow = $true",
+		"  $StartInfo.RedirectStandardOutput = $true",
+		"  $StartInfo.RedirectStandardError = $true",
+		"  if ($Kind -ceq 'cmd') {",
+		"    $StartInfo.FileName = $CmdPath",
+		"    foreach ($Value in @('/d', '/s', '/c', 'call', $Shim, $Argument)) {",
+		"      $StartInfo.ArgumentList.Add($Value)",
+		"    }",
+		"  } else {",
+		"    $StartInfo.FileName = $PowerShellPath",
+		"    foreach ($Value in @(",
+		"      '-NoLogo',",
+		"      '-NoProfile',",
+		"      '-NonInteractive',",
+		"      '-File',",
+		"      $Shim,",
+		"      $Argument",
+		"    )) {",
+		"      $StartInfo.ArgumentList.Add($Value)",
+		"    }",
+		"  }",
+		"",
+		"  $Process = [Diagnostics.Process]::new()",
+		"  $Process.StartInfo = $StartInfo",
+		"  try {",
+		"    if (-not $Process.Start()) {",
+		"      throw 'windows launcher verification failed'",
+		"    }",
+		"    $StdoutTask = $Process.StandardOutput.ReadToEndAsync()",
+		"    $StderrTask = $Process.StandardError.ReadToEndAsync()",
+		"    $Process.WaitForExit()",
+		"    $Stdout = $StdoutTask.GetAwaiter().GetResult().Replace(\"`r`n\", \"`n\")",
+		"    $Stderr = $StderrTask.GetAwaiter().GetResult().Replace(\"`r`n\", \"`n\")",
+		"    return [PSCustomObject]@{",
+		"      Status = $Process.ExitCode",
+		"      Stdout = $Stdout",
+		"      Stderr = $Stderr",
+		"    }",
+		"  } finally {",
+		"    $Process.Dispose()",
+		"  }",
+		"}",
+		"",
+		"function Assert-VersionResult([PSCustomObject]$Result) {",
+		"  if ($Result.Status -ne 0 -or $Result.Stderr -cne '') {",
+		"    throw 'windows launcher verification failed'",
+		"  }",
+		"  $Value = $Result.Stdout.TrimEnd(\"`r\", \"`n\")",
+		"  $Pattern = '^ai-cli-gateway ' +",
+		"    [Regex]::Escape($ExpectedTag) +",
+		"    ' [(]' +",
+		"    [Regex]::Escape($ExpectedCommit) +",
+		"    ', [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z[)]$'",
+		"  if ($Value -cnotmatch $Pattern) {",
+		"    throw 'windows launcher verification failed'",
+		"  }",
+		"  return $Value",
+		"}",
+		"",
+		"$CmdVersionResult = Invoke-Shim 'cmd' $CmdShim 'version'",
+		"Assert-EntrySnapshot",
+		"$CmdVersion = Assert-VersionResult $CmdVersionResult",
+		"$PowerShellVersionResult = Invoke-Shim 'powershell' $PowerShellShim 'version'",
+		"Assert-EntrySnapshot",
+		"$PowerShellVersion = Assert-VersionResult $PowerShellVersionResult",
+		"if ($CmdVersion -cne $PowerShellVersion) {",
+		"  throw 'windows launcher verification failed'",
+		"}",
+		"",
+		"function Assert-InvalidResult([PSCustomObject]$Result) {",
+		"  $Usage = \"usage:`n\" +",
+		"    \"  ai-cli-gateway version`n\" +",
+		"    \"  ai-cli-gateway init [OPTIONS]`n\" +",
+		"    \"  ai-cli-gateway serve [--config PATH]`n\" +",
+		"    \"  ai-cli-gateway doctor [--config PATH] [--json]`n\"",
+		"  if ($Result.Status -ne 2 -or",
+		"      $Result.Stdout -cne '' -or",
+		"      $Result.Stderr -cne $Usage) {",
+		"    throw 'windows launcher verification failed'",
+		"  }",
+		"}",
+		"",
+		"$CmdInvalidResult = Invoke-Shim 'cmd' $CmdShim '__launcher_exit_probe__'",
+		"Assert-EntrySnapshot",
+		"Assert-InvalidResult $CmdInvalidResult",
+		"$PowerShellInvalidResult = Invoke-Shim 'powershell' $PowerShellShim '__launcher_exit_probe__'",
+		"Assert-EntrySnapshot",
+		"Assert-InvalidResult $PowerShellInvalidResult",
+	}, "\n") + "\n"
 }
 
 func npmHostInstallStepContract() string {
@@ -6475,12 +7132,12 @@ func npmHostInstallStepContract() string {
 		"    set -euo pipefail",
 		"    umask 077",
 		"    TAG=v0.2.1",
-		`    TAG_COMMIT="${GITHUB_SHA}"`,
-		`    [[ "${TAG_COMMIT}" =~ ^[0-9a-f]{40}$ ]]`,
-		`    source_epoch="$(git show -s --format=%ct "${TAG_COMMIT}")"`,
-		`    [[ "${source_epoch}" =~ ^[0-9]+$ ]]`,
-		`    source_date="$(node -e 'process.stdout.write(new Date(Number(process.argv[1]) * 1000).toISOString().replace(".000Z", "Z"))' "${source_epoch}")"`,
-		`    [[ "${source_date}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]`,
+		"    TAG_COMMIT=7d5cf2911b3394e564842697b03b1fc9a1162630",
+		`    [[ "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]]`,
+		`    test "$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" = "${GITHUB_SHA}"`,
+		`    test "$(git -C "${GITHUB_WORKSPACE}" rev-parse --verify "refs/tags/${TAG}^{commit}")" = "${TAG_COMMIT}"`,
+		`    git -C "${GITHUB_WORKSPACE}" merge-base --is-ancestor "${TAG_COMMIT}" "${GITHUB_SHA}"`,
+		`    test -z "$(git -C "${GITHUB_WORKSPACE}" status --porcelain)"`,
 		"    canonical_child() {",
 		`      node -e 'const path = require("node:path"); process.stdout.write(path.resolve(process.argv[1], process.argv[2]));' "$1" "$2"`,
 		"    }",
@@ -6509,14 +7166,24 @@ func npmHostInstallStepContract() string {
 		`    NPM_TARBALL_ROOT="$(canonical_child "${NPM_JOB_PARENT}" tarballs)"`,
 		`    NPM_INSTALL_PREFIX="$(canonical_child "${NPM_JOB_PARENT}" install)"`,
 		`    DESCRIPTOR="$(canonical_child "${NPM_TARBALL_ROOT}" packages.json)"`,
+		`    RELEASE_SOURCE="$(canonical_child "${RUNNER_TEMP}" npm-v0.2.1-host-source)"`,
 		`    node -e 'const fs = require("node:fs"); for (const directory of process.argv.slice(1)) { if (fs.existsSync(directory)) process.exit(1); fs.mkdirSync(directory, { mode: 0o700 }); fs.chmodSync(directory, 0o700); const metadata = fs.lstatSync(directory); if (!metadata.isDirectory() || metadata.isSymbolicLink() || (process.platform !== "win32" && (metadata.mode & 0o777) !== 0o700) || (typeof process.getuid === "function" && metadata.uid !== process.getuid())) process.exit(1); }' \`,
 		`      "${NPM_JOB_PARENT}" \`,
 		`      "${BINARY_ROOT}" \`,
 		`      "${BINARY_DIRECTORY}" \`,
 		`      "${NPM_TARBALL_ROOT}" \`,
 		`      "${NPM_INSTALL_PREFIX}"`,
+		`    test ! -e "${RELEASE_SOURCE}"`,
+		`    git -C "${GITHUB_WORKSPACE}" worktree add --detach "${RELEASE_SOURCE}" "${TAG_COMMIT}"`,
+		`    test "$(git -C "${RELEASE_SOURCE}" rev-parse HEAD)" = "${TAG_COMMIT}"`,
+		`    test -z "$(git -C "${RELEASE_SOURCE}" branch --show-current)"`,
+		`    test -z "$(git -C "${RELEASE_SOURCE}" status --porcelain)"`,
+		`    source_epoch="$(git -C "${RELEASE_SOURCE}" show -s --format=%ct HEAD)"`,
+		`    [[ "${source_epoch}" =~ ^[0-9]+$ ]]`,
+		`    source_date="$(node -e 'process.stdout.write(new Date(Number(process.argv[1]) * 1000).toISOString().replace(".000Z", "Z"))' "${source_epoch}")"`,
+		`    [[ "${source_date}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]`,
 		`    ldflags="-s -w -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Version=${TAG} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Commit=${TAG_COMMIT} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Date=${source_date}"`,
-		`    go build -trimpath -buildvcs=false -mod=readonly -ldflags "${ldflags}" \`,
+		`    go -C "${RELEASE_SOURCE}" build -trimpath -buildvcs=false -mod=readonly -ldflags "${ldflags}" \`,
 		`      -o "${BINARY_PATH}" ./cmd/ai-cli-gateway`,
 		`    node npm/scripts/stage-packages.js \`,
 		`      --repository-root "${GITHUB_WORKSPACE}" \`,
@@ -6530,7 +7197,7 @@ func npmHostInstallStepContract() string {
 		`      --descriptor "${DESCRIPTOR}" \`,
 		`      --version 0.2.1`,
 		"    package_filename() {",
-		`      node -e 'const fs = require("node:fs"); const packages = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const index = Number(process.argv[2]); const target = process.argv[3]; if (!Array.isArray(packages) || packages.length !== 2 || packages[0].name !== "ai-cli-gateway-" + target || packages[1].name !== "ai-cli-gateway" || (index !== 0 && index !== 1)) process.exit(1); process.stdout.write(packages[index].filename);' "${DESCRIPTOR}" "$1" "${NPM_TARGET}"`,
+		`      node -e 'const fs = require("node:fs"); const packages = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const index = Number(process.argv[2]); const target = process.argv[3]; if (!Array.isArray(packages) || packages.length !== 2 || packages[0].name !== "@krkarma777/ai-cli-gateway-" + target || packages[1].name !== "ai-cli-gateway" || (index !== 0 && index !== 1)) process.exit(1); process.stdout.write(packages[index].filename);' "${DESCRIPTOR}" "$1" "${NPM_TARGET}"`,
 		"    }",
 		`    NATIVE_FILENAME="$(package_filename 0)"`,
 		`    LAUNCHER_FILENAME="$(package_filename 1)"`,
@@ -6792,7 +7459,7 @@ func validateYAMLStepFields(step string) error {
 	}
 	fieldPattern := regexp.MustCompile(`^([A-Za-z0-9_-]+):(?:\s*(.*))?$`)
 	allowedFields := map[string]struct{}{
-		"name": {}, "uses": {}, "with": {}, "env": {}, "shell": {}, "run": {},
+		"name": {}, "uses": {}, "if": {}, "with": {}, "env": {}, "shell": {}, "run": {},
 	}
 	fields := make(map[string]struct{})
 	addField := func(fieldLine string) error {
@@ -7156,9 +7823,12 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "wrong node version", mutate: replaceNPMReleaseOnce("          node-version: \"24.13.0\"\n", "          node-version: latest\n")},
 		{name: "dispatch event guard removed", mutate: replaceNPMReleaseOnce("          test \"${EVENT_NAME}\" = workflow_dispatch\n", "")},
 		{name: "dispatch repository guard removed", mutate: replaceNPMReleaseOnce("          test \"${EVENT_REPOSITORY}\" = \"${repository}\"\n", "")},
-		{name: "recovery branch widened", mutate: replaceNPMReleaseOnce("refs/heads/main) readonly source_mode=recovery ;;", "refs/heads/*) readonly source_mode=recovery ;;")},
-		{name: "recovery main head guard removed", mutate: replaceNPMReleaseOnce("            test \"${live_main}\" = \"${EVENT_SHA}\"\n", "")},
-		{name: "tag source SHA guard removed", mutate: replaceNPMReleaseOnce("            test \"${EVENT_SHA}\" = \"${tag_commit}\"\n", "")},
+		{name: "recovery branch widened", mutate: replaceNPMReleaseOnce("          test \"${EVENT_REF}\" = refs/heads/main\n", "          [[ \"${EVENT_REF}\" = refs/heads/* ]]\n")},
+		{name: "recovery main head guard removed", mutate: replaceNPMReleaseOnce("          test \"${live_main}\" = \"${EVENT_SHA}\"\n", "")},
+		{name: "package commit output removed", mutate: replaceNPMReleaseOnce("            printf 'package_commit=%s\\n' \"${EVENT_SHA}\"\n", "")},
+		{name: "checkout restored to tag", mutate: replaceNPMReleaseOnce("          ref: ${{ steps.metadata.outputs.package_commit }}\n", "          ref: ${{ steps.metadata.outputs.tag_commit }}\n")},
+		{name: "package source SHA guard removed", mutate: replaceNPMReleaseOnce("          test \"$(git rev-parse HEAD)\" = \"${PACKAGE_COMMIT}\"\n", "")},
+		{name: "tag ancestor guard removed", mutate: replaceNPMReleaseOnce("          git merge-base --is-ancestor \"${TAG_COMMIT}\" \"${PACKAGE_COMMIT}\"\n", "")},
 		{name: "release lookup changed to id input", mutate: replaceNPMReleaseOnce("releases/tags/${INPUT_TAG}", "releases/${INPUT_TAG}")},
 		{name: "immutable guard removed", mutate: replaceNPMReleaseOnce("            (.immutable == true) and\n", "")},
 		{name: "repository authority changed", mutate: replaceNPMReleaseOnce("readonly repository=krkarma777/ai-cli-gateway", "readonly repository=attacker/ai-cli-gateway")},
@@ -7170,9 +7840,17 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "strict checksums removed", mutate: replaceNPMReleaseOnce("sha256sum --check --strict SHA256SUMS", "sha256sum --check SHA256SUMS")},
 		{name: "attestation predicate removed", mutate: replaceNPMReleaseOnce("              --predicate-type https://slsa.dev/provenance/v1 \\\n", "")},
 		{name: "attestation workflow changed", mutate: replaceNPMReleaseOnce("github.com/krkarma777/ai-cli-gateway/.github/workflows/release.yml", "github.com/attacker/workflow.yml")},
+		{name: "release source path changed", mutate: replaceNPMReleaseOnce("          readonly release_source=\"${RUNNER_TEMP}/npm-v0.2.1-release-source\"\n", "          readonly release_source=\"${GITHUB_WORKSPACE}\"\n")},
+		{name: "detached release worktree removed", mutate: replaceNPMReleaseOnce("          git worktree add --detach \"${release_source}\" \"${TAG_COMMIT}\"\n", "")},
+		{name: "release worktree SHA guard removed", mutate: replaceNPMReleaseOnce("          test \"$(git -C \"${release_source}\" rev-parse HEAD)\" = \"${TAG_COMMIT}\"\n", "")},
+		{name: "release worktree clean guard removed", mutate: replaceNPMReleaseOnce("          test -z \"$(git -C \"${release_source}\" status --porcelain)\"\n", "")},
+		{name: "releasepack built from package source", mutate: replaceNPMReleaseOnce("          CGO_ENABLED=0 go -C \"${release_source}\" build -trimpath -buildvcs=false -mod=readonly \\\n", "          CGO_ENABLED=0 go build -trimpath -buildvcs=false -mod=readonly \\\n")},
+		{name: "native binary built from package source", mutate: replaceNPMReleaseOnce("            CGO_ENABLED=0 GOOS=\"${goos}\" GOARCH=\"${goarch}\" go -C \"${release_source}\" build \\\n", "            CGO_ENABLED=0 GOOS=\"${goos}\" GOARCH=\"${goarch}\" go build \\\n")},
+		{name: "releasepack repository root changed", mutate: replaceNPMReleaseOnce("            --repository-root \"${release_source}\" \\\n", "            --repository-root \"${GITHUB_WORKSPACE}\" \\\n")},
 		{name: "deterministic build flag removed", mutate: replaceNPMReleaseOnce("-trimpath -buildvcs=false -mod=readonly -ldflags", "-mod=readonly -ldflags")},
 		{name: "archive comparison removed", mutate: replaceNPMReleaseOnce("          test \"${actual_digest}\" = \"${expected_digest}\"\n", "")},
 		{name: "npm verifier removed", mutate: replaceNPMReleaseOnce("          node npm/scripts/verify-packages.js \\\n", "          true # node npm/scripts/verify-packages.js \\\n")},
+		{name: "npm staging repository changed", mutate: replaceNPMReleaseOnce("            --repository-root \"${GITHUB_WORKSPACE}\" \\\n            --binary-root", "            --repository-root \"${release_source}\" \\\n            --binary-root")},
 		{name: "linux execution removed", mutate: replaceNPMReleaseOnce("          test \"${version_output}\" = \"ai-cli-gateway ${TAG} (${TAG_COMMIT}, ${SOURCE_DATE})\"\n", "")},
 		{name: "artifact overwrite enabled", mutate: replaceNPMReleaseOnce("          overwrite: false\n", "          overwrite: true\n")},
 		{name: "artifact retention widened", mutate: replaceNPMReleaseOnce("          retention-days: 1\n", "          retention-days: 30\n")},
@@ -7183,6 +7861,7 @@ func TestNPMReleaseWorkflowContractRejectsMutations(t *testing.T) {
 		{name: "downloaded descriptor lstat removed", mutate: replaceNPMReleaseOnce("          const descriptorMetadata = lstatSync(descriptorPath);\n", "")},
 		{name: "tarball rehash removed", mutate: replaceNPMReleaseOnce("            test \"${actual_integrity}\" = \"${integrities[${index}]}\"\n", "")},
 		{name: "structured E404 parser removed", mutate: replaceNPMReleaseOnce("          const failure = JSON.parse(readFileSync(process.argv[2], \"utf8\"));\n", "          const failure = { error: { code: \"E404\" } };\n")},
+		{name: "scoped registry encoding removed", mutate: replaceNPMReleaseOnce("          const registryName = packageName.replace(\"/\", \"%2f\");\n", "          const registryName = packageName;\n")},
 		{name: "registry absence widened", mutate: replaceNPMReleaseOnce("grep -Fx 'npm error code E404'", "grep -F 'npm error'")},
 		{name: "publish scripts enabled", mutate: replaceNPMReleaseOnce("npm publish \"${tarball}\" --ignore-scripts --access public --provenance", "npm publish \"${tarball}\" --access public --provenance")},
 		{name: "publish provenance removed", mutate: replaceNPMReleaseOnce(" --access public --provenance", " --access public")},
@@ -7226,22 +7905,22 @@ func replaceNPMReleaseLast(old, replacement string) func(string) string {
 func moveNPMReleaseLauncherFirst(document string) string {
 	nativeFirst := strings.Join([]string{
 		"          packages=(",
-		"            ai-cli-gateway-darwin-x64",
-		"            ai-cli-gateway-darwin-arm64",
-		"            ai-cli-gateway-linux-x64",
-		"            ai-cli-gateway-linux-arm64",
-		"            ai-cli-gateway-win32-x64",
+		"            @krkarma777/ai-cli-gateway-darwin-x64",
+		"            @krkarma777/ai-cli-gateway-darwin-arm64",
+		"            @krkarma777/ai-cli-gateway-linux-x64",
+		"            @krkarma777/ai-cli-gateway-linux-arm64",
+		"            @krkarma777/ai-cli-gateway-win32-x64",
 		"            ai-cli-gateway",
 		"          )",
 	}, "\n") + "\n"
 	launcherFirst := strings.Join([]string{
 		"          packages=(",
 		"            ai-cli-gateway",
-		"            ai-cli-gateway-darwin-x64",
-		"            ai-cli-gateway-darwin-arm64",
-		"            ai-cli-gateway-linux-x64",
-		"            ai-cli-gateway-linux-arm64",
-		"            ai-cli-gateway-win32-x64",
+		"            @krkarma777/ai-cli-gateway-darwin-x64",
+		"            @krkarma777/ai-cli-gateway-darwin-arm64",
+		"            @krkarma777/ai-cli-gateway-linux-x64",
+		"            @krkarma777/ai-cli-gateway-linux-arm64",
+		"            @krkarma777/ai-cli-gateway-win32-x64",
 		"          )",
 	}, "\n") + "\n"
 	return strings.Replace(document, nativeFirst, launcherFirst, 1)
@@ -7480,7 +8159,7 @@ func validateNPMReleaseWorkflowContract(workflow npmReleaseWorkflowDocument) err
 	if err := validateNPMReleaseArtifactDigestContract(publishJob); err != nil {
 		return err
 	}
-	if err := validateNPMReleaseCohortAndE404Contracts(publishJob); err != nil {
+	if err := validateNPMReleaseCohortAndE404Contracts(packageJob, publishJob); err != nil {
 		return err
 	}
 	return validateNPMReleaseRunHashes(packageJob, publishJob)
@@ -7496,14 +8175,14 @@ func validateNPMReleaseDispatchMetadataContract(packageJob releaseWorkflowJob) e
 	wantUnique := []string{
 		`test "${EVENT_NAME}" = workflow_dispatch`,
 		`test "${EVENT_REPOSITORY}" = "${repository}"`,
-		`"refs/tags/${INPUT_TAG}") readonly source_mode=tag ;;`,
-		`refs/heads/main) readonly source_mode=recovery ;;`,
+		`test "${EVENT_REF}" = refs/heads/main`,
+		`test "${INPUT_TAG}" = v0.2.1`,
 		`tag_commit="$(resolve_live_tag)"`,
-		`test "${EVENT_SHA}" = "${tag_commit}"`,
 		`test "${live_main}" = "${EVENT_SHA}"`,
 		`printf 'tag=%s\n' "${INPUT_TAG}"`,
 		`printf 'version=%s\n' "${INPUT_TAG#v}"`,
 		`printf 'tag_commit=%s\n' "${tag_commit}"`,
+		`printf 'package_commit=%s\n' "${EVENT_SHA}"`,
 		`printf 'release_id=%s\n' "${release_id}"`,
 	}
 	for _, line := range wantUnique {
@@ -7511,20 +8190,20 @@ func validateNPMReleaseDispatchMetadataContract(packageJob releaseWorkflowJob) e
 			return fmt.Errorf("npm dispatch metadata line %q is not exact and unique", line)
 		}
 	}
-	if shellLineCount(lines, `test "${INPUT_TAG}" = v0.2.1`) != 2 {
-		return errors.New("npm dispatch metadata must bind both the workflow and recovery path to v0.2.1")
+	if strings.Contains(script, `case "${EVENT_REF}" in`) || strings.Contains(script, "source_mode") {
+		return errors.New("npm dispatch metadata must accept only an exact main ref")
 	}
 	if strings.Count(script, `releases/tags/${INPUT_TAG}`) != 1 || strings.Contains(script, "github.event.release") {
 		return errors.New("npm dispatch metadata must query one tag-derived release without release-event authority")
 	}
 	if err := requireOrderedMarkers(script,
 		`test "${EVENT_NAME}" = workflow_dispatch`,
-		`case "${EVENT_REF}" in`,
+		`test "${EVENT_REF}" = refs/heads/main`,
 		`tag_commit="$(resolve_live_tag)"`,
-		`if test "${source_mode}" = tag; then`,
-		`test "${EVENT_SHA}" = "${tag_commit}"`,
+		`"repos/${repository}/git/ref/heads/main"`,
 		`test "${live_main}" = "${EVENT_SHA}"`,
 		`releases/tags/${INPUT_TAG}`,
+		`printf 'package_commit=%s\n' "${EVENT_SHA}"`,
 		`printf 'release_id=%s\n' "${release_id}"`,
 	); err != nil {
 		return fmt.Errorf("npm dispatch metadata order: %w", err)
@@ -7581,10 +8260,40 @@ func validateNPMReleaseArtifactDigestContract(publishJob releaseWorkflowJob) err
 	return nil
 }
 
-func validateNPMReleaseCohortAndE404Contracts(publishJob releaseWorkflowJob) error {
+func validateNPMReleaseCohortAndE404Contracts(packageJob, publishJob releaseWorkflowJob) error {
+	stage, err := namedReleaseStep(packageJob.Steps, "Stage and inspect npm packages")
+	if err != nil {
+		return err
+	}
 	publish, err := namedReleaseStep(publishJob.Steps, "Publish verified npm packages")
 	if err != nil {
 		return err
+	}
+	cohort := strings.Join([]string{
+		`const packages = [`,
+		`  ["@krkarma777/ai-cli-gateway-darwin-x64", "krkarma777-ai-cli-gateway-darwin-x64-0.2.1.tgz"],`,
+		`  ["@krkarma777/ai-cli-gateway-darwin-arm64", "krkarma777-ai-cli-gateway-darwin-arm64-0.2.1.tgz"],`,
+		`  ["@krkarma777/ai-cli-gateway-linux-x64", "krkarma777-ai-cli-gateway-linux-x64-0.2.1.tgz"],`,
+		`  ["@krkarma777/ai-cli-gateway-linux-arm64", "krkarma777-ai-cli-gateway-linux-arm64-0.2.1.tgz"],`,
+		`  ["@krkarma777/ai-cli-gateway-win32-x64", "krkarma777-ai-cli-gateway-win32-x64-0.2.1.tgz"],`,
+		`  ["ai-cli-gateway", "ai-cli-gateway-0.2.1.tgz"],`,
+		`];`,
+	}, "\n")
+	if strings.Count(stage.Run, cohort) != 1 || strings.Count(publish.Run, cohort) != 1 {
+		return errors.New("npm package and publish validation must use the exact scoped native-first cohort")
+	}
+	publicationOrder := strings.Join([]string{
+		"packages=(",
+		"  @krkarma777/ai-cli-gateway-darwin-x64",
+		"  @krkarma777/ai-cli-gateway-darwin-arm64",
+		"  @krkarma777/ai-cli-gateway-linux-x64",
+		"  @krkarma777/ai-cli-gateway-linux-arm64",
+		"  @krkarma777/ai-cli-gateway-win32-x64",
+		"  ai-cli-gateway",
+		")",
+	}, "\n")
+	if strings.Count(publish.Run, publicationOrder) != 1 {
+		return errors.New("npm publication order must be the exact scoped native-first cohort with launcher last")
 	}
 	for _, required := range []string{
 		`const descriptorPath = path.join(root, "packages.json");`,
@@ -7594,6 +8303,8 @@ func validateNPMReleaseCohortAndE404Contracts(publishJob releaseWorkflowJob) err
 		`JSON.stringify(Object.keys(failure)) !== JSON.stringify(["error"])`,
 		`JSON.stringify(Object.keys(failure.error).sort()) !== JSON.stringify(["code", "detail", "summary"])`,
 		`failure.error.code !== "E404"`,
+		`const registryName = packageName.replace("/", "%2f");`,
+		`!failure.error.summary.startsWith(` + "`Not Found - GET https://registry.npmjs.org/${registryName} - `" + `)`,
 		`grep -Fx 'npm error code E404'`,
 	} {
 		if !strings.Contains(publish.Run, required) {
@@ -7627,7 +8338,7 @@ func validateNPMReleaseActions(packageJob, publishJob releaseWorkflowJob) error 
 		return fmt.Errorf("npm release step counts package=%d publish=%d", len(packageJob.Steps), len(publishJob.Steps))
 	}
 	if !reflect.DeepEqual(packageJob.Steps[1].With, map[string]string{
-		"persist-credentials": "false", "fetch-depth": "0", "ref": "${{ steps.metadata.outputs.tag_commit }}",
+		"persist-credentials": "false", "fetch-depth": "0", "ref": "${{ steps.metadata.outputs.package_commit }}",
 	}) || !reflect.DeepEqual(packageJob.Steps[2].With, map[string]string{"go-version": "1.26.5", "cache": "false"}) ||
 		!reflect.DeepEqual(packageJob.Steps[3].With, map[string]string{"node-version": "24.13.0", "package-manager-cache": "false"}) {
 		return errors.New("npm package checkout or tool setup inputs differ from the closed contract")
@@ -7639,11 +8350,11 @@ func validateNPMReleaseActions(packageJob, publishJob releaseWorkflowJob) error 
 	}
 	upload := packageJob.Steps[9]
 	wantUploadPath := strings.Join([]string{
-		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-darwin-x64-0.2.1.tgz",
-		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-darwin-arm64-0.2.1.tgz",
-		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-linux-x64-0.2.1.tgz",
-		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-linux-arm64-0.2.1.tgz",
-		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-win32-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/krkarma777-ai-cli-gateway-darwin-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/krkarma777-ai-cli-gateway-darwin-arm64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/krkarma777-ai-cli-gateway-linux-x64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/krkarma777-ai-cli-gateway-linux-arm64-0.2.1.tgz",
+		"${{ runner.temp }}/npm-package-work/tarballs/krkarma777-ai-cli-gateway-win32-x64-0.2.1.tgz",
 		"${{ runner.temp }}/npm-package-work/tarballs/ai-cli-gateway-0.2.1.tgz",
 		"${{ runner.temp }}/npm-package-work/tarballs/packages.json",
 	}, "\n") + "\n"
@@ -7680,6 +8391,7 @@ func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) err
 		{uses: setupNodeAction},
 		{name: "Validate toolchain and source", shell: "bash", env: map[string]string{
 			"TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
+			"PACKAGE_COMMIT": "${{ steps.metadata.outputs.package_commit }}",
 		}},
 		{name: "Download and verify immutable release assets", shell: "bash", env: map[string]string{ //nolint:gosec // This is GitHub's documented token expression, not a credential.
 			"GH_TOKEN": "${{ github.token }}", "TAG": "${{ steps.metadata.outputs.tag }}", "VERSION": "${{ steps.metadata.outputs.version }}", "TAG_COMMIT": "${{ steps.metadata.outputs.tag_commit }}",
@@ -7731,21 +8443,66 @@ func validateNPMReleaseStepShapes(packageJob, publishJob releaseWorkflowJob) err
 	if err := validate("package", packageJob.Steps, wantPackage); err != nil {
 		return err
 	}
-	return validate("publish", publishJob.Steps, wantPublish)
+	if err := validate("publish", publishJob.Steps, wantPublish); err != nil {
+		return err
+	}
+	source, err := namedReleaseStep(packageJob.Steps, "Validate toolchain and source")
+	if err != nil {
+		return err
+	}
+	if err := requireOrderedMarkers(source.Run,
+		`test "$(git rev-parse HEAD)" = "${PACKAGE_COMMIT}"`,
+		`test "$(git rev-parse "${TAG}^{commit}")" = "${TAG_COMMIT}"`,
+		`git merge-base --is-ancestor "${TAG_COMMIT}" "${PACKAGE_COMMIT}"`,
+		`node npm/scripts/verify-packages.js --source-check`,
+	); err != nil {
+		return fmt.Errorf("npm package source validation order: %w", err)
+	}
+	rebuild, err := namedReleaseStep(packageJob.Steps, "Rebuild and compare release archives")
+	if err != nil {
+		return err
+	}
+	if err := requireOrderedMarkers(rebuild.Run,
+		`readonly release_source="${RUNNER_TEMP}/npm-v0.2.1-release-source"`,
+		`test ! -e "${release_source}"`,
+		`git worktree add --detach "${release_source}" "${TAG_COMMIT}"`,
+		`test "$(git -C "${release_source}" rev-parse HEAD)" = "${TAG_COMMIT}"`,
+		`test -z "$(git -C "${release_source}" status --porcelain)"`,
+		`CGO_ENABLED=0 go -C "${release_source}" build -trimpath -buildvcs=false -mod=readonly`,
+		`CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go -C "${release_source}" build`,
+		`--repository-root "${release_source}"`,
+	); err != nil {
+		return fmt.Errorf("npm immutable release source order: %w", err)
+	}
+	stage, err := namedReleaseStep(packageJob.Steps, "Stage and inspect npm packages")
+	if err != nil {
+		return err
+	}
+	if strings.Contains(stage.Run, "release_source") || strings.Contains(stage.Run, "TAG_COMMIT") {
+		return errors.New("npm staging must not consume the detached immutable-tag source")
+	}
+	if err := requireOrderedMarkers(stage.Run,
+		`node npm/scripts/stage-packages.js`,
+		`--repository-root "${GITHUB_WORKSPACE}"`,
+		`node npm/scripts/verify-packages.js`,
+	); err != nil {
+		return fmt.Errorf("npm recovery source staging order: %w", err)
+	}
+	return nil
 }
 
 func validateNPMReleaseRunHashes(packageJob, publishJob releaseWorkflowJob) error {
 	want := map[string]string{
-		"package/Validate immutable release metadata":          "eba092f7faa1171107bf9a8ef91de7fb669bac3cdcd308d54f8ce60d387a1053",
-		"package/Validate toolchain and source":                "631712fb03df18ac2a9572c46e11d4c769477aa60f9d1a96fcee3fb3627770ad",
+		"package/Validate immutable release metadata":          "3c23daeef736eadaadfe78149ca43507bab7021d46bf5ddbcae3753680b10529",
+		"package/Validate toolchain and source":                "8cbbcdf468dd77c484ea07de97ec51fe1b40d92ab4a04cae57816a41005731c3",
 		"package/Download and verify immutable release assets": "9d6cc9385df0d7ee808f32e23e895a5638f3f65c52b26966a3216ed726e28709",
-		"package/Rebuild and compare release archives":         "312b6e71f564b31087d055ad988c05c8986dc7ce5303759055406866fb2688aa",
-		"package/Stage and inspect npm packages":               "8e9c66f39ec4ff6eaf541c414556bd22264707c12ccea2e23f7e701142c52726",
-		"package/Install and execute Linux x64 package":        "5f996fe5f6443404603107fe2e49e621fec165b9620db86b570d459c760be4e4",
+		"package/Rebuild and compare release archives":         "0e2b00a44e4177aaba1538fec235c67c8060a0e8eec4078eb302aefb56e1d2b5",
+		"package/Stage and inspect npm packages":               "f3680c95ffd7f5eed998c5494593e465a2c99b7b0db5cd20f1b4a1b4e3ef4e37",
+		"package/Install and execute Linux x64 package":        "23f135257ca4d034fbcf5927becd7e2473c7c5b2a10b436020ba15e9d59c6e26",
 		"package/Validate artifact outputs":                    "6c1898c6abdc07af87012ddd3cbb076ffb6998f0a351ee17a0f9cf2378f37bc3",
 		"publish/Validate artifact identity":                   "fe060a961e6dbcddee8a6e7a84987c841c2fde0f9a618448fc3560b07a41a262",
-		"publish/Validate and extract npm artifact":            "627bfa6ce348696aa11792e517f1757f37de235bb806744ec6be2abc22d0a9d6",
-		"publish/Publish verified npm packages":                "bf40d47e14a5b60cecf8bf8f51bb5043671a8a691d8bd25c5004067f18dd4ded",
+		"publish/Validate and extract npm artifact":            "36492a809b9a2a1dcb5627c0cfbd6273ded1a8766a13754886de1fe68ccab7a3",
+		"publish/Publish verified npm packages":                "df9a667c5eb6aa44087278f844460fce6a85383c320204a6a0cc99c24fbfa850",
 	}
 	for label, job := range map[string]releaseWorkflowJob{"package": packageJob, "publish": publishJob} {
 		for _, step := range job.Steps {

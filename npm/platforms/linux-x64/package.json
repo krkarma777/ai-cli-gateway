@@ -1,7 +1,13 @@
 {
-  "name": "ai-cli-gateway-linux-x64",
+  "name": "@krkarma777/ai-cli-gateway-linux-x64",
   "version": "0.2.1",
-  "description": "Native AI CLI Gateway binary for linux-x64.",
+  "description": "Internal Linux x86-64 binary for AI CLI Gateway. Install the ai-cli-gateway package instead.",
+  "keywords": [
+    "ai-cli-gateway",
+    "native-binary",
+    "linux",
+    "x64"
+  ],
   "license": "Apache-2.0",
   "files": [
     "bin/ai-cli-gateway",

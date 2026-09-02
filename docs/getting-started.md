@@ -4,15 +4,15 @@ Install AI CLI Gateway v0.2.1, connect one authenticated provider CLI, and send 
 
 ## Install with npm
 
-The npm launcher requires Node.js `>=22.14.0`. A normal global installation selects exactly one compatible native package from the five supported targets:
+The npm launcher requires Node.js `>=22.14.0`. The five scoped platform packages are optional internal implementation packages; users install only `ai-cli-gateway`. A normal global installation selects exactly one compatible native package from the five supported targets:
 
 | Host | npm target | Native package |
 |---|---|---|
-| macOS Intel | `darwin-x64` | `ai-cli-gateway-darwin-x64` |
-| macOS Apple silicon | `darwin-arm64` | `ai-cli-gateway-darwin-arm64` |
-| Linux x86-64 | `linux-x64` | `ai-cli-gateway-linux-x64` |
-| Linux ARM64 | `linux-arm64` | `ai-cli-gateway-linux-arm64` |
-| Windows x86-64 | `win32-x64` | `ai-cli-gateway-win32-x64` |
+| macOS Intel | `darwin-x64` | `@krkarma777/ai-cli-gateway-darwin-x64` |
+| macOS Apple silicon | `darwin-arm64` | `@krkarma777/ai-cli-gateway-darwin-arm64` |
+| Linux x86-64 | `linux-x64` | `@krkarma777/ai-cli-gateway-linux-x64` |
+| Linux ARM64 | `linux-arm64` | `@krkarma777/ai-cli-gateway-linux-arm64` |
+| Windows x86-64 | `win32-x64` | `@krkarma777/ai-cli-gateway-win32-x64` |
 
 Install the exact release and confirm the native CLI version:
 
