@@ -553,7 +553,7 @@ jobs:
             --version 0.2.1
 
           package_filename() {
-            node -e 'const fs = require("node:fs"); const packages = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const index = Number(process.argv[2]); const target = process.argv[3]; if (!Array.isArray(packages) || packages.length !== 2 || packages[0].name !== "ai-cli-gateway-" + target || packages[1].name !== "ai-cli-gateway" || (index !== 0 && index !== 1)) process.exit(1); process.stdout.write(packages[index].filename);' "${DESCRIPTOR}" "$1" "${NPM_TARGET}"
+            node -e 'const fs = require("node:fs"); const packages = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const index = Number(process.argv[2]); const target = process.argv[3]; if (!Array.isArray(packages) || packages.length !== 2 || packages[0].name !== "@krkarma777/ai-cli-gateway-" + target || packages[1].name !== "ai-cli-gateway" || (index !== 0 && index !== 1)) process.exit(1); process.stdout.write(packages[index].filename);' "${DESCRIPTOR}" "$1" "${NPM_TARGET}"
           }
           NATIVE_FILENAME="$(package_filename 0)"
           LAUNCHER_FILENAME="$(package_filename 1)"
