@@ -1604,14 +1604,14 @@ func TestReleaseNotesV021Contract(t *testing.T) {
 	}
 
 	expectedLinks := []string{
-		"[Getting Started](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/docs/getting-started.md)",
+		"[Getting Started](../getting-started.md)",
 		"[API and Operations Reference](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/docs/reference.md)",
 		"[Security Policy](https://github.com/krkarma777/ai-cli-gateway/blob/v0.2.1/SECURITY.md)",
 	}
-	requireContainsAll(t, "docs/releases/v0.2.1.md tag-pinned documentation links", notes, expectedLinks...)
+	requireContainsAll(t, "docs/releases/v0.2.1.md current setup and tag-pinned runtime/security links", notes, expectedLinks...)
 	markdownLinkPattern := regexp.MustCompile(`\[[^]]+\]\([^)]+\)`)
 	if links := markdownLinkPattern.FindAllString(notes, -1); !reflect.DeepEqual(links, expectedLinks) {
-		t.Fatalf("docs/releases/v0.2.1.md links = %v, want exact tag-pinned links %v", links, expectedLinks)
+		t.Fatalf("docs/releases/v0.2.1.md links = %v, want exact current setup and tag-pinned runtime/security links %v", links, expectedLinks)
 	}
 }
 
