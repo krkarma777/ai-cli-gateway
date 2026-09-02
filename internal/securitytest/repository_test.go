@@ -5903,6 +5903,20 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			mutate: replaceCINth(setupNodeAction, "actions/setup-node@v7", 3),
 		},
 		{
+			name: "npm host checkout made shallow",
+			mutate: replaceCIOnce(
+				"          fetch-depth: 0\n",
+				"          fetch-depth: 1\n",
+			),
+		},
+		{
+			name: "npm host checkout ref made mutable",
+			mutate: replaceCIOnce(
+				"          ref: ${{ github.sha }}\n",
+				"          ref: main\n",
+			),
+		},
+		{
 			name: "npm host execution skipped",
 			mutate: replaceCIOnce(
 				`          version_output="$("${SHIM}" version)"`,
@@ -5935,6 +5949,41 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			mutate: replaceCIOnce("          TAG=v0.2.1\n", "          TAG=v0.2.2\n"),
 		},
 		{
+			name: "npm host immutable commit replaced with recovery commit",
+			mutate: replaceCIOnce(
+				"          TAG_COMMIT=7d5cf2911b3394e564842697b03b1fc9a1162630\n",
+				"          TAG_COMMIT=\"${GITHUB_SHA}\"\n",
+			),
+		},
+		{
+			name: "npm host tag resolution check removed",
+			mutate: replaceCIOnce(
+				`          test "$(git -C "${GITHUB_WORKSPACE}" rev-parse --verify "refs/tags/${TAG}^{commit}")" = "${TAG_COMMIT}"`+"\n",
+				"",
+			),
+		},
+		{
+			name: "npm host detached worktree disabled",
+			mutate: replaceCIOnce(
+				`          git -C "${GITHUB_WORKSPACE}" worktree add --detach "${RELEASE_SOURCE}" "${TAG_COMMIT}"`,
+				`          git -C "${GITHUB_WORKSPACE}" worktree add "${RELEASE_SOURCE}" "${TAG_COMMIT}"`,
+			),
+		},
+		{
+			name: "npm host build uses recovery source",
+			mutate: replaceCIOnce(
+				`          go -C "${RELEASE_SOURCE}" build -trimpath`,
+				`          go -C "${GITHUB_WORKSPACE}" build -trimpath`,
+			),
+		},
+		{
+			name: "npm host build date uses recovery source",
+			mutate: replaceCIOnce(
+				`          source_epoch="$(git -C "${RELEASE_SOURCE}" show -s --format=%ct HEAD)"`,
+				`          source_epoch="$(git -C "${GITHUB_WORKSPACE}" show -s --format=%ct HEAD)"`,
+			),
+		},
+		{
 			name: "npm Windows launcher step removed",
 			mutate: func(document string) string {
 				step := "      " + strings.ReplaceAll(npmWindowsLauncherStepContract(), "\n", "\n      ") + "\n"
@@ -5953,6 +6002,20 @@ func TestWorkflowMultiPlatformReleaseContractRejectsMutations(t *testing.T) {
 			mutate: replaceCIOnce(
 				"./npm/scripts/verify-windows-launcher.ps1",
 				"./npm/scripts/verify-windows-shims.ps1",
+			),
+		},
+		{
+			name: "npm Windows launcher expected commit made mutable",
+			mutate: replaceCIOnce(
+				"          EXPECTED_COMMIT: 7d5cf2911b3394e564842697b03b1fc9a1162630\n",
+				"          EXPECTED_COMMIT: ${{ github.sha }}\n",
+			),
+		},
+		{
+			name: "npm Windows launcher commit argument rebound",
+			mutate: replaceCIOnce(
+				"            -ExpectedCommit $env:EXPECTED_COMMIT\n",
+				"            -ExpectedCommit $env:GITHUB_SHA\n",
 			),
 		},
 		{
@@ -6498,6 +6561,14 @@ type ciWorkflowJobContract struct {
 
 func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 	checkout := "- uses: " + checkoutAction
+	npmHostCheckout := yamlContractLines(
+		"- uses: "+checkoutAction,
+		"  with:",
+		"    persist-credentials: false",
+		"    fetch-depth: 0",
+		"    fetch-tags: true",
+		"    ref: ${{ github.sha }}",
+	)
 	setupGo := yamlContractLines(
 		"- uses: "+setupGoAction,
 		"  with:",
@@ -6749,7 +6820,7 @@ func expectedCIJobContracts() map[string]ciWorkflowJobContract {
 				"        executable: ai-cli-gateway.exe",
 			},
 			steps: []string{
-				checkout,
+				npmHostCheckout,
 				yamlContractLines(
 					"- uses: "+setupGoAction,
 					"  with:",
@@ -6776,6 +6847,7 @@ func npmWindowsLauncherStepContract() string {
 		"  shell: pwsh",
 		"  env:",
 		"    EXPECTED_TAG: v0.2.1",
+		"    EXPECTED_COMMIT: 7d5cf2911b3394e564842697b03b1fc9a1162630",
 		"  run: |",
 		`    $ErrorActionPreference = "Stop"`,
 		"    $InstallPrefix = [IO.Path]::GetFullPath(",
@@ -6784,7 +6856,7 @@ func npmWindowsLauncherStepContract() string {
 		"    ./npm/scripts/verify-windows-launcher.ps1 `",
 		"      -InstallPrefix $InstallPrefix `",
 		"      -ExpectedTag $env:EXPECTED_TAG `",
-		"      -ExpectedCommit $env:GITHUB_SHA",
+		"      -ExpectedCommit $env:EXPECTED_COMMIT",
 	)
 }
 
@@ -7034,12 +7106,12 @@ func npmHostInstallStepContract() string {
 		"    set -euo pipefail",
 		"    umask 077",
 		"    TAG=v0.2.1",
-		`    TAG_COMMIT="${GITHUB_SHA}"`,
-		`    [[ "${TAG_COMMIT}" =~ ^[0-9a-f]{40}$ ]]`,
-		`    source_epoch="$(git show -s --format=%ct "${TAG_COMMIT}")"`,
-		`    [[ "${source_epoch}" =~ ^[0-9]+$ ]]`,
-		`    source_date="$(node -e 'process.stdout.write(new Date(Number(process.argv[1]) * 1000).toISOString().replace(".000Z", "Z"))' "${source_epoch}")"`,
-		`    [[ "${source_date}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]`,
+		"    TAG_COMMIT=7d5cf2911b3394e564842697b03b1fc9a1162630",
+		`    [[ "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]]`,
+		`    test "$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" = "${GITHUB_SHA}"`,
+		`    test "$(git -C "${GITHUB_WORKSPACE}" rev-parse --verify "refs/tags/${TAG}^{commit}")" = "${TAG_COMMIT}"`,
+		`    git -C "${GITHUB_WORKSPACE}" merge-base --is-ancestor "${TAG_COMMIT}" "${GITHUB_SHA}"`,
+		`    test -z "$(git -C "${GITHUB_WORKSPACE}" status --porcelain)"`,
 		"    canonical_child() {",
 		`      node -e 'const path = require("node:path"); process.stdout.write(path.resolve(process.argv[1], process.argv[2]));' "$1" "$2"`,
 		"    }",
@@ -7068,14 +7140,24 @@ func npmHostInstallStepContract() string {
 		`    NPM_TARBALL_ROOT="$(canonical_child "${NPM_JOB_PARENT}" tarballs)"`,
 		`    NPM_INSTALL_PREFIX="$(canonical_child "${NPM_JOB_PARENT}" install)"`,
 		`    DESCRIPTOR="$(canonical_child "${NPM_TARBALL_ROOT}" packages.json)"`,
+		`    RELEASE_SOURCE="$(canonical_child "${RUNNER_TEMP}" npm-v0.2.1-host-source)"`,
 		`    node -e 'const fs = require("node:fs"); for (const directory of process.argv.slice(1)) { if (fs.existsSync(directory)) process.exit(1); fs.mkdirSync(directory, { mode: 0o700 }); fs.chmodSync(directory, 0o700); const metadata = fs.lstatSync(directory); if (!metadata.isDirectory() || metadata.isSymbolicLink() || (process.platform !== "win32" && (metadata.mode & 0o777) !== 0o700) || (typeof process.getuid === "function" && metadata.uid !== process.getuid())) process.exit(1); }' \`,
 		`      "${NPM_JOB_PARENT}" \`,
 		`      "${BINARY_ROOT}" \`,
 		`      "${BINARY_DIRECTORY}" \`,
 		`      "${NPM_TARBALL_ROOT}" \`,
 		`      "${NPM_INSTALL_PREFIX}"`,
+		`    test ! -e "${RELEASE_SOURCE}"`,
+		`    git -C "${GITHUB_WORKSPACE}" worktree add --detach "${RELEASE_SOURCE}" "${TAG_COMMIT}"`,
+		`    test "$(git -C "${RELEASE_SOURCE}" rev-parse HEAD)" = "${TAG_COMMIT}"`,
+		`    test -z "$(git -C "${RELEASE_SOURCE}" branch --show-current)"`,
+		`    test -z "$(git -C "${RELEASE_SOURCE}" status --porcelain)"`,
+		`    source_epoch="$(git -C "${RELEASE_SOURCE}" show -s --format=%ct HEAD)"`,
+		`    [[ "${source_epoch}" =~ ^[0-9]+$ ]]`,
+		`    source_date="$(node -e 'process.stdout.write(new Date(Number(process.argv[1]) * 1000).toISOString().replace(".000Z", "Z"))' "${source_epoch}")"`,
+		`    [[ "${source_date}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]`,
 		`    ldflags="-s -w -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Version=${TAG} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Commit=${TAG_COMMIT} -X github.com/krkarma777/ai-cli-gateway/internal/buildinfo.Date=${source_date}"`,
-		`    go build -trimpath -buildvcs=false -mod=readonly -ldflags "${ldflags}" \`,
+		`    go -C "${RELEASE_SOURCE}" build -trimpath -buildvcs=false -mod=readonly -ldflags "${ldflags}" \`,
 		`      -o "${BINARY_PATH}" ./cmd/ai-cli-gateway`,
 		`    node npm/scripts/stage-packages.js \`,
 		`      --repository-root "${GITHUB_WORKSPACE}" \`,
