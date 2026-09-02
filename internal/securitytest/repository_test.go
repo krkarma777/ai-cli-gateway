@@ -1507,7 +1507,7 @@ func TestDocumentationCurrentOnboardingUsesV021(t *testing.T) {
 	}
 }
 
-func TestReadmeNPMInstallV021Contract(t *testing.T) {
+func TestREADMENPMInstallV021Contract(t *testing.T) {
 	readme := string(readRepositoryFile(t, "README.md"))
 	quickStart, err := extractTopLevelMarkdownSection(readme, "Quick Start")
 	if err != nil {
@@ -1521,6 +1521,10 @@ func TestReadmeNPMInstallV021Contract(t *testing.T) {
 	if !strings.HasPrefix(quickStart, wantBeginning) {
 		t.Fatal("README Quick Start does not begin with the exact npm install/version commands followed immediately by the manual checksum path")
 	}
+	requireContainsAll(t, "README npm installation", quickStart,
+		"platform packages are optional internal implementation packages",
+		"users install only `ai-cli-gateway`",
+	)
 }
 
 func TestGettingStartedNPMInstallV021Contract(t *testing.T) {
@@ -1531,6 +1535,8 @@ func TestGettingStartedNPMInstallV021Contract(t *testing.T) {
 	}
 	requireContainsAll(t, "Getting Started npm installation", installation,
 		"Node.js `>=22.14.0`",
+		"platform packages are optional internal implementation packages",
+		"users install only `ai-cli-gateway`",
 		"no lifecycle scripts", "does not download an executable",
 		"byte-for-byte identical", "npm provenance", "GitHub build-provenance",
 		"`npm audit signatures` verifies downloaded packages' registry signatures and provenance attestations.",
@@ -1572,6 +1578,8 @@ func TestReleaseNotesV021Contract(t *testing.T) {
 	}
 	requireContainsAll(t, "docs/releases/v0.2.1.md", notes,
 		"npm install --global ai-cli-gateway@0.2.1", "Node.js `>=22.14.0`",
+		"platform packages are optional internal implementation packages",
+		"users install only `ai-cli-gateway`",
 		"no lifecycle scripts", "does not download an executable",
 		"byte-for-byte identical", "npm provenance", "GitHub build-provenance attestations",
 		"five platform archives", "SPDX SBOM", "SHA256SUMS",
@@ -1607,15 +1615,33 @@ func TestReleaseNotesV021Contract(t *testing.T) {
 	}
 }
 
+func TestReleaseDocumentationRejectsAbandonedNPMNames(t *testing.T) {
+	oldNames := []string{
+		"ai-cli-gateway-darwin-x64",
+		"ai-cli-gateway-darwin-arm64",
+		"ai-cli-gateway-linux-x64",
+		"ai-cli-gateway-linux-arm64",
+		"ai-cli-gateway-win32-x64",
+	}
+	for _, filename := range []string{"README.md", "docs/getting-started.md", "docs/releases/v0.2.1.md"} {
+		document := string(readRepositoryFile(t, filename))
+		for _, oldName := range oldNames {
+			if strings.Contains(document, "`"+oldName+"`") {
+				t.Fatalf("%s retains abandoned npm package %q", filename, oldName)
+			}
+		}
+	}
+}
+
 func gettingStartedNPMTargetTable() []string {
 	return []string{
 		"| Host | npm target | Native package |",
 		"|---|---|---|",
-		"| macOS Intel | `darwin-x64` | `ai-cli-gateway-darwin-x64` |",
-		"| macOS Apple silicon | `darwin-arm64` | `ai-cli-gateway-darwin-arm64` |",
-		"| Linux x86-64 | `linux-x64` | `ai-cli-gateway-linux-x64` |",
-		"| Linux ARM64 | `linux-arm64` | `ai-cli-gateway-linux-arm64` |",
-		"| Windows x86-64 | `win32-x64` | `ai-cli-gateway-win32-x64` |",
+		"| macOS Intel | `darwin-x64` | `@krkarma777/ai-cli-gateway-darwin-x64` |",
+		"| macOS Apple silicon | `darwin-arm64` | `@krkarma777/ai-cli-gateway-darwin-arm64` |",
+		"| Linux x86-64 | `linux-x64` | `@krkarma777/ai-cli-gateway-linux-x64` |",
+		"| Linux ARM64 | `linux-arm64` | `@krkarma777/ai-cli-gateway-linux-arm64` |",
+		"| Windows x86-64 | `win32-x64` | `@krkarma777/ai-cli-gateway-win32-x64` |",
 	}
 }
 
@@ -1623,11 +1649,11 @@ func releaseNotesNPMTargetTable() []string {
 	return []string{
 		"| npm target | Native package | npm host constraint |",
 		"|---|---|---|",
-		"| `darwin-x64` | `ai-cli-gateway-darwin-x64` | `darwin` / `x64` |",
-		"| `darwin-arm64` | `ai-cli-gateway-darwin-arm64` | `darwin` / `arm64` |",
-		"| `linux-x64` | `ai-cli-gateway-linux-x64` | `linux` / `x64` |",
-		"| `linux-arm64` | `ai-cli-gateway-linux-arm64` | `linux` / `arm64` |",
-		"| `win32-x64` | `ai-cli-gateway-win32-x64` | `win32` / `x64` |",
+		"| `darwin-x64` | `@krkarma777/ai-cli-gateway-darwin-x64` | `darwin` / `x64` |",
+		"| `darwin-arm64` | `@krkarma777/ai-cli-gateway-darwin-arm64` | `darwin` / `arm64` |",
+		"| `linux-x64` | `@krkarma777/ai-cli-gateway-linux-x64` | `linux` / `x64` |",
+		"| `linux-arm64` | `@krkarma777/ai-cli-gateway-linux-arm64` | `linux` / `arm64` |",
+		"| `win32-x64` | `@krkarma777/ai-cli-gateway-win32-x64` | `win32` / `x64` |",
 	}
 }
 
