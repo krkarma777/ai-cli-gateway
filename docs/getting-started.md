@@ -21,15 +21,17 @@ npm install --global ai-cli-gateway@0.2.1
 ai-cli-gateway version
 ```
 
-The public packages have no lifecycle scripts. npm resolves the matching optional package from the registry; installation does not download an executable through a lifecycle hook, and the launcher performs no application-owned network download on first execution. The native executable in each npm package is byte-for-byte identical to the executable in its matching GitHub Release archive. The packages carry npm provenance, while the archives, SPDX SBOM, and checksum manifest carry GitHub build-provenance attestations.
+The public packages have no lifecycle scripts. npm resolves the matching optional package from the registry; installation does not download an executable through a lifecycle hook, and the launcher performs no application-owned network download on first execution. The native executable in each npm package is byte-for-byte identical to the executable in its matching GitHub Release archive.
 
-`npm audit signatures` verifies downloaded packages' registry signatures and provenance attestations. Run it from a project lockfile that includes the package:
+Version `0.2.1` and its five native packages were manually published and do not expose npm provenance attestations. The repository release workflow is configured to use npm Trusted Publishing for future releases. The five archives, SPDX SBOM, and checksum manifest for `v0.2.1` retain separate GitHub build-provenance attestations.
+
+`npm audit signatures` verifies downloaded packages' registry signatures and any available provenance attestations. Run it from a project lockfile that includes the package:
 
 ```console
 npm audit signatures
 ```
 
-npm provenance and registry signatures complement the archive verification below; neither replaces checking `SHA256SUMS` and the GitHub attestation when installing an archive manually.
+For `0.2.1`, registry signatures do not substitute for the absent npm provenance attestations. They also do not replace checking `SHA256SUMS` and the GitHub attestation when installing an archive manually.
 
 ### Update
 

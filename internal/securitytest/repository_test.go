@@ -1299,29 +1299,33 @@ func TestGuidedInitREADMEQuickStartContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := requireOrderedMarkers(quickStart,
-		"Install and authenticate", "ai-cli-gateway init", "ai-cli-gateway serve",
-		"Load the generated client key", "AI_CLI_GATEWAY_API_KEY", "curl --fail-with-body",
+		"npm install --global ai-cli-gateway", "ai-cli-gateway init", "ai-cli-gateway serve",
 	); err != nil {
-		t.Fatalf("README guided Quick Start order: %v", err)
+		t.Fatalf("README npm-first Quick Start order: %v", err)
 	}
-	for _, command := range []string{"ai-cli-gateway init", "ai-cli-gateway serve"} {
+	for _, command := range []string{
+		"npm install --global ai-cli-gateway",
+		"ai-cli-gateway init",
+		"ai-cli-gateway serve",
+	} {
 		if !containsExactTrimmedLine(quickStart, command) {
-			t.Fatalf("README Quick Start is missing exact shortest-path command %q", command)
+			t.Fatalf("README Quick Start is missing exact npm-first command %q", command)
 		}
 	}
+	requireContainsAll(t, "README Quick Start navigation", quickStart,
+		"https://www.npmjs.com/package/ai-cli-gateway",
+		"docs/getting-started.md",
+		"docs/reference.md",
+		"https://github.com/krkarma777/ai-cli-gateway/releases",
+	)
 	for _, forbidden := range []string{
+		"npm install --global ai-cli-gateway@0.2.1",
 		"ai-cli-gateway init --config", "ai-cli-gateway serve --config",
-		"Copy `config.example.toml`", "openssl rand -hex",
+		"Copy `config.example.toml`", "openssl rand -hex", "GATEWAY_KEY", "curl --fail-with-body",
 	} {
 		if strings.Contains(quickStart, forbidden) {
-			t.Fatalf("README guided Quick Start retains manual onboarding marker %q", forbidden)
+			t.Fatalf("README npm-first Quick Start retains detailed onboarding marker %q", forbidden)
 		}
-	}
-	if err := validateGuidedInitPOSIXKeyLoadExample(quickStart); err != nil {
-		t.Fatalf("README generated-key client setup: %v", err)
-	}
-	if err := validateGuidedInitAliasPlaceholder(quickStart); err != nil {
-		t.Fatalf("README guided request alias: %v", err)
 	}
 }
 
@@ -1397,17 +1401,6 @@ unset GATEWAY_KEY`
 }
 
 func TestGuidedInitRequestCommandsKeepAuthorizationOutOfArgv(t *testing.T) {
-	readmeQuickStart, err := extractTopLevelMarkdownSection(
-		string(readRepositoryFile(t, "README.md")),
-		"Quick Start",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCurlAuthorizationStdin(readmeQuickStart, false, 1); err != nil {
-		t.Fatalf("README guided request: %v", err)
-	}
-
 	gettingStarted := readGettingStarted(t)
 	gettingStartedQuickStart, err := extractTopLevelMarkdownSection(gettingStarted, "Quick Start")
 	if err != nil {
@@ -1507,24 +1500,58 @@ func TestDocumentationCurrentOnboardingUsesV021(t *testing.T) {
 	}
 }
 
-func TestREADMENPMInstallV021Contract(t *testing.T) {
+func TestREADMENPMFirstInstallContract(t *testing.T) {
 	readme := string(readRepositoryFile(t, "README.md"))
 	quickStart, err := extractTopLevelMarkdownSection(readme, "Quick Start")
 	if err != nil {
 		t.Fatal(err)
 	}
 	const wantBeginning = "\n```console\n" +
-		"npm install --global ai-cli-gateway@0.2.1\n" +
-		"ai-cli-gateway version\n" +
-		"```\n\n" +
-		"For a manual checksum-verified installation, immediately follow the [v0.2.1 archive procedure](docs/getting-started.md#advanced-recovery-and-service-deployment)."
+		"npm install --global ai-cli-gateway\n" +
+		"ai-cli-gateway init\n" +
+		"ai-cli-gateway serve\n" +
+		"```\n"
 	if !strings.HasPrefix(quickStart, wantBeginning) {
-		t.Fatal("README Quick Start does not begin with the exact npm install/version commands followed immediately by the manual checksum path")
+		t.Fatal("README Quick Start does not begin with the exact stable npm install/init/serve commands")
 	}
 	requireContainsAll(t, "README npm installation", quickStart,
+		"Node.js `>=22.14.0`",
 		"platform packages are optional internal implementation packages",
 		"users install only `ai-cli-gateway`",
 	)
+	if strings.Contains(quickStart, "npm install --global ai-cli-gateway@0.2.1") {
+		t.Fatal("README Quick Start pins the stable npm installation to v0.2.1")
+	}
+
+	topEnd := strings.Index(readme, "\n## ")
+	if topEnd < 0 {
+		t.Fatal("README has no top-level content after its title")
+	}
+	top := readme[:topEnd]
+	for _, badge := range []string{
+		"https://img.shields.io/npm/v/ai-cli-gateway",
+		"https://img.shields.io/npm/dm/ai-cli-gateway",
+		"https://img.shields.io/node/v/ai-cli-gateway",
+		"actions/workflows/ci.yml/badge.svg?branch=main",
+		"https://img.shields.io/npm/l/ai-cli-gateway",
+	} {
+		if strings.Count(top, badge) != 1 {
+			t.Fatalf("README top matter must contain badge target %q exactly once", badge)
+		}
+	}
+	for _, obsolete := range []string{
+		"img.shields.io/github/v/release/",
+		"img.shields.io/github/go-mod/go-version/",
+	} {
+		if strings.Contains(top, obsolete) {
+			t.Fatalf("README top matter retains obsolete primary badge %q", obsolete)
+		}
+	}
+	installIndex := strings.Index(readme, "npm install --global ai-cli-gateway")
+	sdkIndex := strings.Index(readme, "## From SDK to local CLI")
+	if installIndex < 0 || sdkIndex < 0 || installIndex >= sdkIndex {
+		t.Fatal("README must place npm installation before the SDK example")
+	}
 }
 
 func TestGettingStartedNPMInstallV021Contract(t *testing.T) {
@@ -1538,8 +1565,9 @@ func TestGettingStartedNPMInstallV021Contract(t *testing.T) {
 		"platform packages are optional internal implementation packages",
 		"users install only `ai-cli-gateway`",
 		"no lifecycle scripts", "does not download an executable",
-		"byte-for-byte identical", "npm provenance", "GitHub build-provenance",
-		"`npm audit signatures` verifies downloaded packages' registry signatures and provenance attestations.",
+		"byte-for-byte identical", "manually published", "do not expose npm provenance attestations",
+		"Trusted Publishing", "GitHub build-provenance",
+		"`npm audit signatures` verifies downloaded packages' registry signatures",
 		"Update", "Uninstall", "Optional-dependency recovery",
 	)
 	if err := validateExactDocumentationTable(document, "Install with npm", gettingStartedNPMTargetTable()); err != nil {
@@ -1581,7 +1609,8 @@ func TestReleaseNotesV021Contract(t *testing.T) {
 		"platform packages are optional internal implementation packages",
 		"users install only `ai-cli-gateway`",
 		"no lifecycle scripts", "does not download an executable",
-		"byte-for-byte identical", "npm provenance", "GitHub build-provenance attestations",
+		"byte-for-byte identical", "manually published", "do not expose npm provenance attestations",
+		"Trusted Publishing", "GitHub build-provenance attestations",
 		"five platform archives", "SPDX SBOM", "SHA256SUMS",
 	)
 	if err := validateExactDocumentationTable(notes, "Supported targets", releaseNotesNPMTargetTable()); err != nil {

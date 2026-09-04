@@ -117,6 +117,11 @@ test("launcher README explains the product, first run, SDK boundary, and exclusi
   for (const required of [
     launcherDescription,
     "focused Responses API-compatible subset",
+    "https://img.shields.io/npm/v/ai-cli-gateway",
+    "https://img.shields.io/npm/dm/ai-cli-gateway",
+    "https://img.shields.io/node/v/ai-cli-gateway",
+    "actions/workflows/ci.yml/badge.svg?branch=main",
+    "https://img.shields.io/npm/l/ai-cli-gateway",
     "npm install --global ai-cli-gateway",
     "ai-cli-gateway init",
     "ai-cli-gateway serve",
@@ -129,7 +134,9 @@ test("launcher README explains the product, first run, SDK boundary, and exclusi
     "GET /v1/models",
     "SSE streaming",
     "tool-call round trips",
-    "npm provenance",
+    "manually published",
+    "do not expose npm provenance attestations",
+    "Trusted Publishing",
   ]) {
     assert.ok(readme.includes(required), `launcher README missing ${required}`);
   }
